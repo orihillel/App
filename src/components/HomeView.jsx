@@ -1,11 +1,11 @@
-import { Menu, Search, Star, Navigation, RefreshCw } from 'lucide-react';
+import { Menu, Search, Star, Navigation, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12 } from '../lib/format.js';
 
 export function HomeView({
   setToast, units, toggleUnits, openSearch,
-  spot, isGoTo, makeGoTo,
+  spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
   waveChart, hourIdx, setHourIdx, hourData,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
@@ -25,12 +25,20 @@ export function HomeView({
       </div>
 
       <div className="flex justify-between items-start px-6 pb-3">
-        <div>
-          <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, lineHeight: 1.1 }}>{spot.name}</div>
-          <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginTop: 3 }}>{spot.region}</div>
-          {isGoTo && <div style={{ fontSize: 10.5, color: COLORS.tealBright, marginTop: 5, fontWeight: 600, letterSpacing: '0.06em' }}>YOUR GO-TO SPOT</div>}
+        <div className="flex items-start" style={{ gap: 2, minWidth: 0 }}>
+          {showSpotNav && (
+            <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6, flexShrink: 0 }} onClick={onPrevSpot} aria-label="Previous spot"><ChevronLeft size={18} color={COLORS.foamDim} /></button>
+          )}
+          <div style={{ minWidth: 0 }}>
+            <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, lineHeight: 1.1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{spot.name}</div>
+            <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginTop: 3 }}>{spot.region}</div>
+            {isGoTo && <div style={{ fontSize: 10.5, color: COLORS.tealBright, marginTop: 5, fontWeight: 600, letterSpacing: '0.06em' }}>YOUR GO-TO SPOT</div>}
+          </div>
+          {showSpotNav && (
+            <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6, flexShrink: 0 }} onClick={onNextSpot} aria-label="Next spot"><ChevronRight size={18} color={COLORS.foamDim} /></button>
+          )}
         </div>
-        <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6 }} onClick={makeGoTo} aria-label="Set as go-to spot">
+        <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6, flexShrink: 0 }} onClick={makeGoTo} aria-label="Set as go-to spot">
           <Star size={22} color={isGoTo ? COLORS.gold : COLORS.foamDim} fill={isGoTo ? COLORS.gold : 'none'} />
         </button>
       </div>

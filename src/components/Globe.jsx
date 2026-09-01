@@ -17,7 +17,7 @@ import { ConditionScale } from './ConditionScale.jsx';
 // `{ spots, order, forecast, hourIdx }` — read directly inside the animation loop so every
 // rendered frame reflects whatever is currently in `forecast`, with no separate sync effect
 // to fall out of date.
-export function Globe({ order, dataRef, onClose }) {
+export function Globe({ order, dataRef, onClose, onSelectSpot }) {
   const containerRef = useRef(null);
   const [globeError, setGlobeError] = useState(false);
 
@@ -34,7 +34,7 @@ export function Globe({ order, dataRef, onClose }) {
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.4, 20);
-    const state = { distance: 3.0, rotX: 0.3, rotY: 0.6, dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null };
+    const state = { distance: 3.0, rotX: 0.3, rotY: 0.6, dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0 };
     camera.position.set(0, 0, state.distance);
 
     const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, logarithmicDepthBuffer: true });
@@ -177,6 +177,27 @@ export function Globe({ order, dataRef, onClose }) {
       markers.push({ id, mesh, label, basePos: localPos });
     });
 
+    // Tapping a marker (as opposed to dragging to rotate) jumps straight to that spot's page.
+    // "A tap" is a mousedown/up or touchstart/end pair with barely any movement between them
+    // and not too much time elapsed — the same drag gesture that rotates the globe also passes
+    // through mousedown/mouseup, so a distance+time threshold is what actually distinguishes
+    // "flicked past this marker while rotating" from "meant to tap it".
+    const raycaster = new THREE.Raycaster();
+    const markerMeshes = markers.map((m) => m.mesh);
+    function pickSpotAt(clientX, clientY) {
+      const rect = renderer.domElement.getBoundingClientRect();
+      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
+      const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera({ x: ndcX, y: ndcY }, camera);
+      const hit = raycaster.intersectObjects(markerMeshes)[0];
+      if (!hit) return;
+      const marker = markers.find((m) => m.mesh === hit.object);
+      if (marker) onSelectSpot(marker.id);
+    }
+    function isTap(downX, downY, downTime, upX, upY) {
+      return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
+    }
+
     function updateLabels() {
       const camDir = camera.position.clone().normalize();
       markers.forEach((m) => {
@@ -194,7 +215,10 @@ export function Globe({ order, dataRef, onClose }) {
       });
     }
 
-    function onMouseDown(e) { state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY; }
+    function onMouseDown(e) {
+      state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
+      state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
+    }
     function onMouseMove(e) {
       if (!state.dragging) return;
       const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
@@ -202,14 +226,19 @@ export function Globe({ order, dataRef, onClose }) {
       state.rotY += dx * 0.005;
       state.rotX = Math.max(-1.2, Math.min(1.2, state.rotX + dy * 0.005));
     }
-    function onMouseUp() { state.dragging = false; }
+    function onMouseUp(e) {
+      state.dragging = false;
+      if (isTap(state.downX, state.downY, state.downTime, e.clientX, e.clientY)) pickSpotAt(e.clientX, e.clientY);
+    }
     function onWheel(e) {
       e.preventDefault();
       state.distance = Math.max(1.5, Math.min(6, state.distance + e.deltaY * 0.0025));
     }
     function touchStart(e) {
-      if (e.touches.length === 1) { state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY; }
-      else if (e.touches.length === 2) { state.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
+      if (e.touches.length === 1) {
+        state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
+        state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
+      } else if (e.touches.length === 2) { state.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
     }
     function touchMove(e) {
       e.preventDefault();
@@ -225,7 +254,11 @@ export function Globe({ order, dataRef, onClose }) {
         state.pinchDist = d;
       }
     }
-    function touchEnd() { state.dragging = false; state.pinchDist = null; }
+    function touchEnd(e) {
+      state.dragging = false; state.pinchDist = null;
+      const t = e.changedTouches && e.changedTouches[0];
+      if (t && isTap(state.downX, state.downY, state.downTime, t.clientX, t.clientY)) pickSpotAt(t.clientX, t.clientY);
+    }
 
     renderer.domElement.addEventListener('mousedown', onMouseDown);
     window.addEventListener('mousemove', onMouseMove);

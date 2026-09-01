@@ -2,7 +2,7 @@ import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, pushSupported, pushSubscribed, pushBusy, togglePush }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush }) {
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -64,7 +64,13 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
             if (!s) return null;
             const isSeed = SEED_ORDER.includes(id);
             return (
-              <div key={id} className="flex items-center justify-between" style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '9px 12px' }}>
+              // A div, not a <button> -- it contains its own nested remove button below, and
+              // a button can't nest inside a button. onClick + role/tabIndex make it keyboard-
+              // and screen-reader-accessible as one anyway.
+              <div key={id} className="tl-btn flex items-center justify-between" role="button" tabIndex={0}
+                onClick={() => onSelectSpot(id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectSpot(id); }}
+                aria-label={'View ' + s.name}
+                style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '9px 12px' }}>
                 <div>
                   <div style={{ fontSize: 13, color: COLORS.foam, fontWeight: 600 }}>{s.name}{id === goToId && <span style={{ color: COLORS.tealBright }}> ★</span>}</div>
                   <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginTop: 1 }}>{s.region}</div>
@@ -72,7 +78,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
                 {isSeed ? (
                   <span style={{ fontSize: 9.5, color: COLORS.foamDim, letterSpacing: '0.04em' }}>BUILT-IN</span>
                 ) : (
-                  <button className="tl-btn" onClick={() => removeSpot(id)} style={{ background: 'none', border: 'none', padding: 4 }} aria-label={'Remove ' + s.name}><X size={15} color={COLORS.foamDim} /></button>
+                  <button className="tl-btn" onClick={(e) => { e.stopPropagation(); removeSpot(id); }} style={{ background: 'none', border: 'none', padding: 4 }} aria-label={'Remove ' + s.name}><X size={15} color={COLORS.foamDim} /></button>
                 )}
               </div>
             );
