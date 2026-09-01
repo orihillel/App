@@ -36,7 +36,7 @@ export function AlertsView({ alerts, spots, units, checkAlertMatch, openNewAlert
         })}
       </div>
       <div style={{ padding: '14px 20px 4px', fontSize: 10.5, color: COLORS.foamDim, lineHeight: 1.5 }}>
-        This checks live forecast data while you have the app open and shows you what would match. Actual push notifications when the app is closed need a real backend — that's Claude Code territory, not this preview.
+        This checks live forecast data while you have the app open and shows you what would match. Turn on push notifications in your Profile to also get alerted when the app is closed.
       </div>
     </div>
   );

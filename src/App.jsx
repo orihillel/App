@@ -5,6 +5,8 @@ import { SPOTS, ORDER, HOUR_INDICES } from './lib/spots.js';
 import { fetchSpotForecast, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
+import { checkAlertMatch } from './lib/alerts.js';
+import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { OnboardingView } from './components/OnboardingView.jsx';
 import { HomeView } from './components/HomeView.jsx';
 import { AlertsView } from './components/AlertsView.jsx';
@@ -164,6 +166,32 @@ export default function App() {
 
   async function persistAlerts(next) {
     try { await storage.set('surf-alerts', JSON.stringify(next)); } catch { /* best-effort */ }
+    // Keep the push-notification backend's copy of this device's alerts current — a no-op
+    // if push isn't subscribed or configured (syncAlertsToPush checks both).
+    syncAlertsToPush(pushSubscription, next, spots);
+  }
+
+  // Real (backend-driven) push notifications — see src/lib/push.js and worker/. Reflects
+  // actual subscription state (checked from the browser, not a flag this app made up) so it
+  // stays correct even if permission was revoked outside the app.
+  const [pushSubscription, setPushSubscription] = useState(null);
+  const [pushBusy, setPushBusy] = useState(false);
+  useEffect(() => { getCurrentSubscription().then(setPushSubscription); }, []);
+  async function togglePush() {
+    setPushBusy(true);
+    try {
+      if (pushSubscription) {
+        await unsubscribeFromPush();
+        setPushSubscription(null);
+      } else {
+        const sub = await subscribeToPush(alerts, spots);
+        setPushSubscription(sub);
+      }
+    } catch (e) {
+      setToast(e.message || 'Could not update push notifications');
+    } finally {
+      setPushBusy(false);
+    }
   }
 
   // live feed: keep every spot's forecast current, not just a one-time fetch on open
@@ -201,29 +229,6 @@ export default function App() {
     else { setToast('Part of the full app — not in this preview'); }
   }
 
-  function checkAlertMatch(alert) {
-    const sf = forecast[alert.spotId];
-    if (!sf) return null;
-    if (alert.leadTime === '1h') {
-      const hit = (sf.hours || []).find((hr) => waveAvg(hr.wave) >= alert.minWaveFt);
-      return hit ? { hit: true, text: 'Matches today at ' + hit.t } : { hit: false, text: "No match in today's forecast" };
-    }
-    const offset = { '1d': 1, '2d': 2, '3d': 3 }[alert.leadTime] || 1;
-    const cont = sf.continuous || [];
-    // Each day has exactly 8 three-hourly samples (24hrs / 3), in order from today (offset 0).
-    const daySamples = cont.slice(offset * 8, offset * 8 + 8);
-    if (!daySamples.length) {
-      const day = (sf.weekly || [])[offset];
-      return day ? { hit: false, text: 'No wind data that far out yet — ' + day.day + ' wave-only: ' + Math.round(day.waveFt) + 'ft' } : null;
-    }
-    // Wave height threshold still has to be met, but now it also has to not be blown out —
-    // a big number on an onshore-trashed day isn't actually a session worth an alert for.
-    const hit = daySamples.find((p) => p.waveFt >= alert.minWaveFt && p.rating && p.rating !== 'POOR');
-    if (hit) return { hit: true, text: 'Matches ' + hit.day + ' — ' + hit.rating.toLowerCase() + ' conditions' };
-    const bigButBlownOut = daySamples.find((p) => p.waveFt >= alert.minWaveFt);
-    if (bigButBlownOut) return { hit: false, text: bigButBlownOut.day + ' has the size but wind looks poor' };
-    return { hit: false, text: 'No match ' + daySamples[0].day + ' yet' };
-  }
   function openNewAlert() {
     setAlertDraft({ spotId: goToId, minWaveFt: 3, leadTime: '1d' });
     setAlertSheetOpen(true);
@@ -328,9 +333,10 @@ export default function App() {
             <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} />
           </Suspense>
         ) : view === 'alerts' ? (
-          <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={checkAlertMatch} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
+          <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
-          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} />
+          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')}
+            pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush} />
         ) : (
           <HomeView
             setToast={setToast} units={units} toggleUnits={toggleUnits} openSearch={openSearch}

@@ -3,3 +3,8 @@ dist
 dist-ssr
 *.local
 .DS_Store
+
+# Cloudflare Worker (worker/) local state and secrets — never committed.
+.wrangler
+.dev.vars
+.dev.vars.*

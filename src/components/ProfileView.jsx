@@ -2,7 +2,7 @@ import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, pushSupported, pushSubscribed, pushBusy, togglePush }) {
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -43,6 +43,19 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
           <span style={{ fontSize: 13, color: COLORS.foam }}>{alerts.length} active alert{alerts.length === 1 ? '' : 's'}</span>
           <span style={{ fontSize: 11, color: COLORS.tealBright, fontWeight: 600 }}>Manage →</span>
         </button>
+
+        <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>PUSH NOTIFICATIONS</div>
+        {pushSupported ? (
+          <button className="tl-btn" onClick={togglePush} disabled={pushBusy}
+            style={{ width: '100%', background: pushSubscribed ? COLORS.tealBright : COLORS.navyCard, color: pushSubscribed ? COLORS.navy : COLORS.foam, border: '1px solid ' + (pushSubscribed ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 10, padding: '11px 13px', fontSize: 13, fontWeight: 600, marginBottom: 4, opacity: pushBusy ? 0.6 : 1 }}>
+            {pushBusy ? 'Working…' : pushSubscribed ? 'On — get alerted even when the app is closed' : 'Off — turn on to get alerted when the app is closed'}
+          </button>
+        ) : (
+          <div style={{ fontSize: 11, color: COLORS.foamDim, marginBottom: 4, lineHeight: 1.5 }}>Not available in this browser, or the notification backend isn't configured.</div>
+        )}
+        <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.4 }}>
+          When on, your alerts are also checked in the background and pushed to this device — not just while the app is open.
+        </div>
 
         <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>YOUR SPOTS ({order.length})</div>
         <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
