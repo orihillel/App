@@ -8,7 +8,9 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:landmasses": "node scripts/build-landmasses.mjs",
-    "build:icons": "node scripts/build-icons.mjs"
+    "build:icons": "node scripts/build-icons.mjs",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
   "dependencies": {
     "lucide-react": "^1.38.0",
@@ -17,11 +19,15 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "@testing-library/jest-dom": "^7.0.1",
+    "@testing-library/react": "^16.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "jsdom": "^30.0.1",
     "sharp": "^0.35.4",
     "topojson-client": "^3.1.0",
     "vite": "^8.2.2",
     "vite-plugin-pwa": "^1.3.0",
+    "vitest": "^4.1.11",
     "world-atlas": "^2.0.2"
   }
 }
