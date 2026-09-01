@@ -108,15 +108,23 @@ there's intentionally one source of truth, not separate logic per view.
   view and the globe moved to its own file under `src/components/`. Verified behavior-identical
   with a headless-browser walkthrough of every view (home, globe, alerts, profile, search,
   new-alert sheet) — no console errors, no visual differences.
+- ~~**No test suite.**~~ — **Added.** Vitest + React Testing Library, `npm test`, wired into
+  CI. Covers the `src/lib/` modules the component split isolated (the rating algorithm
+  including its edge cases, unit formatting, tide-event detection, and `fetchSpotForecast`/
+  `geocodePlace`/`findOffshoreDirection` against a mocked `fetch`) plus a few component
+  smoke/interaction tests (`ConditionScale`, `BottomNav`, `OnboardingView`). Doesn't cover
+  `Globe.jsx` — it's WebGL-heavy and jsdom has no real GPU context, so that one's still
+  best verified with a real (or headless-Chromium) browser, same as the manual passes noted
+  above.
 
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
-   ~~re-test the globe~~ / ~~split `App.jsx` into components~~ — **done**, see the Update note
-   at the top of this file.
+   ~~re-test the globe~~ / ~~split `App.jsx` into components~~ / ~~add a test suite~~ —
+   **done**, see the Update note at the top of this file.
 2. Real backend for push notifications, CI/deployment, etc.
 3. Consider trimming the production bundle — `three` pulls the build over Vite's 500kB
    chunk-size warning threshold; code-splitting the globe view (`React.lazy`) would keep it
    out of the initial bundle for users who never open it.
-4. No test suite yet (CI only checks the build) — worth adding once the component split
-   above gives it clean units to test against.
+4. No linter yet — CI checks tests + build, but nothing catches unused vars, hook-dependency
+   mistakes, etc. before they ship.

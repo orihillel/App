@@ -1,4 +1,7 @@
-import { defineConfig } from 'vite';
+// vitest/config re-exports Vite's defineConfig with the `test` field merged
+// in, so the same config file works for both `vite build`/`vite dev` and
+// `vitest` — no separate vitest.config.js needed.
+import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
@@ -61,4 +64,9 @@ export default defineConfig({
   // Served from https://<owner>.github.io/App/ by the GitHub Pages deploy
   // workflow, so asset URLs need the repo name as a base path.
   base: '/App/',
+  test: {
+    environment: 'jsdom',
+    globals: true,
+    setupFiles: './src/test/setup.js',
+  },
 });
