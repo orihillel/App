@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Menu, Search, Star, Home, Map, Bell, User, Navigation, RefreshCw, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import * as THREE from 'three';
+import { storage } from './lib/storage.js';
 
 const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap');
@@ -525,7 +526,7 @@ function ConditionScale({ score, compact }) {
   );
 }
 
-export default function SurfMockup() {
+export default function App() {
   const [spots, setSpots] = useState(SPOTS);
   const [order, setOrder] = useState(ORDER);
   const [activeId, setActiveId] = useState('trestles');
@@ -585,7 +586,7 @@ export default function SurfMockup() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get('surf-spots', false);
+        const res = await storage.get('surf-spots');
         const saved = res && res.value ? JSON.parse(res.value) : [];
         if (Array.isArray(saved) && saved.length) {
           setSpots((prev) => { const merged = { ...prev }; saved.forEach((s) => { merged[s.id] = s; }); return merged; });
@@ -607,20 +608,20 @@ export default function SurfMockup() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await window.storage.get('surf-alerts', false);
+        const res = await storage.get('surf-alerts');
         const saved = res && res.value ? JSON.parse(res.value) : [];
         if (Array.isArray(saved)) setAlerts(saved);
       } catch (e) { /* nothing saved yet */ }
     })();
     (async () => {
       try {
-        const res = await window.storage.get('surf-units', false);
+        const res = await storage.get('surf-units');
         if (res && (res.value === 'metric' || res.value === 'imperial')) setUnits(res.value);
       } catch (e) { /* nothing saved yet */ }
     })();
     (async () => {
       try {
-        const res = await window.storage.get('surf-onboarded', false);
+        const res = await storage.get('surf-onboarded');
         if (!res || res.value !== 'true') setOnboarded(false);
       } catch (e) { setOnboarded(false); } // missing key = never onboarded
     })();
@@ -629,13 +630,13 @@ export default function SurfMockup() {
   function toggleUnits() {
     const next = units === 'imperial' ? 'metric' : 'imperial';
     setUnits(next);
-    window.storage.set('surf-units', next, false).catch(() => {});
+    storage.set('surf-units', next).catch(() => {});
   }
 
   function completeOnboarding(id) {
     setGoToId(id);
     setOnboarded(true);
-    window.storage.set('surf-onboarded', 'true', false).catch(() => {});
+    storage.set('surf-onboarded', 'true').catch(() => {});
   }
   function pickOnboardingSpot(id) {
     setActiveId(id);
@@ -643,7 +644,7 @@ export default function SurfMockup() {
   }
 
   async function persistAlerts(next) {
-    try { await window.storage.set('surf-alerts', JSON.stringify(next), false); } catch (e) { /* best-effort */ }
+    try { await storage.set('surf-alerts', JSON.stringify(next)); } catch (e) { /* best-effort */ }
   }
 
   // live feed: keep every spot's forecast current, not just a one-time fetch on open
@@ -760,9 +761,9 @@ export default function SurfMockup() {
     if (!onboarded) completeOnboarding(id);
     try {
       let existing = [];
-      try { const res = await window.storage.get('surf-spots', false); existing = res && res.value ? JSON.parse(res.value) : []; } catch (e) { existing = []; }
+      try { const res = await storage.get('surf-spots'); existing = res && res.value ? JSON.parse(res.value) : []; } catch (e) { existing = []; }
       existing.push(newSpot);
-      await window.storage.set('surf-spots', JSON.stringify(existing), false);
+      await storage.set('surf-spots', JSON.stringify(existing));
     } catch (e) { /* saving is best-effort */ }
   }
 
@@ -780,10 +781,10 @@ export default function SurfMockup() {
     if (activeId === id) setActiveId(nextOrder[0]);
     if (goToId === id) setGoToId(nextOrder[0]);
     try {
-      const res = await window.storage.get('surf-spots', false);
+      const res = await storage.get('surf-spots');
       const existing = res && res.value ? JSON.parse(res.value) : [];
       const next = existing.filter((s) => s.id !== id);
-      await window.storage.set('surf-spots', JSON.stringify(next), false);
+      await storage.set('surf-spots', JSON.stringify(next));
     } catch (e) { /* best-effort */ }
   }
 
@@ -1095,9 +1096,6 @@ export default function SurfMockup() {
           </div>
         ) : view === 'globe' ? (
           <div>
-            <div style={{ background: '#FF00AA', color: '#fff', textAlign: 'center', padding: '6px 0', fontWeight: 800, fontSize: 12, letterSpacing: '0.05em' }}>
-              BUILD CHECK — v7 — if you can read this pink bar, you're on the latest file
-            </div>
             <div className="flex justify-between items-center px-6 pt-2 pb-3">
               <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>All spots</span>
               <button className="tl-btn" onClick={() => handleNav('home')} style={{ background: 'none', border: 'none', padding: 6 }} aria-label="Close globe"><X size={18} color={COLORS.foamDim} /></button>

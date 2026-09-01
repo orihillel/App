@@ -1,9 +1,15 @@
 # Tideline — handoff notes for Claude Code
 
 This app was designed and built as a single-file React mockup inside a Claude.ai chat
-session (`surf-app-mockup.jsx`, ~1,500 lines, default export `SurfMockup`). It's a surf
-forecast app, inspired by Surfline, with **live data** — not a static design mock. The goal
-now is to turn it into a real, deployable app.
+session (originally `surf-app-mockup.jsx`, ~1,500 lines, default export `SurfMockup`). It's
+a surf forecast app, inspired by Surfline, with **live data** — not a static design mock.
+
+**Update:** it has since been scaffolded into a real Vite + React project — see
+`README.md` for how to run it. The mockup now lives at `src/App.jsx` (exported as `App`),
+`window.storage` has been replaced with real `localStorage` persistence
+(`src/lib/storage.js`), and the globe has been confirmed to render correctly in a real
+browser (headless Chromium smoke test) — see "Known issues" below, updated accordingly.
+The rest of this document is the original handoff as written from the chat session.
 
 ## What's already built
 
@@ -59,10 +65,9 @@ there's intentionally one source of truth, not separate logic per view.
 
 ## Known issues to fix for real, not work around
 
-- **`window.storage`** is a Claude.ai-artifact-only persistence API (used for saved spots,
-  alerts, units, and the onboarding flag). It does not exist outside that sandbox. Needs to
-  become real persistence — `localStorage` for a quick port, or a real backend/database if
-  this is going further than a personal tool.
+- ~~**`window.storage`**~~ — **Fixed.** Replaced with `localStorage` via `src/lib/storage.js`,
+  same call shape so all call sites ported unchanged. Fine for a personal/single-device
+  tool; move to a real backend/database if this needs to sync across devices.
 - **No real push notifications.** Alerts currently only check live data while the tab is
   open and show what would match. Real notifications need a backend + push service (Web
   Push, APNs, or FCM depending on target platform).
@@ -74,24 +79,26 @@ there's intentionally one source of truth, not separate logic per view.
   real GeoJSON/TopoJSON coastline dataset was impractical to embed in the chat sandbox
   (several hundred KB minimum even simplified) but should be very doable in a real build
   environment with normal bundling.
-- **The globe's WebGL rendering has an open, *unconfirmed* reliability problem.** Across
-  several rounds of fixes in the chat sandbox (texture filtering, pixel ratio, marker color
-  sync, deprecated Three.js APIs), the user consistently reported no visible change — even
-  after changes that should have been obviously different (e.g., an unmissable colored
-  banner added purely to test whether updates were even being seen). That pattern points
-  more at a preview-caching issue in that specific sandboxed environment than at the
-  underlying code, but this was never conclusively resolved. **Recommend testing the globe
-  fresh in a real browser before assuming anything about its state** — it may render
-  correctly out of the gate.
+- ~~**The globe's WebGL rendering has an open, unconfirmed reliability problem.**~~ —
+  **Confirmed fixed / was a sandbox artifact.** Verified with a headless Chromium smoke test
+  against the built Vite app: the globe renders correctly (landmasses, live-rated spot
+  markers, drag/zoom) with no console errors. Also removed a leftover debug banner
+  (`BUILD CHECK — v7`) that had been added in the chat sandbox to test whether preview
+  updates were visible at all — confirms the original suspicion that this was a
+  preview-caching issue in that sandbox, not an underlying code bug.
 - **36 seed spots** have hand-estimated lat/lon, offshore direction, and blurbs — reasonable
   approximations, not verified against authoritative sources.
+- **`src/App.jsx` is still one ~1,500-line file.** It now builds and runs correctly as-is,
+  but splitting it into components (per spot card, per view, the globe, etc.) is still
+  worth doing as it grows — see "Suggested next steps" below.
 
-## Suggested first steps
+## Suggested next steps
 
-1. Scaffold a real project (Vite + React is the closest match to how this is already
-   written — plain JSX, no framework-specific patterns yet).
-2. Port `surf-app-mockup.jsx` in as the starting point; split it into components as it
-   grows (it's currently one file by necessity of the chat environment, not by design).
-3. Replace `window.storage` calls with `localStorage` (fastest path) or real persistence.
-4. Re-test the globe in a normal browser before deciding whether it needs more work.
-5. From there: real backend for push notifications, CI/deployment, etc.
+1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
+   ~~re-test the globe~~ — **done**, see the Update note at the top of this file.
+2. Split `src/App.jsx` into components as it grows (it's currently one file by inheritance
+   from the chat environment, not by design).
+3. Real backend for push notifications, CI/deployment, etc.
+4. Consider trimming the production bundle — `three` pulls the build over Vite's 500kB
+   chunk-size warning threshold; code-splitting the globe view (`React.lazy`) would keep it
+   out of the initial bundle for users who never open it.
