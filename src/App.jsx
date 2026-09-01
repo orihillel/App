@@ -94,6 +94,10 @@ export default function App() {
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [onboarded, setOnboarded] = useState(true);
+  // Lets onboarding borrow the same Globe used post-onboarding, so picking a go-to spot can be
+  // done visually (tap a marker) instead of only by typing into search. Separate from `view`
+  // since onboarding has its own gate (`!onboarded`) ahead of the normal view switch below.
+  const [onboardingGlobeOpen, setOnboardingGlobeOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchStep, setSearchStep] = useState('query');
   const [searchError, setSearchError] = useState('');
@@ -195,6 +199,12 @@ export default function App() {
   function pickOnboardingSpot(id) {
     setActiveId(id);
     completeOnboarding(id);
+  }
+  function openOnboardingGlobe() { setOnboardingGlobeOpen(true); }
+  function closeOnboardingGlobe() { setOnboardingGlobeOpen(false); }
+  function pickOnboardingSpotFromGlobe(id) {
+    setOnboardingGlobeOpen(false);
+    pickOnboardingSpot(id);
   }
 
   async function persistAlerts(next) {
@@ -376,7 +386,14 @@ export default function App() {
         </div>
 
         {!onboarded ? (
-          <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} completeOnboarding={completeOnboarding} />
+          onboardingGlobeOpen ? (
+            <Suspense fallback={<GlobeLoading />}>
+              <Globe order={order} dataRef={dataRef} onClose={closeOnboardingGlobe} onSelectSpot={pickOnboardingSpotFromGlobe}
+                title="Pick your go-to spot" hint="Tap a marker to set it as your go-to spot · drag to rotate, pinch or scroll to zoom" />
+            </Suspense>
+          ) : (
+            <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding} />
+          )
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
             <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} />

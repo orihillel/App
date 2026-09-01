@@ -17,7 +17,7 @@ import { ConditionScale } from './ConditionScale.jsx';
 // `{ spots, order, forecast, hourIdx }` — read directly inside the animation loop so every
 // rendered frame reflects whatever is currently in `forecast`, with no separate sync effect
 // to fall out of date.
-export function Globe({ order, dataRef, onClose, onSelectSpot }) {
+export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spots', hint }) {
   const containerRef = useRef(null);
   const [globeError, setGlobeError] = useState(false);
 
@@ -323,11 +323,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot }) {
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
-        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>All spots</span>
+        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>{title}</span>
         <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 6 }} aria-label="Close globe"><X size={18} color={COLORS.foamDim} /></button>
       </div>
       <div style={{ padding: '0 20px 6px', fontSize: 11, color: COLORS.foamDim }}>
-        {order.length} spot{order.length === 1 ? '' : 's'} you've found · drag to rotate, pinch or scroll to zoom
+        {hint || `${order.length} spot${order.length === 1 ? '' : 's'} you've found · tap a marker to view it · drag to rotate, pinch or scroll to zoom`}
       </div>
       <div ref={containerRef} style={{ position: 'relative', width: '100%', height: 420, touchAction: 'none' }} />
       {globeError && (
