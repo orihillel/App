@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
@@ -276,7 +276,7 @@ export function Globe({ order, dataRef, onClose }) {
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };
-    } catch (e) {
+    } catch {
       // WebGL genuinely isn't working here — surface that instead of leaving a blank canvas
       // with no indication of why nothing rendered.
       setGlobeError(true);

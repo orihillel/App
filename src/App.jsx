@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER, HOUR_INDICES } from './lib/spots.js';
@@ -68,7 +68,7 @@ export default function App() {
     try {
       const result = await fetchSpotForecast(spotObj);
       setForecast((prev) => ({ ...prev, [id]: result }));
-    } catch (e) {
+    } catch {
       setErrorIds((prev) => new Set(prev).add(id));
     } finally {
       setLoadingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
@@ -99,7 +99,7 @@ export default function App() {
           setOrder((prev) => { const ids = saved.map((s) => s.id).filter((id) => !prev.includes(id)); return [...prev, ...ids]; });
           saved.forEach((s) => loadSpotData(s.id, s));
         }
-      } catch (e) { /* nothing saved yet */ }
+      } catch { /* nothing saved yet */ }
     })();
   }, [loadSpotData]);
 
@@ -117,19 +117,19 @@ export default function App() {
         const res = await storage.get('surf-alerts');
         const saved = res && res.value ? JSON.parse(res.value) : [];
         if (Array.isArray(saved)) setAlerts(saved);
-      } catch (e) { /* nothing saved yet */ }
+      } catch { /* nothing saved yet */ }
     })();
     (async () => {
       try {
         const res = await storage.get('surf-units');
         if (res && (res.value === 'metric' || res.value === 'imperial')) setUnits(res.value);
-      } catch (e) { /* nothing saved yet */ }
+      } catch { /* nothing saved yet */ }
     })();
     (async () => {
       try {
         const res = await storage.get('surf-onboarded');
         if (!res || res.value !== 'true') setOnboarded(false);
-      } catch (e) { setOnboarded(false); } // missing key = never onboarded
+      } catch { setOnboarded(false); } // missing key = never onboarded
     })();
   }, []);
 
@@ -150,7 +150,7 @@ export default function App() {
   }
 
   async function persistAlerts(next) {
-    try { await storage.set('surf-alerts', JSON.stringify(next)); } catch (e) { /* best-effort */ }
+    try { await storage.set('surf-alerts', JSON.stringify(next)); } catch { /* best-effort */ }
   }
 
   // live feed: keep every spot's forecast current, not just a one-time fetch on open
@@ -236,10 +236,10 @@ export default function App() {
     try {
       const place = await geocodePlace(searchQuery.trim());
       let offshoreDeg = 0, guessed = true;
-      try { offshoreDeg = await findOffshoreDirection(place.lat, place.lon); } catch (e) { guessed = false; }
+      try { offshoreDeg = await findOffshoreDirection(place.lat, place.lon); } catch { guessed = false; }
       setPending({ ...place, offshoreDeg, guessed });
       setSearchStep('confirm');
-    } catch (e) {
+    } catch {
       setSearchError("Couldn't find that place — try a different spelling.");
       setSearchStep('error');
     }
@@ -261,10 +261,10 @@ export default function App() {
     if (!onboarded) completeOnboarding(id);
     try {
       let existing = [];
-      try { const res = await storage.get('surf-spots'); existing = res && res.value ? JSON.parse(res.value) : []; } catch (e) { existing = []; }
+      try { const res = await storage.get('surf-spots'); existing = res && res.value ? JSON.parse(res.value) : []; } catch { existing = []; }
       existing.push(newSpot);
       await storage.set('surf-spots', JSON.stringify(existing));
-    } catch (e) { /* saving is best-effort */ }
+    } catch { /* saving is best-effort */ }
   }
 
   function setGoToSpot(id) {
@@ -285,7 +285,7 @@ export default function App() {
       const existing = res && res.value ? JSON.parse(res.value) : [];
       const next = existing.filter((s) => s.id !== id);
       await storage.set('surf-spots', JSON.stringify(next));
-    } catch (e) { /* best-effort */ }
+    } catch { /* best-effort */ }
   }
 
   return (

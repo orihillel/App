@@ -1,4 +1,3 @@
-import React from 'react';
 import { Menu, Search, Star, Navigation, RefreshCw } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';

@@ -2,6 +2,7 @@
 // index.html need — regenerate with `npm run build:icons` if the source
 // artwork changes.
 import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import sharp from 'sharp';
 
@@ -24,6 +25,6 @@ for (const { file, size } of targets) {
   await sharp(svg, { density: 384 })
     .resize(size, size)
     .png()
-    .toFile(fileURLToPath(new URL(`../public/icons/${file}`, import.meta.url)));
+    .toFile(join(outDir, file));
   console.log(`Wrote public/icons/${file} (${size}x${size})`);
 }

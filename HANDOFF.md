@@ -116,15 +116,23 @@ there's intentionally one source of truth, not separate logic per view.
   `Globe.jsx` — it's WebGL-heavy and jsdom has no real GPU context, so that one's still
   best verified with a real (or headless-Chromium) browser, same as the manual passes noted
   above.
+- ~~**No linter.**~~ — **Added.** ESLint (flat config, `eslint.config.js`), `npm run lint`,
+  wired into CI. Deliberately scoped to `eslint-plugin-react-hooks`'s two long-established
+  rules (`rules-of-hooks`, `exhaustive-deps`) rather than its v7 "recommended" set, which
+  pulls in a dozen-plus stricter React-Compiler-oriented static-analysis rules — a much
+  bigger adoption than a first linting pass calls for. Fixed everything it found on the
+  existing codebase before turning it on in CI: unused `React` default imports (the
+  automatic JSX runtime doesn't need them), unused `catch (e)` bindings (switched to
+  bare `catch {}` — all of them were intentionally-ignored best-effort persistence
+  errors, already explained by comments), and one genuinely unused variable in
+  `scripts/build-icons.mjs`.
 
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
-   ~~re-test the globe~~ / ~~split `App.jsx` into components~~ / ~~add a test suite~~ —
-   **done**, see the Update note at the top of this file.
+   ~~re-test the globe~~ / ~~split `App.jsx` into components~~ / ~~add a test suite~~ /
+   ~~add a linter~~ — **done**, see the Update note at the top of this file.
 2. Real backend for push notifications, CI/deployment, etc.
 3. Consider trimming the production bundle — `three` pulls the build over Vite's 500kB
    chunk-size warning threshold; code-splitting the globe view (`React.lazy`) would keep it
    out of the initial bundle for users who never open it.
-4. No linter yet — CI checks tests + build, but nothing catches unused vars, hook-dependency
-   mistakes, etc. before they ship.

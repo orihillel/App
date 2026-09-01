@@ -10,7 +10,8 @@
     "build:landmasses": "node scripts/build-landmasses.mjs",
     "build:icons": "node scripts/build-icons.mjs",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint ."
   },
   "dependencies": {
     "lucide-react": "^1.38.0",
@@ -19,9 +20,14 @@
     "three": "^0.185.1"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@testing-library/jest-dom": "^7.0.1",
     "@testing-library/react": "^16.3.3",
     "@vitejs/plugin-react": "^6.1.1",
+    "eslint": "^10.9.1",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.5",
+    "globals": "^17.12.0",
     "jsdom": "^30.0.1",
     "sharp": "^0.35.4",
     "topojson-client": "^3.1.0",

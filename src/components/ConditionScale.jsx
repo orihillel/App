@@ -1,4 +1,3 @@
-import React from 'react';
 import { COLORS } from '../lib/colors.js';
 
 // A labeled, color-coded POOR→FAIR→GOOD→FIRING scale with a marker at the exact score
