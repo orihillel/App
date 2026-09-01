@@ -30,6 +30,9 @@ npm run lint      # eslint (also runs in CI)
   (`localStorage`-backed persistence for saved spots, alerts, units,
   onboarding state).
 - `src/main.jsx` — entry point.
+- `src/sw.js` — the service worker source (offline caching + push notification handling).
+- `worker/` — the push-notification backend, a separate Cloudflare Worker package with its
+  own `package.json`/tests/deploy pipeline. See `worker/README.md`.
 
 See `HANDOFF.md` for the data sources, rating algorithm, and known issues.
 
@@ -42,3 +45,10 @@ the browser on desktop) and has an offline shell: the app itself, and the
 last forecast data it fetched, are cached by a service worker
 (`vite-plugin-pwa`), so it still opens with no connection. Icons are
 generated from `scripts/icon-source.svg` via `npm run build:icons`.
+
+## Push notifications
+
+Real, backend-driven push notifications for alerts (delivered even when the app is closed) —
+toggle in Profile. The frontend piece (`src/lib/push.js`, `src/sw.js`) is always present but
+degrades gracefully to "Not available" until its backend is deployed: see `worker/README.md`
+for the one-time Cloudflare setup this needs (a free account; nothing here can deploy itself).

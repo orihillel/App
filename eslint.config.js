@@ -4,7 +4,10 @@ import reactRefresh from 'eslint-plugin-react-refresh';
 import globals from 'globals';
 
 export default [
-  { ignores: ['dist', 'node_modules', 'src/data/landmasses.json'] },
+  // worker/ is a separate package with its own eslint.config.js, run via its own `npm run
+  // lint` — its Workers-runtime globals (Request, Response, fetch, ...) don't belong in this
+  // browser-focused config, and linting it here too would just double-report the same files.
+  { ignores: ['dist', 'node_modules', 'src/data/landmasses.json', 'worker'] },
 
   js.configs.recommended,
 
@@ -30,6 +33,15 @@ export default [
       // Warns if a file mixes a component export with a non-component export (e.g. a
       // constant), which breaks Vite's Fast Refresh for that file.
       'react-refresh/only-export-components': ['warn', { allowConstantExport: true }],
+    },
+  },
+
+  // The service worker itself: adds the ServiceWorkerGlobalScope globals (self, clients,
+  // caches, registration, ...) the generic browser env above doesn't include.
+  {
+    files: ['src/sw.js'],
+    languageOptions: {
+      globals: { ...globals.browser, ...globals.serviceworker },
     },
   },
 

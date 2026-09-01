@@ -11,6 +11,12 @@ export default defineConfig({
     react(),
     VitePWA({
       registerType: 'autoUpdate',
+      // injectManifest (a hand-written src/sw.js, precache list injected at build time)
+      // instead of the default generateSW (a fully auto-generated worker) -- needed for the
+      // custom `push`/`notificationclick` listeners generateSW has no hook for.
+      strategies: 'injectManifest',
+      srcDir: 'src',
+      filename: 'sw.js',
       includeAssets: ['icons/favicon-32.png'],
       manifest: {
         name: 'Tideline — Surf Forecast',
@@ -26,39 +32,9 @@ export default defineConfig({
           { src: 'icons/icon-maskable-512.png', sizes: '512x512', type: 'image/png', purpose: 'maskable' },
         ],
       },
-      workbox: {
-        // App shell (JS/CSS/HTML/icons) is precached automatically; these
-        // rules add runtime caching for what the shell alone doesn't cover —
-        // Google Fonts and live forecast data — so a returning visitor with
-        // no connection still sees the last conditions it fetched instead of
-        // a blank "Live data didn't load" state.
-        runtimeCaching: [
-          {
-            urlPattern: /^https:\/\/fonts\.googleapis\.com\/.*/i,
-            handler: 'StaleWhileRevalidate',
-            options: { cacheName: 'google-fonts-stylesheets' },
-          },
-          {
-            urlPattern: /^https:\/\/fonts\.gstatic\.com\/.*/i,
-            handler: 'CacheFirst',
-            options: {
-              cacheName: 'google-fonts-webfonts',
-              expiration: { maxEntries: 20, maxAgeSeconds: 60 * 60 * 24 * 365 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-          {
-            urlPattern: /^https:\/\/(marine-api|api)\.open-meteo\.com\/.*/i,
-            handler: 'NetworkFirst',
-            options: {
-              cacheName: 'forecast-data',
-              networkTimeoutSeconds: 6,
-              expiration: { maxEntries: 100, maxAgeSeconds: 60 * 60 * 6 },
-              cacheableResponse: { statuses: [0, 200] },
-            },
-          },
-        ],
-      },
+      // Precache list + runtime caching for Google Fonts / the forecast APIs now live in
+      // src/sw.js itself (injectManifest mode has no top-level `workbox.runtimeCaching`
+      // option the way generateSW does).
     }),
   ],
   // Served from https://<owner>.github.io/App/ by the GitHub Pages deploy
@@ -68,5 +44,17 @@ export default defineConfig({
     environment: 'jsdom',
     globals: true,
     setupFiles: './src/test/setup.js',
+    // worker/ is a separate package (its own node_modules, its own vitest.config.js, run via
+    // `npm test` inside worker/) — without the extra 'worker/**' entry here, Vitest's default
+    // test-file glob picks up worker/test/*.test.js too, which then fails in CI: the root
+    // `npm ci` never installs worker's dependencies, and these tests want the node
+    // environment, not jsdom. The rest of this list is Vitest's own default exclude set,
+    // repeated here (rather than left implicit) since setting `exclude` at all replaces it.
+    exclude: [
+      '**/node_modules/**', '**/dist/**', '**/cypress/**',
+      '**/.{idea,git,cache,output,temp}/**',
+      '**/{karma,rollup,webpack,vite,vitest,jest,ava,babel,nyc,cypress,tsup,build}.config.*',
+      'worker/**',
+    ],
   },
 });

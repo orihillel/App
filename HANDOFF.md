@@ -10,9 +10,11 @@ persistence (`src/lib/storage.js`), the globe has been confirmed to render corre
 real browser (headless Chromium smoke test), and the original single ~1,500-line
 `SurfMockup` component has been split: pure logic/data now live in `src/lib/`, each view
 and the globe in its own file under `src/components/`, with `src/App.jsx` (exported as
-`App`) left holding just state, effects, and orchestration. See "Known issues" below,
-updated accordingly. The rest of this document is the original handoff as written from
-the chat session.
+`App`) left holding just state, effects, and orchestration. The app is now a PWA (installable,
+works offline) and has real push notifications built (`worker/`, a Cloudflare Worker) —
+**not yet deployed**, since that needs a human to create a Cloudflare account; see
+`worker/README.md`. See "Known issues" below, updated accordingly. The rest of this document
+is the original handoff as written from the chat session.
 
 ## What's already built
 
@@ -28,7 +30,8 @@ the chat session.
   **See "Known issues" below — this has been genuinely unreliable to verify.**
 - **Alerts** — spot + minimum wave height + lead time (1h/1d/2d/3d), matched against live
   forecast data. Multi-day alerts use the full scoring model (wind-aware), not just wave
-  height. No real push notifications yet — see below.
+  height. Optional real push notifications via a Cloudflare Worker backend — see "Known
+  issues" below for status (built and tested, not yet deployed to a live account).
 - **Profile** — go-to spot picker, units toggle, alert count, spot management (add/remove),
   data-source attribution.
 - **Onboarding** — first-run flow to pick a go-to spot before landing on Home.
@@ -71,12 +74,17 @@ there's intentionally one source of truth, not separate logic per view.
 - ~~**`window.storage`**~~ — **Fixed.** Replaced with `localStorage` via `src/lib/storage.js`,
   same call shape so all call sites ported unchanged. Fine for a personal/single-device
   tool; move to a real backend/database if this needs to sync across devices.
-- **No real push notifications.** Alerts currently only check live data while the tab is
-  open and show what would match. Real notifications need a backend + push service (Web
-  Push, APNs, or FCM depending on target platform). The app is now a PWA with a registered
-  service worker (see README's PWA section), which is a prerequisite for Web Push on
-  Android/desktop — still needs a backend to actually send anything, but the client-side
-  piece this depends on now exists.
+- ~~**No real push notifications.**~~ — **Added**, with a real backend: a Cloudflare Worker
+  (`worker/`) on a cron trigger checks every subscribed device's alerts against live
+  conditions and pushes a notification via Web Push, using the same `checkAlertMatch`/
+  `fetchSpotForecast` logic the app itself uses while the tab is open (imported directly by
+  the Worker, so the two can't drift). Toggle in Profile. This is genuinely wired up and
+  tested (68 frontend tests + 18 Worker tests, including one that exercises the real Web
+  Push cryptography end-to-end against a throwaway keypair) — but **it is not live**: it
+  needs a Cloudflare account, a deployed Worker, and a few config values only a human can
+  provide (API tokens, VAPID keys, KV namespace). See `worker/README.md` for the full
+  one-time setup. Until that's done, the Profile toggle just reads "Not available" and
+  everything else works exactly as before.
 - **Tide is a modeled sea-level curve**, not an authoritative tide table — Open-Meteo's own
   docs describe it as referenced to global mean sea level rather than chart datum, ~8km
   resolution. Good for shape/timing, not exact heights. Fine for this app's purposes, but
@@ -139,4 +147,7 @@ there's intentionally one source of truth, not separate logic per view.
    ~~re-test the globe~~ / ~~split `App.jsx` into components~~ / ~~add a test suite~~ /
    ~~add a linter~~ / ~~code-split the globe view~~ — **done**, see the Update note at the
    top of this file.
-2. Real backend for push notifications, CI/deployment, etc.
+2. ~~Real backend for push notifications~~ — **built** (`worker/`, a Cloudflare Worker),
+   **not yet deployed** — that needs a human to create a Cloudflare account and follow
+   `worker/README.md`'s one-time setup. CI/deployment for the frontend itself was already
+   done in step 1 (GitHub Pages).

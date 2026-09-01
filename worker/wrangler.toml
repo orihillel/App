@@ -1,0 +1,26 @@
+name = "tideline-push"
+main = "src/index.js"
+compatibility_date = "2025-06-01"
+
+# Runs the alert check on a schedule, independent of any request — this is what makes
+# notifications arrive while nobody has the app open. Every 30 minutes; see
+# src/index.js's NOTIFY_COOLDOWN_MS for how often a still-matching alert can re-fire.
+[triggers]
+crons = ["*/30 * * * *"]
+
+# One entry per push subscription — see src/store.js. Replace `id` with a real namespace's
+# id after running `wrangler kv namespace create SUBSCRIPTIONS` (see README.md).
+[[kv_namespaces]]
+binding = "SUBSCRIPTIONS"
+id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+
+[vars]
+# Shown to push services as who to contact about this VAPID identity if something's wrong
+# with how it's being used — any mailto: or https: URL you control.
+VAPID_SUBJECT = "mailto:replace-with-your-email@example.com"
+# Safe to commit — VAPID public keys are, by design, not secret. The matching private key is
+# NOT set here; see README.md (`wrangler secret put VAPID_PRIVATE_KEY`).
+VAPID_PUBLIC_KEY = "REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY"
+# CORS: only this origin may call /subscribe and /unsubscribe. Replace with your actual
+# GitHub Pages origin (https://<owner>.github.io, no path).
+ALLOWED_ORIGIN = "https://REPLACE-owner.github.io"

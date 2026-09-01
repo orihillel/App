@@ -29,6 +29,13 @@ jobs:
 
       - run: npm ci
       - run: npm run build
+        env:
+          # Push notifications are opt-in and degrade gracefully when unset (see
+          # worker/README.md) — these resolve to empty strings until the Worker is deployed
+          # and both are added as repo variables (Settings -> Secrets and variables -> Actions
+          # -> Variables). Both are meant to be public, safe to store as plain variables.
+          VITE_VAPID_PUBLIC_KEY: ${{ vars.VITE_VAPID_PUBLIC_KEY }}
+          VITE_PUSH_API_URL: ${{ vars.VITE_PUSH_API_URL }}
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
