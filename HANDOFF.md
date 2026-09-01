@@ -86,8 +86,16 @@ there's intentionally one source of truth, not separate logic per view.
   (`BUILD CHECK — v7`) that had been added in the chat sandbox to test whether preview
   updates were visible at all — confirms the original suspicion that this was a
   preview-caching issue in that sandbox, not an underlying code bug.
-- **36 seed spots** have hand-estimated lat/lon, offshore direction, and blurbs — reasonable
-  approximations, not verified against authoritative sources.
+- ~~**36 seed spots** have hand-estimated lat/lon, offshore direction, and blurbs~~ — **Spot
+  checked.** There are actually 44. Most of the hand-estimated values turned out accurate
+  (many matched published coordinates almost exactly). Web-searched the ~10 lowest-confidence
+  entries against Wikipedia/surf-forecast/WannaSurf sources and fixed what didn't hold up:
+  G-Land and Popoyo's coordinates were each off by several km, La Entrada's was off by ~140km
+  (wrong stretch of the Ecuadorian coast entirely — corrected to the real spot, near Olón),
+  and Mui Ne / Darne / Masnou's offshore wind directions were wrong relative to their real
+  coastline orientation or published local wind info. This was a targeted correction pass on
+  the spots most likely to be wrong, not an exhaustive re-verification of all 44 — the
+  remaining ones are still only as good as whatever training-data recall produced them.
 - **`src/App.jsx` is still one ~1,500-line file.** It now builds and runs correctly as-is,
   but splitting it into components (per spot card, per view, the globe, etc.) is still
   worth doing as it grows — see "Suggested next steps" below.
