@@ -70,7 +70,10 @@ there's intentionally one source of truth, not separate logic per view.
   tool; move to a real backend/database if this needs to sync across devices.
 - **No real push notifications.** Alerts currently only check live data while the tab is
   open and show what would match. Real notifications need a backend + push service (Web
-  Push, APNs, or FCM depending on target platform).
+  Push, APNs, or FCM depending on target platform). The app is now a PWA with a registered
+  service worker (see README's PWA section), which is a prerequisite for Web Push on
+  Android/desktop — still needs a backend to actually send anything, but the client-side
+  piece this depends on now exists.
 - **Tide is a modeled sea-level curve**, not an authoritative tide table — Open-Meteo's own
   docs describe it as referenced to global mean sea level rather than chart datum, ~8km
   resolution. Good for shape/timing, not exact heights. Fine for this app's purposes, but
