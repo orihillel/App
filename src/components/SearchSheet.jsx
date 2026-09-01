@@ -1,4 +1,3 @@
-import React from 'react';
 import { X, Navigation, ChevronLeft, ChevronRight } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass } from '../lib/rating.js';

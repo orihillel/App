@@ -9,7 +9,7 @@ export const storage = {
     try {
       const value = window.localStorage.getItem(key);
       return value === null ? null : { value };
-    } catch (e) {
+    } catch {
       return null;
     }
   },

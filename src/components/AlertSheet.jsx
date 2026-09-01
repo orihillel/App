@@ -1,4 +1,3 @@
-import React from 'react';
 import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { formatWaveNum, heightUnit, leadTimeLabel } from '../lib/format.js';

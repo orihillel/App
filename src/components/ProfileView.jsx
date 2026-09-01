@@ -1,4 +1,3 @@
-import React from 'react';
 import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';

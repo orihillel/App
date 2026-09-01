@@ -12,6 +12,7 @@ npm run build     # production build to dist/
 npm run preview   # serve the production build locally
 npm test          # run the test suite once (also runs in CI)
 npm run test:watch # run tests in watch mode while developing
+npm run lint      # eslint (also runs in CI)
 ```
 
 ## Project structure

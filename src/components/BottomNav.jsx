@@ -1,4 +1,3 @@
-import React from 'react';
 import { Home, Map, Bell, User } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 

@@ -1,4 +1,3 @@
-import React from 'react';
 import { COLORS } from '../lib/colors.js';
 import { SPOTS, ONBOARDING_PICKS } from '../lib/spots.js';
 
