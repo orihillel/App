@@ -116,6 +116,14 @@ there's intentionally one source of truth, not separate logic per view.
   prev/next chevrons on a spot's Home page (`showSpotNav`/`stepSpot` in `App.jsx`), and
   every spot row in Profile's "YOUR SPOTS" list plus every marker on the Globe is now
   tap-through (`onSelectSpot`/`viewSpot`) instead of display-only.
+  **Update: onboarding can now browse the globe too.** The one-time "pick your go-to
+  spot" screen had only a text search as an alternative to the popular-spots list; added
+  a second "Browse the globe" button next to it that opens the same `Globe` component
+  (now with an optional `title`/`hint` override) so a first-time user can rotate/zoom and
+  tap a marker to pick their spot visually, same as browsing spots once past onboarding.
+  Verified in a real browser end to end, including a raycast hit on an actual marker
+  mesh — the first time the Globe's tap-to-select path (added for the item above) had
+  been exercised by anything other than a unit-level click, since jsdom has no WebGL.
 - **Newly found while adding the above: every `className`-based layout in the app was
   silently broken.** No stylesheet defining `flex`, `justify-between`, `items-center`,
   `grid-cols-3`, etc. has ever existed in this repo — components were written assuming a

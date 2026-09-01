@@ -1,7 +1,8 @@
+import { Search, Map } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { SPOTS, ONBOARDING_PICKS } from '../lib/spots.js';
 
-export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, completeOnboarding }) {
+export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding }) {
   return (
     <div style={{ padding: '26px 24px 24px' }}>
       <div style={{ textAlign: 'center', marginBottom: 26 }}>
@@ -24,9 +25,16 @@ export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, compl
         })}
       </div>
 
-      <button className="tl-btn" onClick={openSearch} style={{ width: '100%', background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 0', color: COLORS.tealBright, fontWeight: 700, fontSize: 13 }}>
-        Search for a different spot
-      </button>
+      <div className="flex" style={{ gap: 8 }}>
+        <button className="tl-btn flex items-center justify-center" onClick={openSearch}
+          style={{ flex: 1, gap: 6, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 0', color: COLORS.tealBright, fontWeight: 700, fontSize: 12.5 }}>
+          <Search size={14} /> Search by name
+        </button>
+        <button className="tl-btn flex items-center justify-center" onClick={openGlobePicker}
+          style={{ flex: 1, gap: 6, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 0', color: COLORS.tealBright, fontWeight: 700, fontSize: 12.5 }}>
+          <Map size={14} /> Browse the globe
+        </button>
+      </div>
       <button className="tl-btn" onClick={() => completeOnboarding(activeId)} style={{ width: '100%', marginTop: 14, background: 'none', border: 'none', color: COLORS.foamDim, fontSize: 12, padding: '6px 0' }}>
         Skip for now
       </button>
