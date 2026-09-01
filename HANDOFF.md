@@ -126,13 +126,17 @@ there's intentionally one source of truth, not separate logic per view.
   bare `catch {}` — all of them were intentionally-ignored best-effort persistence
   errors, already explained by comments), and one genuinely unused variable in
   `scripts/build-icons.mjs`.
+- ~~**`three` pulls the production bundle over Vite's 500kB chunk-size warning.**~~ —
+  **Fixed.** `Globe.jsx` (and `three` along with it) is now `React.lazy`-loaded, wrapped in
+  `<Suspense>` with a small "Loading globe…" fallback. Verified with a network listener in a
+  real browser: the globe chunk is not requested on initial page load, only once the user
+  actually opens the globe view. Cut the initial bundle from 869.9KB to 249.8KB (78.2KB
+  gzipped) — under the warning threshold with room to spare.
 
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
    ~~re-test the globe~~ / ~~split `App.jsx` into components~~ / ~~add a test suite~~ /
-   ~~add a linter~~ — **done**, see the Update note at the top of this file.
+   ~~add a linter~~ / ~~code-split the globe view~~ — **done**, see the Update note at the
+   top of this file.
 2. Real backend for push notifications, CI/deployment, etc.
-3. Consider trimming the production bundle — `three` pulls the build over Vite's 500kB
-   chunk-size warning threshold; code-splitting the globe view (`React.lazy`) would keep it
-   out of the initial bundle for users who never open it.

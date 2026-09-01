@@ -1,11 +1,10 @@
-import { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER, HOUR_INDICES } from './lib/spots.js';
 import { fetchSpotForecast, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
-import { Globe } from './components/Globe.jsx';
 import { OnboardingView } from './components/OnboardingView.jsx';
 import { HomeView } from './components/HomeView.jsx';
 import { AlertsView } from './components/AlertsView.jsx';
@@ -30,6 +29,20 @@ const GLOBAL_CSS = `
   * { transition: none !important; animation: none !important; }
 }
 `;
+
+// Globe.jsx pulls in three (the app's single biggest dependency) purely for the globe view —
+// most sessions probably never open it, so it's lazy-loaded instead of sitting in the initial
+// bundle every visitor downloads. Globe.jsx has a named export, not a default one, hence the
+// .then() mapping (React.lazy requires a module with a default export).
+const Globe = lazy(() => import('./components/Globe.jsx').then((m) => ({ default: m.Globe })));
+
+function GlobeLoading() {
+  return (
+    <div style={{ height: 420, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+      <span className="tl-pulse" style={{ fontSize: 12.5, color: COLORS.foamDim }}>Loading globe…</span>
+    </div>
+  );
+}
 
 export default function App() {
   const [spots, setSpots] = useState(SPOTS);
@@ -311,7 +324,9 @@ export default function App() {
         {!onboarded ? (
           <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} completeOnboarding={completeOnboarding} />
         ) : view === 'globe' ? (
-          <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} />
+          <Suspense fallback={<GlobeLoading />}>
+            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} />
+          </Suspense>
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={checkAlertMatch} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
