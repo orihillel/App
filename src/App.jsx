@@ -30,6 +30,39 @@ const GLOBAL_CSS = `
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }
 }
+
+/* Every component was written against these class names (a leftover from the original
+   chat-to-code mockup, which ran against a Tailwind CDN preview) but the scaffold step
+   never actually wired up Tailwind or any stylesheet defining them -- so every layout
+   built on them silently fell back to plain block/inline flow. This is the minimal set
+   of classes actually referenced in src/, defined by hand at Tailwind's own spacing scale
+   (1 unit = 0.25rem) so nothing needed to change at the call sites.
+   See scripts/check-classnames.mjs for a check that keeps this list complete. */
+.flex { display: flex; }
+.grid { display: grid; }
+.flex-col { flex-direction: column; }
+.items-start { align-items: flex-start; }
+.items-center { align-items: center; }
+.items-end { align-items: flex-end; }
+.items-baseline { align-items: baseline; }
+.justify-between { justify-content: space-between; }
+.justify-around { justify-content: space-around; }
+.justify-center { justify-content: center; }
+.justify-end { justify-content: flex-end; }
+.overflow-x-auto { overflow-x: auto; }
+.overflow-hidden { overflow: hidden; }
+.relative { position: relative; }
+.min-h-screen { min-height: 100vh; }
+.w-full { width: 100%; }
+.grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.p-6 { padding: 1.5rem; }
+.px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
+.px-7 { padding-left: 1.75rem; padding-right: 1.75rem; }
+.pt-2 { padding-top: 0.5rem; }
+.pt-4 { padding-top: 1rem; }
+.pb-1 { padding-bottom: 0.25rem; }
+.pb-3 { padding-bottom: 0.75rem; }
+.mx-6 { margin-left: 1.5rem; margin-right: 1.5rem; }
 `;
 
 // Globe.jsx pulls in three (the app's single biggest dependency) purely for the globe view —
@@ -228,6 +261,22 @@ export default function App() {
     else if (label === 'profile') { setView('profile'); }
     else { setToast('Part of the full app — not in this preview'); }
   }
+  // Jump straight to a specific spot's page — from tapping a spot in Profile's list or a
+  // marker on the globe. Resets the hour like handleNav('home') does, since this is "go look
+  // at this spot" rather than "step through what I'm already comparing" (see stepSpot below).
+  function viewSpot(id) {
+    setActiveId(id);
+    setView('home');
+    setHourIdx(1);
+  }
+  // Prev/Next arrows on a spot's own page, to browse every saved spot in order without
+  // leaving Home. Wraps around in both directions; doesn't reset the hour, so stepping
+  // through spots at (say) "9a" keeps comparing all of them at that same hour.
+  function stepSpot(delta) {
+    const i = order.indexOf(activeId);
+    const next = order[(i + delta + order.length) % order.length];
+    if (next) setActiveId(next);
+  }
 
   function openNewAlert() {
     setAlertDraft({ spotId: goToId, minWaveFt: 3, leadTime: '1d' });
@@ -330,17 +379,17 @@ export default function App() {
           <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} completeOnboarding={completeOnboarding} />
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
-            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} />
+            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} />
           </Suspense>
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
-          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')}
+          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
             pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush} />
         ) : (
           <HomeView
             setToast={setToast} units={units} toggleUnits={toggleUnits} openSearch={openSearch}
-            spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo}
+            spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1} onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
             h={h} isLoading={isLoading} hasError={hasError} retry={() => loadSpotData(activeId, spot)}
             waveChart={waveChart} hourIdx={hourIdx} setHourIdx={setHourIdx} hourData={hourData}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}

@@ -110,6 +110,26 @@ there's intentionally one source of truth, not separate logic per view.
   coastline orientation or published local wind info. This was a targeted correction pass on
   the spots most likely to be wrong, not an exhaustive re-verification of all 44 — the
   remaining ones are still only as good as whatever training-data recall produced them.
+  **Update: expanded to 99 spots** (55 new, same caveat — reasonable estimates, not
+  surveyed; see the comment above the second batch in `src/lib/spots.js` for which of
+  those were individually source-checked). Added navigation to go with the larger list:
+  prev/next chevrons on a spot's Home page (`showSpotNav`/`stepSpot` in `App.jsx`), and
+  every spot row in Profile's "YOUR SPOTS" list plus every marker on the Globe is now
+  tap-through (`onSelectSpot`/`viewSpot`) instead of display-only.
+- **Newly found while adding the above: every `className`-based layout in the app was
+  silently broken.** No stylesheet defining `flex`, `justify-between`, `items-center`,
+  `grid-cols-3`, etc. has ever existed in this repo — components were written assuming a
+  Tailwind-like utility set (a leftover from the original chat-sandbox mockup, which ran
+  against a Tailwind CDN preview) that the scaffold step never actually installed. Rows
+  quietly fell back to plain block/inline flow, which happened to look right often enough
+  (most rows hold only inline-level `<button>`/`<span>` children) to go unnoticed through
+  nine prior PRs of headless-Chromium smoke testing — until the new prev/next chevrons made
+  it visibly wrong (stacked instead of flanking the spot name). **Fixed** by hand-defining
+  the actual set of classes referenced in `src/**/*.jsx` in `App.jsx`'s existing `GLOBAL_CSS`
+  block, at Tailwind's own spacing scale so no call site needed to change. Re-verified every
+  view with a headless Chromium smoke test — this affected layout app-wide, not just the new
+  navigation UI. `npm run check:classnames` (`scripts/check-classnames.mjs`, wired into CI)
+  now fails the build if a new `className` token is ever added without a matching rule.
 - ~~**`src/App.jsx` is still one ~1,500-line file.**~~ — **Split.** `App.jsx` is now 356 lines
   (state, effects, and orchestration only). Pure logic/data moved to `src/lib/` (`rating.js`,
   `forecast.js`, `format.js`, `spots.js`, `placeholders.js`, `colors.js`, `geo3d.js`); each

@@ -11,7 +11,8 @@
     "build:icons": "node scripts/build-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "check:classnames": "node scripts/check-classnames.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.38.0",
