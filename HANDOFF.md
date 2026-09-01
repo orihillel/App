@@ -124,6 +124,11 @@ there's intentionally one source of truth, not separate logic per view.
   Verified in a real browser end to end, including a raycast hit on an actual marker
   mesh — the first time the Globe's tap-to-select path (added for the item above) had
   been exercised by anything other than a unit-level click, since jsdom has no WebGL.
+  **Update: expanded again to 153 spots** (54 more, third batch — see the comment above
+  it in `src/lib/spots.js`), filling in regions the first two batches left thin: US East
+  Coast and Pacific Northwest, Ireland/UK, West Africa, remote Australia, and cold-water
+  Atlantic spots (Iceland, Nova Scotia). Same estimation caveat as both earlier batches;
+  the least-documented entries are called out by name in that comment.
 - **Newly found while adding the above: every `className`-based layout in the app was
   silently broken.** No stylesheet defining `flex`, `justify-between`, `items-center`,
   `grid-cols-3`, etc. has ever existed in this repo — components were written assuming a
