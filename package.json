@@ -6,7 +6,8 @@
   "scripts": {
     "dev": "vite",
     "build": "vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:landmasses": "node scripts/build-landmasses.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.38.0",
@@ -16,6 +17,8 @@
   },
   "devDependencies": {
     "@vitejs/plugin-react": "^6.1.1",
-    "vite": "^8.2.2"
+    "topojson-client": "^3.1.0",
+    "vite": "^8.2.2",
+    "world-atlas": "^2.0.2"
   }
 }
