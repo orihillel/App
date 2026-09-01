@@ -5,11 +5,14 @@ session (originally `surf-app-mockup.jsx`, ~1,500 lines, default export `SurfMoc
 a surf forecast app, inspired by Surfline, with **live data** — not a static design mock.
 
 **Update:** it has since been scaffolded into a real Vite + React project — see
-`README.md` for how to run it. The mockup now lives at `src/App.jsx` (exported as `App`),
-`window.storage` has been replaced with real `localStorage` persistence
-(`src/lib/storage.js`), and the globe has been confirmed to render correctly in a real
-browser (headless Chromium smoke test) — see "Known issues" below, updated accordingly.
-The rest of this document is the original handoff as written from the chat session.
+`README.md` for how to run it. `window.storage` has been replaced with real `localStorage`
+persistence (`src/lib/storage.js`), the globe has been confirmed to render correctly in a
+real browser (headless Chromium smoke test), and the original single ~1,500-line
+`SurfMockup` component has been split: pure logic/data now live in `src/lib/`, each view
+and the globe in its own file under `src/components/`, with `src/App.jsx` (exported as
+`App`) left holding just state, effects, and orchestration. See "Known issues" below,
+updated accordingly. The rest of this document is the original handoff as written from
+the chat session.
 
 ## What's already built
 
@@ -99,17 +102,21 @@ there's intentionally one source of truth, not separate logic per view.
   coastline orientation or published local wind info. This was a targeted correction pass on
   the spots most likely to be wrong, not an exhaustive re-verification of all 44 — the
   remaining ones are still only as good as whatever training-data recall produced them.
-- **`src/App.jsx` is still one ~1,500-line file.** It now builds and runs correctly as-is,
-  but splitting it into components (per spot card, per view, the globe, etc.) is still
-  worth doing as it grows — see "Suggested next steps" below.
+- ~~**`src/App.jsx` is still one ~1,500-line file.**~~ — **Split.** `App.jsx` is now 356 lines
+  (state, effects, and orchestration only). Pure logic/data moved to `src/lib/` (`rating.js`,
+  `forecast.js`, `format.js`, `spots.js`, `placeholders.js`, `colors.js`, `geo3d.js`); each
+  view and the globe moved to its own file under `src/components/`. Verified behavior-identical
+  with a headless-browser walkthrough of every view (home, globe, alerts, profile, search,
+  new-alert sheet) — no console errors, no visual differences.
 
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
-   ~~re-test the globe~~ — **done**, see the Update note at the top of this file.
-2. Split `src/App.jsx` into components as it grows (it's currently one file by inheritance
-   from the chat environment, not by design).
-3. Real backend for push notifications, CI/deployment, etc.
-4. Consider trimming the production bundle — `three` pulls the build over Vite's 500kB
+   ~~re-test the globe~~ / ~~split `App.jsx` into components~~ — **done**, see the Update note
+   at the top of this file.
+2. Real backend for push notifications, CI/deployment, etc.
+3. Consider trimming the production bundle — `three` pulls the build over Vite's 500kB
    chunk-size warning threshold; code-splitting the globe view (`React.lazy`) would keep it
    out of the initial bundle for users who never open it.
+4. No test suite yet (CI only checks the build) — worth adding once the component split
+   above gives it clean units to test against.

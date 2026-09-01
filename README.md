@@ -14,11 +14,21 @@ npm run preview   # serve the production build locally
 
 ## Project structure
 
-- `src/App.jsx` — the app (ported from the original single-file chat mockup;
-  see `HANDOFF.md` for the data sources, rating algorithm, and known issues).
-- `src/lib/storage.js` — `localStorage`-backed persistence (saved spots,
-  alerts, units, onboarding state).
+- `src/App.jsx` — top-level state, effects, and orchestration; renders one of
+  the view components below depending on app state.
+- `src/components/` — one file per view (`HomeView`, `Globe`, `AlertsView`,
+  `ProfileView`, `OnboardingView`), the two bottom-sheet modals
+  (`SearchSheet`, `AlertSheet`), and small shared pieces (`BottomNav`,
+  `ConditionScale`).
+- `src/lib/` — pure logic and data, no React: `forecast.js` (Open-Meteo
+  fetching), `rating.js` (the conditions-scoring algorithm), `format.js`
+  (unit conversion/formatting), `spots.js` (seed spot data), `placeholders.js`
+  (pre-fetch stand-in data), `colors.js`, `geo3d.js`, and `storage.js`
+  (`localStorage`-backed persistence for saved spots, alerts, units,
+  onboarding state).
 - `src/main.jsx` — entry point.
+
+See `HANDOFF.md` for the data sources, rating algorithm, and known issues.
 
 No API keys are required — see `HANDOFF.md` for the data sources in use.
 
