@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { Menu, Search, Star, Home, Map, Bell, User, Navigation, RefreshCw, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import * as THREE from 'three';
 import { storage } from './lib/storage.js';
+import LANDMASSES from './data/landmasses.json';
 
 const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap');
@@ -452,36 +453,10 @@ function linePath(values, width, height, pad) {
 // ---------- Flat instrument-chart map — equirectangular projection, plain SVG.
 // (Replaces an earlier 3D WebGL globe that never rendered its live marker colors reliably;
 // this is plain React state driving plain SVG, so there's no separate sync step to go stale.)
-const LANDMASSES = [
-  [[68,-165],[60,-141],[49,-123],[32,-117],[23,-109],[18,-105],[15,-92],[21,-97],[26,-97],[29,-89],[25,-80],[31,-81],[35,-76],[41,-71],[45,-67],[47,-52],[60,-65],[68,-85],[70,-130]],
-  [[83,-35],[76,-20],[70,-22],[60,-45],[65,-53],[72,-56],[80,-65]],
-  [[12,-72],[10,-62],[0,-50],[-8,-35],[-23,-43],[-34,-54],[-38,-62],[-52,-68],[-55,-70],[-45,-74],[-33,-72],[-18,-70],[-5,-81],[2,-77]],
-  [[71,25],[60,5],[58,8],[53,4],[50,-4],[43,-9],[36,-6],[38,15],[45,13],[41,29],[46,30],[55,38],[65,35],[70,30]],
-  [[37,10],[32,32],[12,43],[2,45],[-15,40],[-26,33],[-34,20],[-17,12],[-6,12],[4,9],[5,-4],[14,-17],[21,-17],[31,-9],[36,3]],
-  [[-12,49],[-16,50],[-22,48],[-25,46],[-21,43],[-15,45]],
-  [[70,60],[66,170],[60,163],[52,140],[43,132],[39,128],[31,122],[22,114],[10,106],[1,104],[8,77],[20,72],[24,67],[30,49],[37,49],[45,48],[55,60]],
-  [[45,142],[43,145],[35,140],[31,131],[34,135],[38,139],[41,141]],
-  [[6,95],[5,97],[-6,106],[-7,110],[-8,115],[-9,119],[-3,113],[1,103]],
-  [[-11,132],[-17,146],[-28,153],[-34,151],[-38,145],[-35,138],[-32,116],[-20,114],[-14,126]],
-  [[-35,174],[-37,178],[-41,175],[-46,167],[-44,171],[-38,175]],
-  [[58,-4],[54,0],[51,1],[50,-5],[52,-10],[55,-8],[58,-6]],
-  [[66,-22],[65,-14],[64,-19],[65,-24]],
-  [[22,-160],[21,-157],[19,-155],[20,-156],[22,-159]],
-];
-function smoothLoop(points, samplesPerSeg) {
-  const n = points.length;
-  const out = [];
-  for (let i = 0; i < n; i++) {
-    const p0 = points[(i - 1 + n) % n], p1 = points[i], p2 = points[(i + 1) % n], p3 = points[(i + 2) % n];
-    for (let t = 0; t < samplesPerSeg; t++) {
-      const u = t / samplesPerSeg, u2 = u * u, u3 = u2 * u;
-      const lat = 0.5 * ((2 * p1[0]) + (-p0[0] + p2[0]) * u + (2 * p0[0] - 5 * p1[0] + 4 * p2[0] - p3[0]) * u2 + (-p0[0] + 3 * p1[0] - 3 * p2[0] + p3[0]) * u3);
-      const lon = 0.5 * ((2 * p1[1]) + (-p0[1] + p2[1]) * u + (2 * p0[1] - 5 * p1[1] + 4 * p2[1] - p3[1]) * u2 + (-p0[1] + 3 * p1[1] - 3 * p2[1] + p3[1]) * u3);
-      out.push([lat, lon]);
-    }
-  }
-  return out;
-}
+// Real coastline polygons (Natural Earth 110m land, via world-atlas) — see
+// scripts/build-landmasses.mjs. Each ring is a closed loop of [lat, lon]
+// points, already detailed enough to draw directly with no synthetic
+// smoothing (unlike the hand-approximated polygons this replaced).
 function latLonToVector3(lat, lon, radius) {
   const phi = (90 - lat) * (Math.PI / 180);
   const theta = (lon + 180) * (Math.PI / 180);
@@ -833,15 +808,22 @@ export default function App() {
     mctx.strokeStyle = 'rgba(18,36,26,0.5)';
     mctx.lineWidth = 2.5;
     LANDMASSES.forEach((pts) => {
-      const smooth = smoothLoop(pts, 8);
-      mctx.beginPath();
-      smooth.forEach(([lat, lon], i) => {
-        const [x, y] = toPx(lat, lon);
-        if (i === 0) mctx.moveTo(x, y); else mctx.lineTo(x, y);
+      // A handful of rings (Russia, Antarctica, Fiji) were unwrapped past
+      // ±180° during data prep so their coastline stays contiguous — that
+      // pushes some of their x coordinates outside the canvas. Painting
+      // each ring three times, shifted a full map-width left/right, covers
+      // the wraparound correctly wherever it actually lands on-canvas.
+      [-mapW, 0, mapW].forEach((xOffset) => {
+        mctx.beginPath();
+        pts.forEach(([lat, lon], i) => {
+          const [x, y] = toPx(lat, lon);
+          const px = x + xOffset;
+          if (i === 0) mctx.moveTo(px, y); else mctx.lineTo(px, y);
+        });
+        mctx.closePath();
+        mctx.fill();
+        mctx.stroke();
       });
-      mctx.closePath();
-      mctx.fill();
-      mctx.stroke();
     });
     mctx.strokeStyle = 'rgba(244,247,246,0.13)';
     mctx.lineWidth = 1;
