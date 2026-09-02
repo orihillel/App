@@ -32,30 +32,58 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const height = container.clientHeight || 420;
     const R = 1;
 
-    // How close in you can zoom (a smaller distance means the globe fills more of the screen,
-    // spreading nearby markers further apart in screen space -- the point of zooming in at all
-    // here, since it's what actually makes a tight cluster like the California spots tappable
-    // individually instead of staying jammed into the same few pixels no matter how far you
-    // zoom). The camera's near-clip plane has to be pulled in to match (below MIN_DISTANCE - R,
-    // the closest the camera can ever get to the sphere's surface) or the near side of the
-    // globe -- exactly the part you're zooming in to look at -- would start getting clipped.
-    const MIN_DISTANCE = 1.12;
+    // How close in you can zoom. Smaller = the globe fills more of the screen, which spreads
+    // nearby markers further apart in screen space -- the actual point of zooming here, since
+    // it's what makes a tight cluster (the California spots, say) separable and tappable one
+    // by one. Markers sit on a shell at R*1.045, so this has to stay clear of that.
+    const MARKER_SHELL = R * 1.045;
+    const MIN_DISTANCE = 1.08;
     const MAX_DISTANCE = 6;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 20);
-    const state = { distance: 3.0, rotX: 0.3, rotY: 0.6, dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0 };
+    // The near plane is recomputed every frame from the current zoom rather than pinned to one
+    // value that has to work for the whole range. Pinned, it's a bad trade at both ends: large
+    // enough to keep depth precision when zoomed out means slicing the front off the globe when
+    // zoomed in, and small enough for the closest zoom wastes most of the depth buffer's
+    // precision at every other zoom. Tracking the distance keeps the range tight at all times,
+    // which is what makes an ordinary depth buffer (no logarithmic one) enough.
+    function updateNearPlane() {
+      const clearance = Math.max(state.distance - MARKER_SHELL, 0.004);
+      camera.near = Math.max(clearance * 0.5, 0.002);
+      camera.updateProjectionMatrix();
+    }
+    // rot*/distance are what's rendered this frame; target* is where input has asked them to
+    // go, and vel* carries flick momentum after release (see the easing in animate()).
+    const state = {
+      distance: 3.0, targetDistance: 3.0,
+      rotX: 0.3, rotY: 0.6, targetRotX: 0.3, targetRotY: 0.6, velX: 0, velY: 0,
+      dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0,
+      dataDirty: true, // set when marker colors/labels change, so an idle frame still redraws once
+    };
     camera.position.set(0, 0, state.distance);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true, logarithmicDepthBuffer: true });
+    // logarithmicDepthBuffer is deliberately OFF. It makes every shader write gl_FragDepth,
+    // which disables the GPU's early-Z rejection — a serious cost everywhere and a brutal one
+    // on the tile-based GPUs in phones, which is where this app actually runs. It was only
+    // needed because the near/far range was wide; the per-frame near plane below keeps that
+    // range tight enough that an ordinary 24-bit depth buffer has precision to spare.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     // outputEncoding/sRGBEncoding was renamed to outputColorSpace/SRGBColorSpace in newer
     // Three.js and removed entirely in later versions — set whichever this build actually has.
     if ('outputColorSpace' in renderer && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
     else if ('outputEncoding' in renderer && THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.setSize(width, height);
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 3));
+    // Capped at 2 rather than 3: fragment cost scales with the square of this, so on a 3x
+    // phone screen the old cap rendered 9x the pixels of CSS resolution (with MSAA on top of
+    // that) for a difference that is not visible at this size. This is the single biggest
+    // GPU saving here.
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     container.appendChild(renderer.domElement);
     setGlobeError(false);
+
+    // Set by cleanup so async work (the satellite texture below) can tell it arrived too late.
+    let cancelled = false;
 
     const globeGroup = new THREE.Group();
     scene.add(globeGroup);
@@ -111,7 +139,52 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     mapTexture.magFilter = THREE.LinearFilter;
     mapTexture.generateMipmaps = true;
     const oceanMat = new THREE.MeshPhongMaterial({ map: mapTexture, shininess: 14, specular: 0x1a3a4a });
-    const oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 96, 96), oceanMat);
+
+    // Real satellite imagery, layered on as progressive enhancement over the drawn map above.
+    //
+    // The drawn map stays the base because it is instant, works offline (this is a PWA), and
+    // never fails. The satellite image is then fetched in the background and swapped in if and
+    // when it arrives -- so a slow network, a blocked request, a missing CORS header or an
+    // offline launch all degrade to exactly the globe that shipped before, rather than to a
+    // blank sphere.
+    //
+    // NASA's Blue Marble is used because it is public domain (NASA imagery carries no
+    // copyright) and needs no API key or account. Google Maps/Earth tiles deliberately are not:
+    // they require a billing-enabled API key, and their terms don't permit using the tiles
+    // outside Google's own SDKs, so they cannot ship in a static app like this one.
+    //
+    // NOTE: this URL could not be verified from the sandbox this was written in (its proxy
+    // blocks nasa.gov), so the fallback above is doing real work, not just belt-and-braces.
+    // If the imagery never appears, this constant is the one thing to check -- any
+    // equirectangular (2:1) image URL that allows cross-origin reads will work here.
+    const SATELLITE_TEXTURE_URL = 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_2048.jpg';
+    let satelliteTexture = null;
+    const textureLoader = new THREE.TextureLoader();
+    textureLoader.setCrossOrigin('anonymous'); // required to use the pixels as a WebGL texture
+    textureLoader.load(
+      SATELLITE_TEXTURE_URL,
+      (tex) => {
+        if (cancelled) { tex.dispose(); return; }
+        if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+        tex.minFilter = THREE.LinearMipmapLinearFilter;
+        tex.magFilter = THREE.LinearFilter;
+        tex.generateMipmaps = true;
+        satelliteTexture = tex;
+        oceanMat.map = tex;
+        // Real imagery is already lit by the sun in the photograph; the drawn map needed the
+        // shading to read as a sphere at all, so dial the specular highlight back to keep the
+        // continents from looking wet.
+        oceanMat.shininess = 6;
+        oceanMat.needsUpdate = true;
+        state.dataDirty = true; // make sure an idle globe redraws to show it
+      },
+      undefined,
+      () => { /* offline, blocked, or moved: keep the drawn map, which is already on screen */ },
+    );
+    // 96x96 segments was ~18k triangles for a sphere that is never larger than the viewport;
+    // 64x48 is ~6k and visually identical here, silhouette included.
+    const oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 64, 48), oceanMat);
     globeGroup.add(oceanMesh);
 
     scene.add(new THREE.AmbientLight(0xbcd4e0, 0.55));
@@ -168,24 +241,47 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     glowSprite.scale.set(2.7, 2.7, 1);
     scene.add(glowSprite);
 
+    // One InstancedMesh for every spot marker instead of one Mesh each. With 150+ spots that's
+    // the difference between 150+ draw calls per frame and exactly one — the single biggest
+    // reason the globe got progressively less smooth as the spot catalog grew from 44 to 153.
+    // Per-marker color still works (setColorAt writes into a per-instance color attribute),
+    // and Raycaster handles InstancedMesh natively, reporting which instance was hit.
     const markers = [];
     dataRef.current.order.forEach((id) => {
       const s = dataRef.current.spots[id];
       if (!s) return;
-      const localPos = latLonToVector3(s.lat, s.lon, R * 1.045);
-      const geo = new THREE.SphereGeometry(0.026, 12, 12);
-      const mat = new THREE.MeshBasicMaterial({ color: '#33465C' });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.position.copy(localPos);
-      globeGroup.add(mesh);
-
       const label = document.createElement('div');
       label.className = 'tl-label';
       label.textContent = s.name;
+      // Anchored at the container's origin; updateLabels() moves it purely via transform.
+      label.style.left = '0';
+      label.style.top = '0';
       container.appendChild(label);
-
-      markers.push({ id, mesh, label, basePos: localPos });
+      markers.push({
+        id, label,
+        basePos: latLonToVector3(s.lat, s.lon, R * 1.045),
+        worldPos: new THREE.Vector3(), // scratch, reused every frame instead of .clone()
+        labelText: '', labelShown: false, // last-written DOM state, so we only touch the DOM on change
+      });
     });
+
+    const markerGeo = new THREE.SphereGeometry(0.026, 12, 12);
+    const markerMat = new THREE.MeshBasicMaterial();
+    const markerMesh = new THREE.InstancedMesh(markerGeo, markerMat, Math.max(markers.length, 1));
+    const instanceDummy = new THREE.Object3D();
+    markers.forEach((m, i) => {
+      instanceDummy.position.copy(m.basePos);
+      instanceDummy.updateMatrix();
+      markerMesh.setMatrixAt(i, instanceDummy.matrix);
+    });
+    markerMesh.instanceMatrix.needsUpdate = true;
+    // Markers never move relative to the globe (the globe group is what rotates), so the matrix
+    // buffer is written once here and never touched again.
+    markerMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    const instanceColor = new THREE.Color();
+    markers.forEach((_, i) => markerMesh.setColorAt(i, instanceColor.set('#33465C')));
+    if (markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
+    globeGroup.add(markerMesh);
 
     // Tapping a marker (as opposed to dragging to rotate) jumps straight to that spot's page.
     // "A tap" is a mousedown/up or touchstart/end pair with barely any movement between them
@@ -193,15 +289,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // through mousedown/mouseup, so a distance+time threshold is what actually distinguishes
     // "flicked past this marker while rotating" from "meant to tap it".
     const raycaster = new THREE.Raycaster();
-    const markerMeshes = markers.map((m) => m.mesh);
+    const ndc = new THREE.Vector2();
     function pickSpotAt(clientX, clientY) {
       const rect = renderer.domElement.getBoundingClientRect();
-      const ndcX = ((clientX - rect.left) / rect.width) * 2 - 1;
-      const ndcY = -((clientY - rect.top) / rect.height) * 2 + 1;
-      raycaster.setFromCamera({ x: ndcX, y: ndcY }, camera);
-      const hit = raycaster.intersectObjects(markerMeshes)[0];
-      if (!hit) return;
-      const marker = markers.find((m) => m.mesh === hit.object);
+      ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
+      raycaster.setFromCamera(ndc, camera);
+      // Against an InstancedMesh a hit identifies itself by instanceId, which is the marker's
+      // index — no scanning a list of meshes to find which one was hit.
+      const hit = raycaster.intersectObject(markerMesh)[0];
+      if (!hit || hit.instanceId == null) return;
+      const marker = markers[hit.instanceId];
       if (marker) onSelectSpot(marker.id);
     }
     function isTap(downX, downY, downTime, upX, upY) {
@@ -222,8 +319,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const tanHalfFov = Math.tan((camera.fov * Math.PI) / 360);
     function applyDrag(dx, dy) {
       const sensitivity = (state.distance * tanHalfFov) / (height / 2);
-      state.rotY += dx * sensitivity;
-      state.rotX = Math.max(-1.2, Math.min(1.2, state.rotX + dy * sensitivity));
+      const rotY = dx * sensitivity;
+      const rotX = dy * sensitivity;
+      state.targetRotY += rotY;
+      state.targetRotX = Math.max(-1.2, Math.min(1.2, state.targetRotX + rotX));
+      // Remember the last bit of movement as velocity, so releasing mid-drag hands off into a
+      // coasting flick rather than stopping dead. Blended with the previous value so one noisy
+      // final pointer sample can't send the globe spinning off.
+      state.velY = state.velY * 0.6 + rotY * 0.4;
+      state.velX = state.velX * 0.6 + rotX * 0.4;
     }
     // Percent-of-current-distance zoom (both wheel and pinch below) rather than a fixed step,
     // so zooming feels the same proportionally whether you're already in close or way out --
@@ -232,26 +336,46 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const WHEEL_ZOOM_SPEED = 0.00085;
     function clampDistance(d) { return Math.max(MIN_DISTANCE, Math.min(MAX_DISTANCE, d)); }
 
+    // Label positioning, rewritten to be allocation-free and to touch the DOM only when
+    // something actually changed. The old version cloned three Vector3s per marker per frame
+    // (~460 throwaway allocations a frame at 153 spots, all of it GC pressure) and wrote
+    // style.display on every marker every frame whether or not it had changed. Now each marker
+    // reuses one scratch vector, and a hidden marker that's still hidden costs nothing.
+    const camDir = new THREE.Vector3();
+    // Rotating a point never changes its length, so every marker's world position has the same
+    // constant length -- which means the "is this marker facing the camera" test can compare the
+    // raw dot product against a pre-scaled threshold instead of normalizing a vector per marker.
+    const FACING_THRESHOLD = 0.28 * R * 1.045;
     function updateLabels() {
-      const camDir = camera.position.clone().normalize();
-      markers.forEach((m) => {
-        const worldPos = m.basePos.clone().applyEuler(globeGroup.rotation);
-        const facing = worldPos.clone().normalize().dot(camDir);
-        const zoomedIn = state.distance < 2.2;
-        if (facing > 0.28 && zoomedIn) {
-          const proj = worldPos.clone().project(camera);
-          m.label.style.display = 'block';
-          m.label.style.left = ((proj.x * 0.5 + 0.5) * width) + 'px';
-          m.label.style.top = ((-proj.y * 0.5 + 0.5) * height) + 'px';
-        } else {
-          m.label.style.display = 'none';
+      camDir.copy(camera.position).normalize();
+      const zoomedIn = state.distance < 2.2;
+      for (let i = 0; i < markers.length; i++) {
+        const m = markers[i];
+        let show = zoomedIn && m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation).dot(camDir) > FACING_THRESHOLD;
+        if (show) {
+          m.worldPos.project(camera); // in place, on the world position just computed above
+          // Facing the camera is not the same as being on screen. Zoomed out they amount to the
+          // same thing, but zoomed in the camera only covers a few degrees of arc while the
+          // facing test still passes for most of the hemisphere -- so without this check, spots
+          // well outside the view get labels placed far outside the canvas, which then spill
+          // over the header and nav (the container doesn't clip). Cull to the frustum instead.
+          show = m.worldPos.z < 1 && Math.abs(m.worldPos.x) <= 1 && Math.abs(m.worldPos.y) <= 1;
         }
-      });
+        if (!show) {
+          if (m.labelShown) { m.label.style.display = 'none'; m.labelShown = false; }
+          continue;
+        }
+        if (!m.labelShown) { m.label.style.display = 'block'; m.labelShown = true; }
+        // transform rather than left/top: this is a compositor-only property, so moving a label
+        // doesn't force the browser into a layout pass for every visible label every frame.
+        m.label.style.transform = `translate(-50%, -130%) translate(${(m.worldPos.x * 0.5 + 0.5) * width}px, ${(-m.worldPos.y * 0.5 + 0.5) * height}px)`;
+      }
     }
 
     function onMouseDown(e) {
       state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
       state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
+      state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
     }
     function onMouseMove(e) {
       if (!state.dragging) return;
@@ -261,16 +385,20 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     }
     function onMouseUp(e) {
       state.dragging = false;
-      if (isTap(state.downX, state.downY, state.downTime, e.clientX, e.clientY)) pickSpotAt(e.clientX, e.clientY);
+      if (isTap(state.downX, state.downY, state.downTime, e.clientX, e.clientY)) {
+        state.velX = 0; state.velY = 0; // a tap is not a flick
+        pickSpotAt(e.clientX, e.clientY);
+      }
     }
     function onWheel(e) {
       e.preventDefault();
-      state.distance = clampDistance(state.distance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
+      state.targetDistance = clampDistance(state.targetDistance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
     }
     function touchStart(e) {
       if (e.touches.length === 1) {
         state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
         state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
+        state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
       } else if (e.touches.length === 2) { state.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
     }
     function touchMove(e) {
@@ -285,14 +413,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         // between fingers changed, not the raw pixel delta, so pinching feels consistent at any
         // zoom level. Fingers spreading apart (d grows past the last reading) zooms in, matching
         // this gesture's meaning everywhere else on a touch device.
-        state.distance = clampDistance(state.distance * (state.pinchDist / d));
+        state.targetDistance = clampDistance(state.targetDistance * (state.pinchDist / d));
         state.pinchDist = d;
       }
     }
     function touchEnd(e) {
       state.dragging = false; state.pinchDist = null;
       const t = e.changedTouches && e.changedTouches[0];
-      if (t && isTap(state.downX, state.downY, state.downTime, t.clientX, t.clientY)) pickSpotAt(t.clientX, t.clientY);
+      if (t && isTap(state.downX, state.downY, state.downTime, t.clientX, t.clientY)) {
+        state.velX = 0; state.velY = 0; // a tap is not a flick
+        pickSpotAt(t.clientX, t.clientY);
+      }
     }
 
     renderer.domElement.addEventListener('mousedown', onMouseDown);
@@ -303,33 +434,92 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     renderer.domElement.addEventListener('touchmove', touchMove, { passive: false });
     renderer.domElement.addEventListener('touchend', touchEnd);
 
-    function animate() {
-      globeGroup.rotation.set(state.rotX, state.rotY, 0);
-      camera.position.set(0, 0, state.distance);
-      camera.lookAt(0, 0, 0);
-      updateLabels();
-      // Colors are recomputed every frame straight from the live data ref, rather than in a
-      // separate effect keyed on [forecast, hourIdx, ...] — that indirection was the source of
-      // the markers getting stuck on their initial gray color. This way there's nothing to fall
-      // out of sync: every rendered frame reflects whatever is currently in `forecast`.
+    // Marker colors and label text come from live forecast data, which changes on the order of
+    // minutes — not per frame. The old loop recomputed and rewrote all of it every single frame
+    // (153 material writes plus 153 DOM textContent writes, ~9,000 DOM writes a second), which
+    // is most of why dragging stuttered. Now it runs on a timer, and only writes the DOM for
+    // markers whose text actually changed.
+    function refreshMarkerData() {
       const live = dataRef.current;
-      markers.forEach((m) => {
+      let colorsChanged = false;
+      for (let i = 0; i < markers.length; i++) {
+        const m = markers[i];
         const sfm = live.forecast[m.id];
         const hrs = (sfm && sfm.hours) || PLACEHOLDER_HOURS;
         const hr = hrs[live.hourIdx];
         const rating = hr ? hr.rating : 'LOADING';
         const color = (rating === 'LOADING' || !hr || hr.score == null) ? '#33465C' : scoreToColor(hr.score);
-        m.mesh.material.color.set(color);
+        markerMesh.setColorAt(i, instanceColor.set(color));
+        colorsChanged = true;
         const spotObj = live.spots[m.id];
-        m.label.textContent = (spotObj ? spotObj.name : m.id) + ' · ' + (rating === 'LOADING' ? '···' : rating);
-      });
+        const text = (spotObj ? spotObj.name : m.id) + ' · ' + (rating === 'LOADING' ? '···' : rating);
+        if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; }
+      }
+      if (colorsChanged && markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
+      state.dataDirty = true; // colors/labels may have changed, so the next frame must draw
+    }
+    refreshMarkerData();
+    const dataTimer = setInterval(refreshMarkerData, 1000);
+
+    // Smoothing. Input writes to the *target* rotation/distance; each frame eases the rendered
+    // values toward it. That's what makes this feel smooth rather than stepwise: a wheel notch
+    // glides instead of snapping, and a flick keeps coasting (momentum) instead of stopping
+    // dead the instant you lift your finger. Eased per-frame by a fixed fraction, so it stays
+    // responsive (most of the gap closes within a couple of frames) without the raw jitter of
+    // applying pointer deltas straight to the camera.
+    const EASE = 0.28;          // fraction of the remaining gap closed per frame
+    const FRICTION = 0.94;      // how quickly flick momentum bleeds off
+    const MIN_VELOCITY = 0.00002; // below this, momentum has visually stopped — drop it
+    const SETTLED = 0.00005; // gap below which easing has visually arrived
+    function animate() {
+      const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
+      if (coasting) {
+        state.targetRotY += state.velY;
+        state.targetRotX = Math.max(-1.2, Math.min(1.2, state.targetRotX + state.velX));
+        state.velX *= FRICTION;
+        state.velY *= FRICTION;
+      } else if (!state.dragging) {
+        state.velX = 0; state.velY = 0;
+      }
+
+      const dRotX = state.targetRotX - state.rotX;
+      const dRotY = state.targetRotY - state.rotY;
+      const dDist = state.targetDistance - state.distance;
+      const moving = coasting || state.dragging
+        || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
+
+      // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
+      // identical image. A globe sitting still cost exactly as much as one being dragged before
+      // this, which on a phone is battery burned for no visible result.
+      if (!moving && !state.dataDirty) {
+        state.raf = requestAnimationFrame(animate);
+        return;
+      }
+      state.dataDirty = false;
+
+      state.rotX += dRotX * EASE;
+      state.rotY += dRotY * EASE;
+      state.distance += dDist * EASE;
+      // Snap the last sliver so easing actually terminates instead of asymptotically crawling,
+      // which would keep the "moving" test true (and the renderer busy) forever.
+      if (Math.abs(state.targetRotX - state.rotX) <= SETTLED) state.rotX = state.targetRotX;
+      if (Math.abs(state.targetRotY - state.rotY) <= SETTLED) state.rotY = state.targetRotY;
+      if (Math.abs(state.targetDistance - state.distance) <= SETTLED) state.distance = state.targetDistance;
+
+      globeGroup.rotation.set(state.rotX, state.rotY, 0);
+      camera.position.set(0, 0, state.distance);
+      camera.lookAt(0, 0, 0);
+      updateNearPlane();
+      updateLabels();
       renderer.render(scene, camera);
       state.raf = requestAnimationFrame(animate);
     }
     animate();
 
     return () => {
+      cancelled = true;
       cancelAnimationFrame(state.raf);
+      clearInterval(dataTimer);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
@@ -341,6 +531,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       starGeo.dispose(); starMat.dispose(); starDotTexture.dispose();
       glowTexture.dispose(); glowMat.dispose();
       mapTexture.dispose(); oceanMat.dispose(); oceanMesh.geometry.dispose();
+      if (satelliteTexture) satelliteTexture.dispose();
+      markerGeo.dispose(); markerMat.dispose(); markerMesh.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };
