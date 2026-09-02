@@ -32,8 +32,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const height = container.clientHeight || 420;
     const R = 1;
 
+    // How close in you can zoom (a smaller distance means the globe fills more of the screen,
+    // spreading nearby markers further apart in screen space -- the point of zooming in at all
+    // here, since it's what actually makes a tight cluster like the California spots tappable
+    // individually instead of staying jammed into the same few pixels no matter how far you
+    // zoom). The camera's near-clip plane has to be pulled in to match (below MIN_DISTANCE - R,
+    // the closest the camera can ever get to the sphere's surface) or the near side of the
+    // globe -- exactly the part you're zooming in to look at -- would start getting clipped.
+    const MIN_DISTANCE = 1.12;
+    const MAX_DISTANCE = 6;
+
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(45, width / height, 0.4, 20);
+    const camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 20);
     const state = { distance: 3.0, rotX: 0.3, rotY: 0.6, dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0 };
     camera.position.set(0, 0, state.distance);
 
@@ -198,6 +208,30 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
     }
 
+    // Drag-to-rotate sensitivity that scales with how zoomed in you are, so the globe actually
+    // tracks your finger instead of feeling disconnected from it. This used to be a flat
+    // 0.005rad-per-pixel regardless of zoom -- fine at the default distance, but once you zoom
+    // in close (the whole point of MIN_DISTANCE above) the globe fills far more of the screen,
+    // so that same fixed rotation sweeps the visible surface across way more pixels than you
+    // actually dragged: it massively overshoots, feeling twitchy and imprecise right when
+    // you're trying to carefully aim at a specific nearby marker. Derived from the perspective
+    // projection itself -- a small rotation dTheta moves a point on the sphere by an arc length
+    // of R*dTheta, which projects to about (R*dTheta) * (height/2) / (distance*tanHalfFov)
+    // screen pixels -- solved for dTheta per pixel so a drag of N pixels rotates the point
+    // under your cursor by very close to N pixels on screen, at any zoom level.
+    const tanHalfFov = Math.tan((camera.fov * Math.PI) / 360);
+    function applyDrag(dx, dy) {
+      const sensitivity = (state.distance * tanHalfFov) / (height / 2);
+      state.rotY += dx * sensitivity;
+      state.rotX = Math.max(-1.2, Math.min(1.2, state.rotX + dy * sensitivity));
+    }
+    // Percent-of-current-distance zoom (both wheel and pinch below) rather than a fixed step,
+    // so zooming feels the same proportionally whether you're already in close or way out --
+    // a fixed step is a huge relative jump once near MIN_DISTANCE and barely perceptible at
+    // MAX_DISTANCE.
+    const WHEEL_ZOOM_SPEED = 0.00085;
+    function clampDistance(d) { return Math.max(MIN_DISTANCE, Math.min(MAX_DISTANCE, d)); }
+
     function updateLabels() {
       const camDir = camera.position.clone().normalize();
       markers.forEach((m) => {
@@ -223,8 +257,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       if (!state.dragging) return;
       const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
       state.lastX = e.clientX; state.lastY = e.clientY;
-      state.rotY += dx * 0.005;
-      state.rotX = Math.max(-1.2, Math.min(1.2, state.rotX + dy * 0.005));
+      applyDrag(dx, dy);
     }
     function onMouseUp(e) {
       state.dragging = false;
@@ -232,7 +265,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     }
     function onWheel(e) {
       e.preventDefault();
-      state.distance = Math.max(1.5, Math.min(6, state.distance + e.deltaY * 0.0025));
+      state.distance = clampDistance(state.distance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
     }
     function touchStart(e) {
       if (e.touches.length === 1) {
@@ -245,12 +278,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       if (e.touches.length === 1 && state.dragging) {
         const dx = e.touches[0].clientX - state.lastX, dy = e.touches[0].clientY - state.lastY;
         state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
-        state.rotY += dx * 0.005;
-        state.rotX = Math.max(-1.2, Math.min(1.2, state.rotX + dy * 0.005));
+        applyDrag(dx, dy);
       } else if (e.touches.length === 2 && state.pinchDist != null) {
         const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        const delta = state.pinchDist - d;
-        state.distance = Math.max(1.5, Math.min(6, state.distance + delta * 0.01));
+        // Same percent-of-distance reasoning as the wheel handler: scale by how much the ratio
+        // between fingers changed, not the raw pixel delta, so pinching feels consistent at any
+        // zoom level. Fingers spreading apart (d grows past the last reading) zooms in, matching
+        // this gesture's meaning everywhere else on a touch device.
+        state.distance = clampDistance(state.distance * (state.pinchDist / d));
         state.pinchDist = d;
       }
     }

@@ -214,6 +214,28 @@ there's intentionally one source of truth, not separate logic per view.
   real browser: the globe chunk is not requested on initial page load, only once the user
   actually opens the globe view. Cut the initial bundle from 869.9KB to 249.8KB (78.2KB
   gzipped) — under the warning threshold with room to spare.
+- **Improved the Globe's zoom range and drag feel, on request.** Two complaints: couldn't
+  zoom in close enough to tell nearby spots apart (e.g. Swami's/Blacks Beach/Todos Santos all
+  overlapped into one blob near Southern California/Baja no matter how far you zoomed), and
+  dragging felt imprecise once zoomed in. Both had the same root cause in `Globe.jsx`:
+  `MIN_DISTANCE` was clamped to 1.5 (never let the globe fill enough of the screen to spread
+  markers apart), and drag-to-rotate used a *fixed* radians-per-pixel sensitivity that was
+  only ever tuned for the default zoom level — once you zoomed in and the globe filled more
+  of the screen, that same fixed rotation swept the visible surface across far more pixels
+  than you'd dragged, overshooting and feeling twitchy right when precision mattered most.
+  Fixed by pulling `MIN_DISTANCE` in to 1.12 (pulling the camera's near-clip plane in to
+  match, or the near side of the globe — exactly what you're zooming in to see — would start
+  clipping), and deriving drag sensitivity from the actual perspective-projection math so it
+  scales with current zoom instead of a magic constant: a given pixel drag now rotates the
+  point under your cursor by very close to that many pixels, at any zoom level. Wheel/pinch
+  zoom also switched from an additive step to a multiplicative (percent-of-distance) one, so
+  zoom speed feels consistent across the now much wider usable range instead of a fixed step
+  being a huge relative jump once zoomed in close. Verified with a headless-Chromium smoke
+  test: confirmed the three previously-overlapping SoCal/Baja spots above are now clearly
+  separated with individually readable labels once zoomed in, tap-to-select (raycasting)
+  still resolves correctly at every zoom level tested, drag still rotates the view smoothly
+  while zoomed in, and max-zoom-out is unchanged — no console errors or rendering artifacts
+  (no near-plane clipping) at any point across the whole range.
 
 ## Suggested next steps
 
