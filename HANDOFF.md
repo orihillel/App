@@ -237,6 +237,48 @@ there's intentionally one source of truth, not separate logic per view.
   while zoomed in, and max-zoom-out is unchanged — no console errors or rendering artifacts
   (no near-plane clipping) at any point across the whole range.
 
+- **Made the globe smooth, and swapped in real satellite imagery, on request.** Reported as
+  "still not smooth" and "still want to zoom in more" after the earlier zoom/sensitivity pass.
+  Measuring first mattered here: a headless-Chromium harness showed ~12fps idle, but the same
+  harness reported an empty page at a clean 60fps and `UNMASKED_RENDERER_WEBGL` came back as
+  **SwiftShader** — that environment has no GPU and rasterizes in software, so its frame times
+  say nothing about a real phone. The first theory (per-frame DOM thrash) was from reading the
+  code, and fixing it barely moved the local numbers. So the work split in two: CPU-side fixes
+  that are correct regardless, and GPU-side fixes targeting costs that are well established on
+  real hardware but not measurable here.
+  - *CPU:* 150+ individual marker `Mesh`es became one `InstancedMesh` (150+ draw calls -> 1;
+    `Raycaster` reports `instanceId`, so tap-to-select needed no lookup list). Marker colours
+    and label text moved off the render loop onto a 1s timer — it was rewriting all 153 labels'
+    `textContent` every frame, ~9,000 DOM writes a second. Label positioning is allocation-free
+    now (reused scratch vectors instead of ~460 `Vector3.clone()`s per frame) and uses
+    `transform` rather than `left`/`top` so moving a label can't trigger layout.
+  - *GPU:* dropped `logarithmicDepthBuffer` (it forces `gl_FragDepth` writes, which disable
+    early-Z — especially punishing on the tile-based GPUs in phones), capped `devicePixelRatio`
+    at 2 instead of 3 (fragment cost is quadratic in it; 3x on a phone screen meant 9x the
+    pixels *plus* MSAA for no visible gain at this size), and cut the sphere from 96x96 to
+    64x48 segments. The globe also now **skips rendering entirely when nothing is moving** —
+    measured at 4 draw calls per 1.5s idle, against ~14,000 before.
+  - *Feel:* input now writes to a *target* rotation/zoom that the frame loop eases toward, with
+    flick momentum and friction after release. Wheel/pinch glide instead of stepping.
+  - *Zoom:* the near-clip plane is recomputed per frame from the current distance rather than
+    pinned to one compromise value, which is what removes the need for the logarithmic depth
+    buffer *and* allows `MIN_DISTANCE` to come in further (1.12 -> 1.08).
+  - *Bug found on the way:* labels were placed by "does this marker face the camera", which
+    zoomed out is the same as "is it on screen" but zoomed in is not — the camera covers a few
+    degrees of arc while the facing test passes for most of the hemisphere. Labels for spots
+    well outside the view were being positioned far outside the canvas, which (the container
+    doesn't clip) spilled them over the header and bottom nav. Now frustum-culled; verified 8
+    labels visible with 0 outside the canvas at a zoom that previously put them at x=-452px,
+    y=1335px in a 362x420 canvas.
+  - *Imagery:* real NASA Blue Marble satellite imagery (public domain, no API key) now loads in
+    the background and swaps in over the drawn map, which stays as the instant, offline-safe
+    base. Google Maps/Earth tiles were ruled out deliberately: they need a billing-enabled API
+    key and their terms don't allow the tiles outside Google's own SDKs, so they can't ship in a
+    static app. **The imagery URL could not be verified from the sandbox** (its proxy blocks
+    nasa.gov), so the fallback is load-bearing rather than belt-and-braces — and it was
+    exercised for real, since the fetch did fail there and the globe rendered correctly anyway.
+    `SATELLITE_TEXTURE_URL` in `Globe.jsx` is the single thing to change if it needs swapping.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
