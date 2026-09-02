@@ -1,8 +1,10 @@
 import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';
+import { isAuthConfigured } from '../lib/auth.js';
+import { AuthButtons } from './AuthButtons.jsx';
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
@@ -17,6 +19,35 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
       </div>
 
       <div style={{ padding: '0 20px' }}>
+        {(session || isAuthConfigured()) && (
+          <>
+            <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>ACCOUNT</div>
+            {session ? (
+              <div className="flex items-center justify-between" style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '9px 12px', marginBottom: 18 }}>
+                <div className="flex items-center" style={{ gap: 10, minWidth: 0 }}>
+                  {session.profile.picture ? (
+                    <img src={session.profile.picture} alt="" width={32} height={32} style={{ borderRadius: 999, flexShrink: 0 }} />
+                  ) : (
+                    <div style={{ width: 32, height: 32, borderRadius: 999, background: COLORS.tealBright, flexShrink: 0 }} />
+                  )}
+                  <div style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 13, color: COLORS.foam, fontWeight: 600, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{session.profile.name || 'Signed in'}</div>
+                    <div style={{ fontSize: 10.5, color: COLORS.tealBright, marginTop: 1 }}>Synced across your devices</div>
+                  </div>
+                </div>
+                <button className="tl-btn" onClick={onLogOut} style={{ background: 'none', border: 'none', padding: 4, flexShrink: 0, color: COLORS.foamDim, fontSize: 11.5, fontWeight: 600 }}>Log out</button>
+              </div>
+            ) : (
+              <div style={{ marginBottom: 18 }}>
+                <div style={{ fontSize: 11, color: COLORS.foamDim, marginBottom: 10, lineHeight: 1.4 }}>
+                  Sign in to keep your go-to spot, added spots, and alerts synced across devices.
+                </div>
+                <AuthButtons onLoggedIn={onLoggedIn} setToast={setToast} />
+              </div>
+            )}
+          </>
+        )}
+
         <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>GO-TO SPOT</div>
         <div className="flex overflow-x-auto no-scrollbar" style={{ gap: 8, marginBottom: 18 }}>
           {order.map((id) => {

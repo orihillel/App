@@ -27,6 +27,22 @@ all well under the free limits for a personal-scale app).
   tab is open. One shared implementation means "would this alert fire" can never drift between
   what you see live in the app and what the Worker decides in the background.
 
+This Worker also handles account login ("Continue with Google" / "Continue with Meta" on the
+app's first screen and in Profile) and syncing an account's data across devices:
+
+- **`src/googleAuth.js`** — verifies a Google "Sign In With Google" ID token by checking its
+  RS256 signature against Google's published JWKS, using nothing but Web Crypto (same
+  no-Node-internals reasoning as `push.js`).
+- **`src/facebookAuth.js`** — verifies a Facebook (Meta) Login access token via a server-side
+  round trip to the Graph API's `/debug_token` (confirming it's genuinely valid and issued to
+  *this* app) and `/me` (fetching the profile).
+- **`src/session.js`** — this Worker's own lightweight signed session tokens (HMAC-SHA256,
+  not a full JWT library), issued after a Google/Facebook login succeeds and sent back by the
+  client as `Authorization: Bearer <token>` on `/me` and `/me/data`.
+- **`src/userStore.js`** — KV access for accounts: one entry per user, storing their profile
+  and their synced app data (go-to spot, custom-added spots, alerts, units — deliberately
+  *not* the built-in spot catalog, which is identical on every device already).
+
 ## One-time setup
 
 You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
@@ -38,12 +54,13 @@ You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
    npx wrangler login   # opens a browser to authorize the CLI against your account
    ```
 
-2. **Create the KV namespace** subscriptions are stored in:
+2. **Create the two KV namespaces** this Worker uses:
    ```bash
    npx wrangler kv namespace create SUBSCRIPTIONS
+   npx wrangler kv namespace create USERS
    ```
-   Copy the `id` it prints into `wrangler.toml`'s `[[kv_namespaces]]` block, replacing
-   `REPLACE_WITH_YOUR_KV_NAMESPACE_ID`.
+   Copy each `id` it prints into `wrangler.toml`'s matching `[[kv_namespaces]]` block,
+   replacing `REPLACE_WITH_YOUR_KV_NAMESPACE_ID` / `REPLACE_WITH_YOUR_USERS_KV_NAMESPACE_ID`.
 
 3. **Generate a VAPID keypair** (identifies this Worker to push services — not tied to your
    Cloudflare account, just a keypair):
@@ -58,13 +75,49 @@ You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
      # paste the private key when prompted
      ```
 
-4. **Edit `wrangler.toml`**:
+4. **Set up "Continue with Google"** (skip this and step 5 if you only want one provider —
+   each works independently; the button for an unconfigured provider just doesn't render):
+   - Go to the [Google Cloud Console credentials page](https://console.cloud.google.com/apis/credentials),
+     create a project if you don't have one, and create an **OAuth client ID** of type
+     **Web application**.
+   - Under **Authorized JavaScript origins**, add your GitHub Pages origin (e.g.
+     `https://<owner>.github.io`) and `http://localhost:5173` if you want it working in local
+     dev too. No redirect URI is needed — this app uses Google's client-side "Sign In With
+     Google" button, not a server redirect flow.
+   - Copy the **Client ID** it gives you (looks like `123...apps.googleusercontent.com`) into
+     `wrangler.toml`'s `GOOGLE_CLIENT_ID` — this is safe to commit, it identifies the app, not
+     a secret.
+
+5. **Set up "Continue with Meta"**:
+   - Create an app at the [Meta for Developers dashboard](https://developers.facebook.com/apps/),
+     add the **Facebook Login** product to it, and under its settings add your GitHub Pages
+     origin as a valid OAuth redirect/JavaScript origin the same way as Google above.
+   - Copy the **App ID** into `wrangler.toml`'s `FACEBOOK_APP_ID` (safe to commit) and the
+     **App Secret** as a Worker secret, never committed:
+     ```bash
+     npx wrangler secret put FACEBOOK_APP_SECRET
+     ```
+   - **Important:** a new Meta app only works for its own developers/admins and accounts
+     you've explicitly added as testers (App Dashboard → Roles → Test Users, or add a real
+     account under Roles → Roles) until you submit it for **App Review** (Meta's process for
+     letting the general public use Facebook Login) and it's approved. Until then, the button
+     will render and work for you, but a random visitor's login attempt will fail — that's
+     expected, not a bug in this code.
+
+6. **Generate a session secret** (signs this Worker's own login sessions — see
+   `src/session.js` — unrelated to either provider's credentials):
+   ```bash
+   npx wrangler secret put SESSION_SECRET
+   # paste any long random string when prompted, e.g. from: openssl rand -base64 32
+   ```
+
+7. **Edit `wrangler.toml`**:
    - `VAPID_SUBJECT` — a `mailto:` or `https:` URL you control (shown to push services if
      they need to contact you about this VAPID identity).
    - `ALLOWED_ORIGIN` — your GitHub Pages origin, e.g. `https://<owner>.github.io` (CORS: only
-     this origin may call `/subscribe` and `/unsubscribe`).
+     this origin may call this Worker's endpoints).
 
-5. **Deploy:**
+8. **Deploy:**
    ```bash
    npx wrangler deploy
    ```
@@ -73,21 +126,28 @@ You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
 
 ## Wiring up the frontend
 
-The app needs two build-time env vars (see `src/lib/push.js`) — both are meant to be public,
-safe to commit or put in a repo variable:
+The app needs a few build-time env vars — all meant to be public, safe to commit or put in a
+repo variable:
 
-- `VITE_VAPID_PUBLIC_KEY` — the same public key from step 3 above.
-- `VITE_PUSH_API_URL` — the Worker URL from step 5 (no trailing slash).
+- `VITE_VAPID_PUBLIC_KEY` — the same public key from step 3 above (see `src/lib/push.js`).
+- `VITE_PUSH_API_URL` — the Worker URL from step 8 (no trailing slash) — used for both push
+  notifications and account login/sync, since they're the same Worker.
+- `VITE_GOOGLE_CLIENT_ID` — the Client ID from step 4, if you set up Google (see
+  `src/lib/auth.js`). Omit it and the Google button just doesn't render.
+- `VITE_FACEBOOK_APP_ID` — the App ID from step 5, if you set up Meta. Omit it and the Meta
+  button just doesn't render.
 
 Set them wherever the frontend gets built:
 - **Locally**: create `.env.local` at the repo root (gitignored by Vite's default patterns)
-  with both `VITE_...` lines.
+  with the `VITE_...` lines you need.
 - **GitHub Pages deploy** (`.github/workflows/deploy.yml`): add them as repository variables
   (Settings → Secrets and variables → Actions → Variables) and reference them as `env:` in the
   build step, or bake them into the workflow file directly since they're not secret.
 
-Without both set, the Profile toggle just shows "Not available" — the rest of the app works
-identically either way (this is intentionally optional, not a hard dependency).
+Without `VITE_VAPID_PUBLIC_KEY`/`VITE_PUSH_API_URL` set, the Profile push toggle just shows
+"Not available"; without `VITE_GOOGLE_CLIENT_ID`/`VITE_FACEBOOK_APP_ID`, the corresponding
+login button just doesn't render. The rest of the app works identically either way — every
+piece here is intentionally optional, not a hard dependency.
 
 ## Deploying the Worker from CI
 
@@ -99,8 +159,9 @@ It needs two repository secrets (Settings → Secrets and variables → Actions 
   "Edit Cloudflare Workers" template (scope it to this account if offered the choice).
 - `CLOUDFLARE_ACCOUNT_ID` — found in the dashboard's right sidebar on any domain/Workers page.
 
-The `VAPID_PRIVATE_KEY` secret (step 3 above) is set directly on the Worker via `wrangler
-secret put` and isn't something CI needs to touch — it persists across deploys.
+The `VAPID_PRIVATE_KEY`, `FACEBOOK_APP_SECRET`, and `SESSION_SECRET` secrets (steps 3, 5, and
+6 above) are set directly on the Worker via `wrangler secret put` and aren't something CI needs
+to touch — they persist across deploys.
 
 ## Local development
 
@@ -110,9 +171,11 @@ npm run dev          # wrangler dev — runs the Worker locally via Miniflare
 npm test             # the test suite (plain Node/vitest + a fake in-memory KV — see below)
 ```
 
-For `wrangler dev` to have VAPID keys locally, create `worker/.dev.vars` (gitignored):
+For `wrangler dev` to have secrets locally, create `worker/.dev.vars` (gitignored):
 ```
 VAPID_PRIVATE_KEY=your-private-key-here
+FACEBOOK_APP_SECRET=your-facebook-app-secret-here
+SESSION_SECRET=any-long-random-string-here
 ```
 
 To manually fire the cron job without waiting 30 minutes, either use the Cloudflare dashboard
@@ -130,7 +193,10 @@ real binding. `test/push.test.js` does exercise real cryptography (generates a t
 VAPID+subscription keypair and verifies `@block65/webcrypto-web-push` produces a genuinely
 valid, decodable signed JWT and encrypted payload) — that's the part most worth verifying
 actually works, since it's the reason this library was chosen over the more common `web-push`
-package.
+package. `test/googleAuth.test.js` does the same for Google ID token verification (a real
+throwaway RSA keypair signs a Google-shaped token, verified against a mocked JWKS response);
+`test/session.test.js` covers this Worker's own session tokens; `test/facebookAuth.test.js`
+covers the Graph API verification flow against a mocked `fetch`.
 
 What this **can't** verify locally: real KV's actual consistency/latency behavior, cron
 scheduling, and — most importantly — an end-to-end push notification actually arriving on a

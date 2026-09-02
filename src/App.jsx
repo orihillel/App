@@ -7,6 +7,7 @@ import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
+import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
 import { OnboardingView } from './components/OnboardingView.jsx';
 import { HomeView } from './components/HomeView.jsx';
 import { AlertsView } from './components/AlertsView.jsx';
@@ -108,6 +109,10 @@ export default function App() {
   const [alertDraft, setAlertDraft] = useState(null);
   const [units, setUnits] = useState('imperial');
 
+  // Account login (Google/Meta) + cross-device sync — see src/lib/auth.js and worker/README.md.
+  // Entirely optional: with no session, the app behaves exactly as it always has (local-only).
+  const [session, setSession] = useState(() => getSession());
+
   // Read by the Globe component's animation loop so every rendered frame reflects whatever is
   // currently in `forecast`, without a separate effect keyed on [forecast, hourIdx, ...] that
   // could fall out of sync (see Globe.jsx).
@@ -207,8 +212,78 @@ export default function App() {
     pickOnboardingSpot(id);
   }
 
-  async function persistAlerts(next) {
+  // Replaces local state with an account's synced data (goToId, custom-added spots, alerts,
+  // units) — used both right after login and when refreshing an existing session on load.
+  // Deliberately does NOT touch built-in seed spots: those are baked into the app itself and
+  // identical on every device, only what a user actually added is worth syncing (same
+  // philosophy as Profile's "YOUR SPOTS" list — see HANDOFF.md).
+  function applyRemoteAppData(appData) {
+    if (!appData) return;
+    if (appData.goToId) setGoToId(appData.goToId);
+    if (appData.units === 'metric' || appData.units === 'imperial') setUnits(appData.units);
+    if (Array.isArray(appData.alerts)) { setAlerts(appData.alerts); persistAlertsLocally(appData.alerts); }
+    if (Array.isArray(appData.customSpots) && appData.customSpots.length) {
+      setSpots((prev) => { const merged = { ...prev }; appData.customSpots.forEach((s) => { merged[s.id] = s; }); return merged; });
+      setOrder((prev) => { const ids = appData.customSpots.map((s) => s.id).filter((id) => !prev.includes(id)); return [...prev, ...ids]; });
+      appData.customSpots.forEach((s) => loadSpotData(s.id, s));
+      storage.set('surf-spots', JSON.stringify(appData.customSpots)).catch(() => {});
+    }
+  }
+  // Called after a successful Google/Facebook login (from Onboarding or Profile — see
+  // AuthButtons.jsx). A brand-new account (or one with nothing synced yet) gets seeded from
+  // whatever's already on this device, rather than looking like it just erased everything;
+  // an account with real synced data replaces local state with it, the ordinary "sign in to
+  // get your stuff back" expectation.
+  function handleLoginResult(result) {
+    setSession({ sessionToken: result.sessionToken, profile: result.profile });
+    const hasRemoteData = !result.isNewAccount && result.appData;
+    if (hasRemoteData) applyRemoteAppData(result.appData);
+    else pushAppData(result.sessionToken, currentAppData());
+    if (!onboarded) completeOnboarding(hasRemoteData && result.appData.goToId ? result.appData.goToId : activeId);
+    setToast('Signed in as ' + (result.profile.name || 'your account'));
+  }
+  // Logging out only forgets this device's session token — the data itself stays right where
+  // it already lives, in local storage, exactly as if the account were never involved.
+  function handleLogOut() {
+    clearStoredSession();
+    setSession(null);
+    setToast('Signed out — your spots and alerts stay on this device');
+  }
+  function currentAppData(overrides = {}) {
+    return {
+      goToId,
+      customSpots: order.filter((id) => !ORDER.includes(id)).map((id) => spots[id]).filter(Boolean),
+      alerts,
+      units,
+      ...overrides,
+    };
+  }
+  // If a session was already stored from a previous visit, pull this account's latest synced
+  // data in case another device changed something since — best-effort, same as everything else
+  // account-related: an expired token or unreachable Worker just means this device keeps using
+  // whatever it already has locally, not an error the user needs to see.
+  useEffect(() => {
+    if (!session) return;
+    fetchMyAccount(session.sessionToken).then(({ appData }) => applyRemoteAppData(appData)).catch(() => {});
+    // Mount-once: re-running this on every `session` change would also fire right after
+    // login, redundantly re-fetching data handleLoginResult already just applied.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  // Keeps a logged-in account's synced data current as this device's own data changes.
+  // Debounced so a burst of edits (e.g. nudging a new spot's offshore direction back and
+  // forth before saving) doesn't fire a request per keystroke-equivalent change.
+  useEffect(() => {
+    if (!session) return;
+    const t = setTimeout(() => pushAppData(session.sessionToken, currentAppData()), 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [session, goToId, order, spots, alerts, units]);
+
+  async function persistAlertsLocally(next) {
     try { await storage.set('surf-alerts', JSON.stringify(next)); } catch { /* best-effort */ }
+  }
+  async function persistAlerts(next) {
+    await persistAlertsLocally(next);
     // Keep the push-notification backend's copy of this device's alerts current — a no-op
     // if push isn't subscribed or configured (syncAlertsToPush checks both).
     syncAlertsToPush(pushSubscription, next, spots);
@@ -392,7 +467,8 @@ export default function App() {
                 title="Pick your go-to spot" hint="Tap a marker to set it as your go-to spot · drag to rotate, pinch or scroll to zoom" />
             </Suspense>
           ) : (
-            <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding} />
+            <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding}
+              onLoggedIn={handleLoginResult} setToast={setToast} />
           )
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
@@ -402,7 +478,8 @@ export default function App() {
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
           <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
-            pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush} />
+            pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
+            session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast} />
         ) : (
           <HomeView
             setToast={setToast} units={units} toggleUnits={toggleUnits} openSearch={openSearch}

@@ -1,6 +1,11 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ProfileView } from './ProfileView.jsx';
+
+vi.mock('../lib/auth.js', () => ({ isAuthConfigured: vi.fn() }));
+vi.mock('./AuthButtons.jsx', () => ({ AuthButtons: () => <div data-testid="auth-buttons-stub" /> }));
+
+const { isAuthConfigured } = await import('../lib/auth.js');
+const { ProfileView } = await import('./ProfileView.jsx');
 
 // 'trestles' is a real seed id (in the actual src/lib/spots.js SEED_ORDER the component
 // imports), so it exercises the built-in filtering even though this fixture doesn't repeat
@@ -19,6 +24,7 @@ function renderProfile(overrides = {}) {
     units: 'imperial', toggleUnits: vi.fn(), alerts: [], openAlerts: vi.fn(),
     removeSpot: vi.fn(), onClose: vi.fn(), onSelectSpot: vi.fn(),
     pushSupported: false, pushSubscribed: false, pushBusy: false, togglePush: vi.fn(),
+    session: null, onLoggedIn: vi.fn(), onLogOut: vi.fn(), setToast: vi.fn(),
     ...overrides,
   };
   render(<ProfileView {...props} />);
@@ -26,6 +32,8 @@ function renderProfile(overrides = {}) {
 }
 
 describe('ProfileView YOUR SPOTS list', () => {
+  beforeEach(() => { isAuthConfigured.mockReturnValue(false); });
+
   it('only lists spots the user added, not built-in seed spots', () => {
     renderProfile();
     expect(screen.getByText('YOUR SPOTS (2)')).toBeInTheDocument();
@@ -57,5 +65,36 @@ describe('ProfileView YOUR SPOTS list', () => {
     fireEvent.click(screen.getByLabelText('Remove My Local Break'));
     expect(props.removeSpot).toHaveBeenCalledWith('custom-1');
     expect(props.onSelectSpot).not.toHaveBeenCalled();
+  });
+});
+
+describe('ProfileView ACCOUNT section', () => {
+  beforeEach(() => { isAuthConfigured.mockReturnValue(false); });
+
+  it('is not shown at all when logged out and no login provider is configured', () => {
+    renderProfile();
+    expect(screen.queryByText('ACCOUNT')).not.toBeInTheDocument();
+  });
+
+  it('shows a sign-in prompt when logged out but a login provider is configured', () => {
+    isAuthConfigured.mockReturnValue(true);
+    renderProfile();
+    expect(screen.getByText('ACCOUNT')).toBeInTheDocument();
+    expect(screen.getByTestId('auth-buttons-stub')).toBeInTheDocument();
+    expect(screen.getByText(/Sign in to keep your go-to spot/)).toBeInTheDocument();
+  });
+
+  it('shows the account name, sync note, and a log-out button when logged in', () => {
+    // Shown even if isAuthConfigured() is false (e.g. env changed after this session logged
+    // in) -- an existing session is what decides this, not current configuration.
+    const session = { sessionToken: 'tok123', profile: { name: 'Ada Surfer', picture: '' } };
+    const props = renderProfile({ session });
+    expect(screen.getByText('ACCOUNT')).toBeInTheDocument();
+    expect(screen.getByText('Ada Surfer')).toBeInTheDocument();
+    expect(screen.getByText('Synced across your devices')).toBeInTheDocument();
+    expect(screen.queryByTestId('auth-buttons-stub')).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByText('Log out'));
+    expect(props.onLogOut).toHaveBeenCalled();
   });
 });

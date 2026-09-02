@@ -1,14 +1,27 @@
 import { Search, Map } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { SPOTS, ONBOARDING_PICKS } from '../lib/spots.js';
+import { isAuthConfigured } from '../lib/auth.js';
+import { AuthButtons } from './AuthButtons.jsx';
 
-export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding }) {
+export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding, onLoggedIn, setToast }) {
   return (
     <div style={{ padding: '26px 24px 24px' }}>
       <div style={{ textAlign: 'center', marginBottom: 26 }}>
         <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 20, color: COLORS.foam, letterSpacing: '0.1em' }}>TIDELINE</div>
         <div style={{ fontSize: 13, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.5 }}>Pick your go-to spot. It's the first thing you'll see every time you open the app.</div>
       </div>
+
+      {isAuthConfigured() && (
+        <div style={{ marginBottom: 22 }}>
+          <AuthButtons onLoggedIn={onLoggedIn} setToast={setToast} />
+          <div className="flex items-center" style={{ gap: 10, margin: '16px 0' }}>
+            <div style={{ flex: 1, height: 1, background: COLORS.navyBorder }} />
+            <span style={{ fontSize: 10.5, color: COLORS.foamDim, letterSpacing: '0.06em' }}>OR PICK MANUALLY</span>
+            <div style={{ flex: 1, height: 1, background: COLORS.navyBorder }} />
+          </div>
+        </div>
+      )}
 
       <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 10 }}>POPULAR SPOTS</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
