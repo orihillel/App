@@ -163,6 +163,27 @@ there's intentionally one source of truth, not separate logic per view.
   view with a headless Chromium smoke test — this affected layout app-wide, not just the new
   navigation UI. `npm run check:classnames` (`scripts/check-classnames.mjs`, wired into CI)
   now fails the build if a new `className` token is ever added without a matching rule.
+- **Added account login ("Continue with Google" / "Continue with Meta") and cross-device
+  sync**, on request. On the first-run onboarding screen and in Profile, backed by the same
+  Cloudflare Worker as push notifications (`worker/src/googleAuth.js`, `facebookAuth.js`,
+  `session.js`, `userStore.js` — new `/auth/google`, `/auth/facebook`, `GET /me`,
+  `PUT /me/data` routes; `src/lib/auth.js`, `AuthButtons.jsx` on the frontend). Only a go-to
+  spot, custom-added spots, alerts, and units are synced — the built-in spot catalog is
+  identical on every device already, so syncing it would just be waste (same philosophy as
+  the "YOUR SPOTS" list fix above). A brand-new account seeds itself from whatever's already
+  on the device that logged in first, rather than looking like it erased anything; logging
+  in on an account with existing synced data replaces local state with it. Logging out only
+  forgets this device's session token — local data stays put either way.
+  Like push notifications, this needs one-time setup only a human can do (a Google OAuth
+  Client ID, a Meta app + **App Review** before the public — not just testers — can use
+  Facebook Login) — see `worker/README.md`. Until configured, both buttons simply don't
+  render and the rest of the app is unaffected; verified with lint + `check:classnames` +
+  102 tests (up from 74 — new coverage for the Worker's token verification against real
+  signed-JWT/mocked-Graph-API crypto, and the frontend's config-gating/login-flow/logged-in
+  UI) + build + a headless-Chromium smoke test with fake credentials configured, confirming
+  both buttons actually render and a simulated logged-in session shows correctly in Profile
+  (name, avatar fallback, "Log out") — then re-verified once more with credentials removed
+  again to confirm the default (most users', today) experience is unchanged.
 - ~~**`src/App.jsx` is still one ~1,500-line file.**~~ — **Split.** `App.jsx` is now 356 lines
   (state, effects, and orchestration only). Pure logic/data moved to `src/lib/` (`rating.js`,
   `forecast.js`, `format.js`, `spots.js`, `placeholders.js`, `colors.js`, `geo3d.js`); each
