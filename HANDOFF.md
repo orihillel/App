@@ -141,6 +141,14 @@ there's intentionally one source of truth, not separate logic per view.
   when installed, and falls back to Google Maps in the browser otherwise. The
   spot-browsing navigation from the entries above stays, since it's a real and separately
   useful feature — this is additive, not a revert.
+  **Update: Profile's "YOUR SPOTS" list no longer dumps the whole catalog.** It used to
+  render every id in `order`, which was fine when that was a few dozen hand-picked seed
+  spots but just re-lists the entire app now that the built-in catalog is in the hundreds.
+  `ProfileView.jsx` now filters it to non-seed spots — the ones a user actually added via
+  search — with an empty-state message pointing at Home's search icon and the globe when
+  there aren't any yet. The "GO-TO SPOT" chip row above it is unchanged (still all of
+  `order`, horizontally scrollable) — this was a deliberate, narrower fix to the one
+  component actually described as "a list", not a rework of every spot picker in Profile.
 - **Newly found while adding the above: every `className`-based layout in the app was
   silently broken.** No stylesheet defining `flex`, `justify-between`, `items-center`,
   `grid-cols-3`, etc. has ever existed in this repo — components were written assuming a
