@@ -2,11 +2,16 @@ import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ProfileView } from './ProfileView.jsx';
 
+// 'trestles' is a real seed id (in the actual src/lib/spots.js SEED_ORDER the component
+// imports), so it exercises the built-in filtering even though this fixture doesn't repeat
+// that catalog. 'custom-1'/'custom-2' are not seed ids, so they stand in for spots a user
+// added themselves.
 const SPOTS = {
   trestles: { name: 'Lower Trestles', region: 'San Clemente, CA' },
   'custom-1': { name: 'My Local Break', region: 'Added spot' },
+  'custom-2': { name: 'Second Local Break', region: 'Added spot' },
 };
-const ORDER = ['trestles', 'custom-1'];
+const ORDER = ['trestles', 'custom-1', 'custom-2'];
 
 function renderProfile(overrides = {}) {
   const props = {
@@ -20,8 +25,22 @@ function renderProfile(overrides = {}) {
   return props;
 }
 
-describe('ProfileView spot list navigation', () => {
-  it('navigates to a spot when its row in YOUR SPOTS is clicked', () => {
+describe('ProfileView YOUR SPOTS list', () => {
+  it('only lists spots the user added, not built-in seed spots', () => {
+    renderProfile();
+    expect(screen.getByText('YOUR SPOTS (2)')).toBeInTheDocument();
+    expect(screen.getByLabelText('View My Local Break')).toBeInTheDocument();
+    expect(screen.getByLabelText('View Second Local Break')).toBeInTheDocument();
+    expect(screen.queryByLabelText('View Lower Trestles')).not.toBeInTheDocument();
+  });
+
+  it('shows an empty-state message when no spots have been added', () => {
+    renderProfile({ order: ['trestles'] });
+    expect(screen.getByText('YOUR SPOTS (0)')).toBeInTheDocument();
+    expect(screen.getByText(/Spots you add show up here/)).toBeInTheDocument();
+  });
+
+  it('navigates to an added spot when its row is clicked', () => {
     const props = renderProfile();
     fireEvent.click(screen.getByLabelText('View My Local Break'));
     expect(props.onSelectSpot).toHaveBeenCalledWith('custom-1');
@@ -29,21 +48,14 @@ describe('ProfileView spot list navigation', () => {
 
   it('is keyboard-accessible (Enter navigates the same as a click)', () => {
     const props = renderProfile();
-    fireEvent.keyDown(screen.getByLabelText('View Lower Trestles'), { key: 'Enter' });
-    expect(props.onSelectSpot).toHaveBeenCalledWith('trestles');
+    fireEvent.keyDown(screen.getByLabelText('View Second Local Break'), { key: 'Enter' });
+    expect(props.onSelectSpot).toHaveBeenCalledWith('custom-2');
   });
 
-  it('removing a custom spot does not also navigate to it', () => {
+  it('removing an added spot does not also navigate to it', () => {
     const props = renderProfile();
     fireEvent.click(screen.getByLabelText('Remove My Local Break'));
     expect(props.removeSpot).toHaveBeenCalledWith('custom-1');
     expect(props.onSelectSpot).not.toHaveBeenCalled();
-  });
-
-  it('built-in spots have no remove button but are still navigable', () => {
-    const props = renderProfile();
-    expect(screen.queryByLabelText('Remove Lower Trestles')).not.toBeInTheDocument();
-    fireEvent.click(screen.getByLabelText('View Lower Trestles'));
-    expect(props.onSelectSpot).toHaveBeenCalledWith('trestles');
   });
 });

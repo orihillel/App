@@ -3,6 +3,12 @@ import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';
 
 export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush }) {
+  // "Your spots" used to mean the whole `order` list, back when that list was a small,
+  // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
+  // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
+  // Globe are how you browse/find a spot; this section is for managing what you personally
+  // added on top of that, so it's filtered down to non-seed spots only.
+  const addedIds = order.filter((id) => spots[id] && !SEED_ORDER.includes(id));
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -57,33 +63,33 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
           When on, your alerts are also checked in the background and pushed to this device — not just while the app is open.
         </div>
 
-        <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>YOUR SPOTS ({order.length})</div>
-        <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
-          {order.map((id) => {
-            const s = spots[id];
-            if (!s) return null;
-            const isSeed = SEED_ORDER.includes(id);
-            return (
-              // A div, not a <button> -- it contains its own nested remove button below, and
-              // a button can't nest inside a button. onClick + role/tabIndex make it keyboard-
-              // and screen-reader-accessible as one anyway.
-              <div key={id} className="tl-btn flex items-center justify-between" role="button" tabIndex={0}
-                onClick={() => onSelectSpot(id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectSpot(id); }}
-                aria-label={'View ' + s.name}
-                style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '9px 12px' }}>
-                <div>
-                  <div style={{ fontSize: 13, color: COLORS.foam, fontWeight: 600 }}>{s.name}{id === goToId && <span style={{ color: COLORS.tealBright }}> ★</span>}</div>
-                  <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginTop: 1 }}>{s.region}</div>
-                </div>
-                {isSeed ? (
-                  <span style={{ fontSize: 9.5, color: COLORS.foamDim, letterSpacing: '0.04em' }}>BUILT-IN</span>
-                ) : (
+        <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>YOUR SPOTS ({addedIds.length})</div>
+        {addedIds.length === 0 ? (
+          <div style={{ fontSize: 11, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.5 }}>
+            Spots you add show up here to manage. To browse the built-in catalog, use the search icon on Home or the globe in the bottom nav.
+          </div>
+        ) : (
+          <div style={{ display: 'flex', flexDirection: 'column', gap: 6, marginBottom: 18 }}>
+            {addedIds.map((id) => {
+              const s = spots[id];
+              return (
+                // A div, not a <button> -- it contains its own nested remove button below, and
+                // a button can't nest inside a button. onClick + role/tabIndex make it keyboard-
+                // and screen-reader-accessible as one anyway.
+                <div key={id} className="tl-btn flex items-center justify-between" role="button" tabIndex={0}
+                  onClick={() => onSelectSpot(id)} onKeyDown={(e) => { if (e.key === 'Enter' || e.key === ' ') onSelectSpot(id); }}
+                  aria-label={'View ' + s.name}
+                  style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '9px 12px' }}>
+                  <div>
+                    <div style={{ fontSize: 13, color: COLORS.foam, fontWeight: 600 }}>{s.name}{id === goToId && <span style={{ color: COLORS.tealBright }}> ★</span>}</div>
+                    <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginTop: 1 }}>{s.region}</div>
+                  </div>
                   <button className="tl-btn" onClick={(e) => { e.stopPropagation(); removeSpot(id); }} style={{ background: 'none', border: 'none', padding: 4 }} aria-label={'Remove ' + s.name}><X size={15} color={COLORS.foamDim} /></button>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
 
         <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>DATA</div>
         <div style={{ fontSize: 11, color: COLORS.foamDim, lineHeight: 1.6, paddingBottom: 20 }}>
