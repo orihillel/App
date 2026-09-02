@@ -129,6 +129,18 @@ there's intentionally one source of truth, not separate logic per view.
   Coast and Pacific Northwest, Ireland/UK, West Africa, remote Australia, and cold-water
   Atlantic spots (Iceland, Nova Scotia). Same estimation caveat as both earlier batches;
   the least-documented entries are called out by name in that comment.
+  **Update: "navigation" turned out to mean turn-by-turn directions, not in-app spot
+  browsing.** Everything above this line under "navigation" (chevrons, tap-through lists,
+  the globe picker) was a misread of the original request — it meant driving/walking/
+  transit directions to the spot, like Google Maps or Waze. Added a map-pin button next
+  to the go-to star on each spot's Home page (`directionsUrl` in `HomeView.jsx`) that
+  deep-links to Google Maps' directions API (`/maps/dir/?api=1&destination=lat,lon`) with
+  no `origin` (so Maps uses the visitor's current location) and no `travelmode` (so
+  driving/walking/transit stays a choice inside Maps, rather than this app guessing one).
+  This URL scheme opens the native Google Maps app via a universal link on iOS/Android
+  when installed, and falls back to Google Maps in the browser otherwise. The
+  spot-browsing navigation from the entries above stays, since it's a real and separately
+  useful feature — this is additive, not a revert.
 - **Newly found while adding the above: every `className`-based layout in the app was
   silently broken.** No stylesheet defining `flex`, `justify-between`, `items-center`,
   `grid-cols-3`, etc. has ever existed in this repo — components were written assuming a

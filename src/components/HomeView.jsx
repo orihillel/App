@@ -1,7 +1,17 @@
-import { Menu, Search, Star, Navigation, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12 } from '../lib/format.js';
+
+// Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
+// Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
+// transit as a in-Maps choice, rather than this app guessing one -- covers "get me there by
+// car, on foot, or by transit" with one link. Works cross-platform: this URL scheme opens the
+// native Google Maps app via a universal/app link on iOS and Android when it's installed, and
+// falls back to Google Maps in the browser otherwise (including on desktop).
+function directionsUrl(spot) {
+  return `https://www.google.com/maps/dir/?api=1&destination=${spot.lat},${spot.lon}`;
+}
 
 export function HomeView({
   setToast, units, toggleUnits, openSearch,
@@ -38,9 +48,14 @@ export function HomeView({
             <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6, flexShrink: 0 }} onClick={onNextSpot} aria-label="Next spot"><ChevronRight size={18} color={COLORS.foamDim} /></button>
           )}
         </div>
-        <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6, flexShrink: 0 }} onClick={makeGoTo} aria-label="Set as go-to spot">
-          <Star size={22} color={isGoTo ? COLORS.gold : COLORS.foamDim} fill={isGoTo ? COLORS.gold : 'none'} />
-        </button>
+        <div className="flex items-start" style={{ gap: 2, flexShrink: 0 }}>
+          <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6 }} onClick={() => window.open(directionsUrl(spot), '_blank', 'noopener,noreferrer')} aria-label={'Get directions to ' + spot.name}>
+            <MapPin size={20} color={COLORS.foamDim} />
+          </button>
+          <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6 }} onClick={makeGoTo} aria-label="Set as go-to spot">
+            <Star size={22} color={isGoTo ? COLORS.gold : COLORS.foamDim} fill={isGoTo ? COLORS.gold : 'none'} />
+          </button>
+        </div>
       </div>
 
       <div className="mx-6 relative overflow-hidden" style={{ borderRadius: 14, padding: '18px 18px 20px', background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder }}>
