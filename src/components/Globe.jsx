@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
-import { latLonToVector3 } from '../lib/geo3d.js';
+import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
 import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
 import LANDMASSES from '../data/landmasses.json';
@@ -279,30 +279,42 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // level — see updateMarkerScale below — so the matrix buffer is rewritten occasionally.
     markerMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
 
-    // Markers hold a roughly constant size *on screen* rather than in the world. Built at a
-    // fixed world radius they stayed physically the same size as you zoomed, which meant that
-    // up close a single dot covered more ground than the island it was marking — a dot bigger
-    // than Hawaii. In a perspective projection apparent size is worldSize/distance, so scaling
-    // the world radius in step with the camera distance holds the on-screen size steady.
+    // Markers shrink *on screen* as you zoom in, rather than holding a fixed world size.
     //
-    // Capped at 1x so this only ever shrinks them: the reference is the default zoom, which
-    // already looked right, and zoomed further out a constant screen size would turn 153 spots
-    // into a chunky, overlapping mess on a small globe. So: same as before at default zoom and
-    // beyond, progressively smaller as you close in.
-    // The depth to divide by is the camera's distance to the marker shell, not to the globe's
-    // centre -- the same distinction that bit the drag sensitivity above. Using the centre
-    // distance still leaves markers ballooning as you close in (at the nearest zoom the centre
-    // is 1.08 away but the markers are only 0.035 away, a 30x difference), which is most of the
-    // original problem rather than a fix for it: measured across the zoom range, a marker went
-    // 14px -> 683px on the fixed world radius, 14px -> 279px scaling by centre distance, and
-    // holds a flat 14px scaling by shell distance, which is what this does.
-    const MARKER_REF_DISTANCE = 3.0; // the initial zoom, whose marker size is the reference
-    const MARKER_REF_DEPTH = MARKER_REF_DISTANCE - MARKER_SHELL;
+    // Built at a fixed world radius they stayed physically the same size while the geography
+    // grew around them, so up close one dot covered far more ground than the island it marked
+    // -- a dot bigger than Hawaii. Scaling the world radius in step with the camera's distance
+    // to the marker shell (not to the globe's centre -- the same distinction that bit the drag
+    // sensitivity above) cancels the perspective divide exactly and holds a constant on-screen
+    // size. That stopped the growth, but constant is still not small enough to fix the actual
+    // complaint: the usable zoom range only magnifies the globe about 2.8x (338px across at the
+    // default zoom, 939px at the closest), so at full zoom the Big Island is ~16px wide and
+    // Oahu ~5px, against a dot frozen at ~13.5px. The dot still swallows the island.
+    //
+    // So the size has to actively come down as you close in. Raising the depth ratio to a power
+    // slightly above 1 leaves an on-screen size proportional to ratio^(exp-1) instead of
+    // constant, and solving that for the size wanted at the closest zoom gives the exponent --
+    // no hand-tuned magic number, and it stays correct if MIN_DISTANCE moves. Measured: 13.5px
+    // at the default zoom down to ~5px at the closest, so the dot reads as a mark *on* a place
+    // rather than a blob covering it.
+    //
+    // Capped at 1x so this only ever shrinks: the reference is the default zoom, which already
+    // looked right, and zoomed further out a constant screen size would turn 153 spots into a
+    // chunky, overlapping mess on a small globe.
+    // The curve itself lives in lib/geo3d.js, where it's unit-testable without a GPU.
+    const MARKER_SCALING = {
+      shell: MARKER_SHELL,
+      refDistance: 3.0,   // the initial zoom, whose marker size is the reference
+      minDistance: MIN_DISTANCE,
+      closeShrink: 0.38,  // on-screen size at the closest zoom, as a fraction of the default
+    };
     let lastMarkerScale = -1;
     function updateMarkerScale() {
-      const scale = Math.min((state.distance - MARKER_SHELL) / MARKER_REF_DEPTH, 1);
+      const scale = markerScaleForDistance(state.distance, MARKER_SCALING);
       // Rewriting 153 matrices is cheap but not free, and a sub-pixel change isn't visible.
-      if (Math.abs(scale - lastMarkerScale) < 0.002) return;
+      // The threshold is relative, not absolute: zoomed right in the scale itself is ~0.005, so
+      // an absolute epsilon would swallow every remaining change and freeze the dots mid-shrink.
+      if (lastMarkerScale > 0 && Math.abs(scale - lastMarkerScale) <= scale * 0.01) return;
       lastMarkerScale = scale;
       for (let i = 0; i < markers.length; i++) {
         instanceDummy.position.copy(markers[i].basePos);
@@ -323,8 +335,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // and not too much time elapsed — the same drag gesture that rotates the globe also passes
     // through mousedown/mouseup, so a distance+time threshold is what actually distinguishes
     // "flicked past this marker while rotating" from "meant to tap it".
+    const camDir = new THREE.Vector3();
+    // Rotating a point never changes its length, so every marker's world position has the same
+    // constant length -- which means the "is this marker facing the camera" test can compare the
+    // raw dot product against a pre-scaled threshold instead of normalizing a vector per marker.
+    const FACING_THRESHOLD = 0.28 * R * 1.045;
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
+    // How far off a dot a tap can land and still count as meant for it, in CSS pixels --
+    // roughly half a fingertip.
+    const TAP_TOLERANCE_PX = 22;
+    const pickScratch = new THREE.Vector3();
     function pickSpotAt(clientX, clientY) {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
@@ -332,9 +353,33 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       // Against an InstancedMesh a hit identifies itself by instanceId, which is the marker's
       // index — no scanning a list of meshes to find which one was hit.
       const hit = raycaster.intersectObject(markerMesh)[0];
-      if (!hit || hit.instanceId == null) return;
-      const marker = markers[hit.instanceId];
-      if (marker) onSelectSpot(marker.id);
+      if (hit && hit.instanceId != null) {
+        const marker = markers[hit.instanceId];
+        if (marker) onSelectSpot(marker.id);
+        return;
+      }
+      // Nothing exactly under the finger. Dots shrink on screen as you zoom in (see
+      // updateMarkerScale), and a ~5px dot at the closest zoom is far smaller than anyone can
+      // reliably tap -- so shrinking the ray target along with the dot would trade one problem
+      // for another. Fall back to the nearest marker within a fingertip's radius: the dot stays
+      // a small visual mark of a point while the thing you actually hit stays finger-sized.
+      let bestId = null;
+      let bestDistance = TAP_TOLERANCE_PX;
+      const px = clientX - rect.left;
+      const py = clientY - rect.top;
+      camDir.copy(camera.position).normalize();
+      for (let i = 0; i < markers.length; i++) {
+        const m = markers[i];
+        pickScratch.copy(m.basePos).applyEuler(globeGroup.rotation);
+        if (pickScratch.dot(camDir) <= FACING_THRESHOLD) continue; // round the back of the globe
+        pickScratch.project(camera);
+        if (pickScratch.z >= 1) continue; // behind the camera
+        const dx = (pickScratch.x * 0.5 + 0.5) * rect.width - px;
+        const dy = (-pickScratch.y * 0.5 + 0.5) * rect.height - py;
+        const distance = Math.hypot(dx, dy);
+        if (distance < bestDistance) { bestDistance = distance; bestId = m.id; }
+      }
+      if (bestId != null) onSelectSpot(bestId);
     }
     function isTap(downX, downY, downTime, upX, upY) {
       return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
@@ -383,11 +428,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // (~460 throwaway allocations a frame at 153 spots, all of it GC pressure) and wrote
     // style.display on every marker every frame whether or not it had changed. Now each marker
     // reuses one scratch vector, and a hidden marker that's still hidden costs nothing.
-    const camDir = new THREE.Vector3();
-    // Rotating a point never changes its length, so every marker's world position has the same
-    // constant length -- which means the "is this marker facing the camera" test can compare the
-    // raw dot product against a pre-scaled threshold instead of normalizing a vector per marker.
-    const FACING_THRESHOLD = 0.28 * R * 1.045;
     function updateLabels() {
       camDir.copy(camera.position).normalize();
       const zoomedIn = state.distance < 2.2;
