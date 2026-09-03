@@ -275,9 +275,44 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       markerMesh.setMatrixAt(i, instanceDummy.matrix);
     });
     markerMesh.instanceMatrix.needsUpdate = true;
-    // Markers never move relative to the globe (the globe group is what rotates), so the matrix
-    // buffer is written once here and never touched again.
-    markerMesh.instanceMatrix.setUsage(THREE.StaticDrawUsage);
+    // Positions never change (the globe group is what rotates) but the scale does, per zoom
+    // level — see updateMarkerScale below — so the matrix buffer is rewritten occasionally.
+    markerMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+    // Markers hold a roughly constant size *on screen* rather than in the world. Built at a
+    // fixed world radius they stayed physically the same size as you zoomed, which meant that
+    // up close a single dot covered more ground than the island it was marking — a dot bigger
+    // than Hawaii. In a perspective projection apparent size is worldSize/distance, so scaling
+    // the world radius in step with the camera distance holds the on-screen size steady.
+    //
+    // Capped at 1x so this only ever shrinks them: the reference is the default zoom, which
+    // already looked right, and zoomed further out a constant screen size would turn 153 spots
+    // into a chunky, overlapping mess on a small globe. So: same as before at default zoom and
+    // beyond, progressively smaller as you close in.
+    // The depth to divide by is the camera's distance to the marker shell, not to the globe's
+    // centre -- the same distinction that bit the drag sensitivity above. Using the centre
+    // distance still leaves markers ballooning as you close in (at the nearest zoom the centre
+    // is 1.08 away but the markers are only 0.035 away, a 30x difference), which is most of the
+    // original problem rather than a fix for it: measured across the zoom range, a marker went
+    // 14px -> 683px on the fixed world radius, 14px -> 279px scaling by centre distance, and
+    // holds a flat 14px scaling by shell distance, which is what this does.
+    const MARKER_REF_DISTANCE = 3.0; // the initial zoom, whose marker size is the reference
+    const MARKER_REF_DEPTH = MARKER_REF_DISTANCE - MARKER_SHELL;
+    let lastMarkerScale = -1;
+    function updateMarkerScale() {
+      const scale = Math.min((state.distance - MARKER_SHELL) / MARKER_REF_DEPTH, 1);
+      // Rewriting 153 matrices is cheap but not free, and a sub-pixel change isn't visible.
+      if (Math.abs(scale - lastMarkerScale) < 0.002) return;
+      lastMarkerScale = scale;
+      for (let i = 0; i < markers.length; i++) {
+        instanceDummy.position.copy(markers[i].basePos);
+        instanceDummy.scale.setScalar(scale);
+        instanceDummy.updateMatrix();
+        markerMesh.setMatrixAt(i, instanceDummy.matrix);
+      }
+      markerMesh.instanceMatrix.needsUpdate = true;
+    }
+    updateMarkerScale();
     const instanceColor = new THREE.Color();
     markers.forEach((_, i) => markerMesh.setColorAt(i, instanceColor.set('#33465C')));
     if (markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
@@ -318,7 +353,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // under your cursor by very close to N pixels on screen, at any zoom level.
     const tanHalfFov = Math.tan((camera.fov * Math.PI) / 360);
     function applyDrag(dx, dy) {
-      const sensitivity = (state.distance * tanHalfFov) / (height / 2);
+      // The depth that matters is the camera's distance to the *surface you're grabbing*, not
+      // to the globe's centre. Using the centre distance (as this did) overshoots by a factor
+      // of d/(d-R), which is 1.5x at the default zoom but 13x at the closest -- the surface is
+      // only 0.08 units from the camera there while the centre is 1.08. That is why dragging
+      // still felt wild up close even after the sensitivity was made zoom-aware: it was
+      // zoom-aware against the wrong reference depth.
+      const surfaceDistance = Math.max(state.distance - R, 0.02);
+      const sensitivity = (surfaceDistance * tanHalfFov) / (height / 2);
       const rotY = dx * sensitivity;
       const rotX = dy * sensitivity;
       state.targetRotY += rotY;
@@ -510,6 +552,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       camera.position.set(0, 0, state.distance);
       camera.lookAt(0, 0, 0);
       updateNearPlane();
+      updateMarkerScale();
       updateLabels();
       renderer.render(scene, camera);
       state.raf = requestAnimationFrame(animate);
