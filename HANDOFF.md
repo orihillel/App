@@ -279,6 +279,36 @@ there's intentionally one source of truth, not separate logic per view.
     exercised for real, since the fetch did fail there and the globe rendered correctly anyway.
     `SATELLITE_TEXTURE_URL` in `Globe.jsx` is the single thing to change if it needs swapping.
 
+- **Marker dots now hold a constant on-screen size, and drag tracking was corrected again.**
+  Reported as "one dot is bigger than Hawaii" when zoomed in. Markers were built at a fixed
+  *world* radius, so zooming in kept them physically the same size while the geography grew
+  around them. Two bugs turned out to share one root cause: **the reference depth was the
+  camera's distance to the globe's centre, when what matters is its distance to the surface
+  you're looking at / grabbing** (the markers sit on a shell at `R*1.045`). At the closest
+  zoom the centre is 1.08 away but that shell is only 0.035 away — a 30x error.
+  - *Marker size:* measured across the zoom range, one marker's on-screen diameter went
+    **14px -> 683px** on the original fixed world radius. Scaling by centre distance (the first
+    attempt here) only got that to **279px** — still 20x too big, so it would not have fixed the
+    complaint. Scaling by shell distance holds a flat **14px at every zoom**, which is what
+    shipped. Capped at 1x so it only ever shrinks: identical to before at the default zoom and
+    further out, progressively smaller as you close in.
+  - *Drag:* the same mistake was in the "1:1 finger tracking" sensitivity added earlier — it
+    was zoom-aware but against the wrong reference depth, so it still over-rotated by
+    `d/(d-R)`: 1.5x at the default zoom, **13.5x at the closest**. That is why dragging still
+    felt wild up close after supposedly being fixed. Corrected to use surface distance.
+  - *Verified* by diffing screenshots of identical views between builds: at the default zoom
+    only 47 pixels differ and they're scattered (antialiasing noise — confirming no change
+    where none was intended), while zoomed in 385 differ inside a single 41x22 box (the marker
+    cluster shrinking, and nothing else). Drag accuracy checked numerically: asking to centre a
+    marker by dragging (-75,+169) now lands it at (175,211) against a canvas centre of
+    (181,210); the same drag previously threw every marker off screen. Tap-to-select confirmed
+    still working at the deepest zoom by tapping a marker's exact projected point.
+  - *Testing note:* an earlier smoke check reported tap-to-select failing after this change.
+    It was a harness artifact — that check zoomed straight in from the default view, which
+    lands on empty ocean with no markers to hit, and the corrected (much gentler) drag no
+    longer swung the globe far enough to bring any into frame. The replacement steers to a
+    marker using the live label positions before tapping, which is deterministic.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
