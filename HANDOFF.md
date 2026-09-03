@@ -309,6 +309,42 @@ there's intentionally one source of truth, not separate logic per view.
     longer swung the globe far enough to bring any into frame. The replacement steers to a
     marker using the live label positions before tapping, which is deterministic.
 
+- **Marker dots now actively shrink on screen as you zoom in.** The change above stopped the
+  dots *growing*, which was not the same as fixing the complaint, and the report came back:
+  zoomed in, the dots still cover the surf spot's whole area. Measuring against real geography
+  showed why. The usable zoom range only magnifies the globe about 2.8x (338px across at the
+  default zoom, 939px at the closest), so at full zoom the Big Island is only ~16px wide and
+  Oahu ~5px -- against a dot frozen at 13.5px. A constant on-screen size still swallows the
+  island; the size has to come down as you close in.
+  - *The curve:* apparent size is `worldSize/depth`, so scaling the world radius by exactly the
+    depth ratio cancels the divide and holds a constant size. Raising that ratio to a power
+    slightly above 1 leaves the on-screen size proportional to `ratio^(exp-1)` -- shrinking
+    instead of constant. The exponent is **solved** from the on-screen size wanted at the
+    closest zoom (`closeShrink`, currently 0.38) rather than hand-tuned, so it stays correct if
+    `MIN_DISTANCE` ever moves. Measured result: **13.5px at the default zoom -> 11.4 -> 9.5 ->
+    7.3 -> 5.1px at the closest**, with the default zoom and everything beyond it unchanged.
+  - *The curve now lives in `lib/geo3d.js`* (`markerScaleForDistance` /
+    `markerScreenSizeRatio`) so it is unit-testable without a GPU -- 9 new tests, including one
+    that pins the exact failure this replaces (the old behaviour was a flat ratio of 1.0 at
+    every zoom).
+  - *Tap tolerance added alongside it.* A ~5px dot is far smaller than anyone can reliably tap,
+    so shrinking the ray target with the dot would have traded one problem for another.
+    `pickSpotAt` now falls back to the nearest front-facing marker within 22px of the tap when
+    the raycast misses. Verified both ways: a tap 14px off a dot selects the spot on this
+    build and **does not** on `main`, so this is a reliability win as well as a prerequisite.
+  - *Also fixed:* the early-out in `updateMarkerScale` compared scales against an absolute
+    epsilon (0.002). Zoomed right in the scale itself is ~0.007, so that would have swallowed
+    every remaining change and frozen the dots mid-shrink. It is a relative (1%) test now.
+  - *Verified:* lint + check:classnames + 111/111 tests + build, plus a headless-Chromium pass
+    that descends to full zoom in small stages, re-centring on a real marker at each one (a
+    single big zoom lands on empty ocean -- the artifact noted above), then taps 14px off a
+    dot. Before/after screenshots of the same SoCal cluster show chunky blobs becoming
+    pinpoints, with the labels unchanged. No console errors.
+  - *Environment note:* the NASA satellite texture from the change above **cannot** load in the
+    sandbox -- the egress proxy rejects `eoimages.gsfc.nasa.gov`, so browser checks here always
+    show the drawn-map fallback. That is a sandbox limit, not a regression; the fallback path
+    is what these screenshots exercise.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
