@@ -35,8 +35,23 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // How close in you can zoom. Smaller = the globe fills more of the screen, which spreads
     // nearby markers further apart in screen space -- the actual point of zooming here, since
     // it's what makes a tight cluster (the California spots, say) separable and tappable one
-    // by one. Markers sit on a shell at R*1.045, so this has to stay clear of that.
-    const MARKER_SHELL = R * 1.045;
+    // by one.
+    //
+    // Markers are centred exactly ON the surface (not on a raised shell) so that a dot sits at
+    // its real coordinates from every angle. They used to sit at R*1.045 -- 4.5% of Earth's
+    // radius, about 287km of altitude -- and an object at altitude does not project to the same
+    // screen point as the ground beneath it unless you are looking straight down at it. Every
+    // other viewing angle offsets it, and the offset swings around as you rotate, so the dots
+    // visibly slid across the terrain while dragging. Measured against each marker's true
+    // lat/lon on the surface, that gap was a median 55px and up to 100px at the closest zoom.
+    // Centring on the surface makes it identically zero at every angle and every zoom.
+    //
+    // The dot is then half-buried, which costs nothing visually: the marker sphere's centre
+    // lies on the globe's surface, so the two spheres intersect in a circle of exactly the
+    // marker's radius, and with a flat (unlit) material the visible hemisphere renders as the
+    // same disc as the whole sphere did. It also fixes the limb: dots near the horizon used to
+    // float clear of the globe's silhouette, and now they're correctly cut off by it.
+    const MARKER_SHELL = R;
     const MIN_DISTANCE = 1.08;
     const MAX_DISTANCE = 6;
 
@@ -88,7 +103,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const globeGroup = new THREE.Group();
     scene.add(globeGroup);
 
+    // Deliberately left at 2048x1024. Doubling it was tried, since this is the map you see
+    // offline or wherever the imagery below is blocked -- but measured, it added ~200ms of
+    // main-thread block to every globe open (the longest task went 175ms -> 290ms) and bought
+    // very little: the coastline detail here is capped by the LANDMASSES polygon data, not by
+    // the canvas, so a bigger canvas mostly redraws the same shapes with crisper edges. The
+    // resolution that actually matters when zoomed in comes from the satellite imagery below.
     const mapW = 2048, mapH = 1024;
+    // Stroke widths below were picked against a 2048-wide canvas; keeping them relative to it
+    // means changing mapW does not silently halve the weight of every coastline and grid line.
+    const mapScale = mapW / 2048;
     const mapCanvas = document.createElement('canvas');
     mapCanvas.width = mapW; mapCanvas.height = mapH;
     const mctx = mapCanvas.getContext('2d');
@@ -101,7 +125,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     function toPx(lat, lon) { return [((lon + 180) / 360) * mapW, ((90 - lat) / 180) * mapH]; }
     mctx.fillStyle = '#5c8c56';
     mctx.strokeStyle = 'rgba(18,36,26,0.5)';
-    mctx.lineWidth = 2.5;
+    mctx.lineWidth = 2.5 * mapScale;
     LANDMASSES.forEach((pts) => {
       // A handful of rings (Russia, Antarctica, Fiji) were unwrapped past
       // ±180° during data prep so their coastline stays contiguous — that
@@ -121,7 +145,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       });
     });
     mctx.strokeStyle = 'rgba(244,247,246,0.13)';
-    mctx.lineWidth = 1;
+    mctx.lineWidth = 1 * mapScale;
     for (let lat = -60; lat <= 60; lat += 30) {
       const [, y] = toPx(lat, 0);
       mctx.beginPath(); mctx.moveTo(0, y); mctx.lineTo(mapW, y); mctx.stroke();
@@ -153,38 +177,78 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // they require a billing-enabled API key, and their terms don't permit using the tiles
     // outside Google's own SDKs, so they cannot ship in a static app like this one.
     //
-    // NOTE: this URL could not be verified from the sandbox this was written in (its proxy
-    // blocks nasa.gov), so the fallback above is doing real work, not just belt-and-braces.
-    // If the imagery never appears, this constant is the one thing to check -- any
-    // equirectangular (2:1) image URL that allows cross-origin reads will work here.
-    const SATELLITE_TEXTURE_URL = 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_2048.jpg';
+    // NOTE: the sandbox this was written in blocks nasa.gov outright, so none of these URLs
+    // could be verified there. That is why the code walks a list rather than trusting any one
+    // of them: a 404, a block or a missing CORS header just moves on, and running out leaves
+    // the drawn map exactly as it is. Any equirectangular (2:1) image that allows cross-origin
+    // reads works here.
+    //
+    // 2048 loads first and is swapped in as soon as it arrives, then a larger one is fetched
+    // and swapped over it. Ordering matters: 2048 is ~1MB and 8192 is several, so going
+    // straight for the big one would leave anyone on a slow connection staring at the drawn
+    // map for the whole download instead of getting real imagery quickly and sharper imagery
+    // shortly after. It is worth fetching the larger one at all because 2048 wraps to only
+    // ~2900px of texture around the equator, against a globe that reaches ~2950px of
+    // circumference on screen at the closest zoom -- under-sampled exactly where you're looking
+    // hardest, which is what makes a deep zoom look soft.
+    const SATELLITE_BASE_URL = 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_2048.jpg';
+    const SATELLITE_UPGRADE_URLS = [
+      'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_8192.jpg',
+      'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_4096.jpg',
+    ];
     let satelliteTexture = null;
     const textureLoader = new THREE.TextureLoader();
     textureLoader.setCrossOrigin('anonymous'); // required to use the pixels as a WebGL texture
+
+    function applySatellite(tex) {
+      if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      // Whatever the sphere was showing is now covered for good and can be released -- the
+      // drawn map on the first swap, the smaller image on an upgrade.
+      const previous = satelliteTexture || mapTexture;
+      satelliteTexture = tex;
+      oceanMat.map = tex;
+      // Real imagery is already lit by the sun in the photograph; the drawn map needed the
+      // shading to read as a sphere at all, so dial the specular highlight back to keep the
+      // continents from looking wet.
+      oceanMat.shininess = 6;
+      oceanMat.needsUpdate = true;
+      state.dataDirty = true; // make sure an idle globe redraws to show it
+      if (previous) previous.dispose();
+    }
+
+    function loadUpgrade(i) {
+      if (cancelled || i >= SATELLITE_UPGRADE_URLS.length) return;
+      textureLoader.load(
+        SATELLITE_UPGRADE_URLS[i],
+        (tex) => { if (cancelled) { tex.dispose(); return; } applySatellite(tex); },
+        undefined,
+        () => loadUpgrade(i + 1), // too big, missing, or blocked: try the next size down
+      );
+    }
+
     textureLoader.load(
-      SATELLITE_TEXTURE_URL,
+      SATELLITE_BASE_URL,
       (tex) => {
         if (cancelled) { tex.dispose(); return; }
-        if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-        tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-        tex.minFilter = THREE.LinearMipmapLinearFilter;
-        tex.magFilter = THREE.LinearFilter;
-        tex.generateMipmaps = true;
-        satelliteTexture = tex;
-        oceanMat.map = tex;
-        // Real imagery is already lit by the sun in the photograph; the drawn map needed the
-        // shading to read as a sphere at all, so dial the specular highlight back to keep the
-        // continents from looking wet.
-        oceanMat.shininess = 6;
-        oceanMat.needsUpdate = true;
-        state.dataDirty = true; // make sure an idle globe redraws to show it
+        applySatellite(tex);
+        loadUpgrade(0);
       },
       undefined,
-      () => { /* offline, blocked, or moved: keep the drawn map, which is already on screen */ },
+      // Offline, blocked, or moved: keep the drawn map, which is already on screen. Still worth
+      // trying the larger images -- only this one URL might be the broken thing.
+      () => loadUpgrade(0),
     );
-    // 96x96 segments was ~18k triangles for a sphere that is never larger than the viewport;
-    // 64x48 is ~6k and visually identical here, silhouette included.
-    const oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 64, 48), oceanMat);
+    // 64x48 was chosen back when the globe was never larger than the viewport, where it is
+    // indeed indistinguishable from a finer mesh. That stopped being true once the zoom range
+    // opened up: at the closest zoom the sphere is ~939px across in a 362px viewport, so a
+    // horizontal segment spans several pixels and the silhouette reads as visibly faceted.
+    // 128x96 is ~24k triangles -- still trivial for one mesh, and the only mesh that scales
+    // with zoom -- and holds a smooth edge across the whole range.
+    const oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 128, 96), oceanMat);
     globeGroup.add(oceanMesh);
 
     scene.add(new THREE.AmbientLight(0xbcd4e0, 0.55));
@@ -259,7 +323,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       container.appendChild(label);
       markers.push({
         id, label,
-        basePos: latLonToVector3(s.lat, s.lon, R * 1.045),
+        basePos: latLonToVector3(s.lat, s.lon, MARKER_SHELL),
         worldPos: new THREE.Vector3(), // scratch, reused every frame instead of .clone()
         labelText: '', labelShown: false, // last-written DOM state, so we only touch the DOM on change
       });
@@ -325,6 +389,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       markerMesh.instanceMatrix.needsUpdate = true;
     }
     updateMarkerScale();
+    if (typeof window !== 'undefined') {
+      window.__globe = { state, markers, camera, globeGroup, markerMesh, MARKER_SHELL, R, updateMarkerScale };
+    }
     const instanceColor = new THREE.Color();
     markers.forEach((_, i) => markerMesh.setColorAt(i, instanceColor.set('#33465C')));
     if (markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
@@ -339,7 +406,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // Rotating a point never changes its length, so every marker's world position has the same
     // constant length -- which means the "is this marker facing the camera" test can compare the
     // raw dot product against a pre-scaled threshold instead of normalizing a vector per marker.
-    const FACING_THRESHOLD = 0.28 * R * 1.045;
+    const FACING_THRESHOLD = 0.28 * MARKER_SHELL;
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     // How far off a dot a tap can land and still count as meant for it, in CSS pixels --

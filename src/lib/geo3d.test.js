@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { markerScaleForDistance, markerScreenSizeRatio } from './geo3d.js';
 
-// The globe's actual numbers, so these assertions track the real thing.
-const OPTS = { shell: 1.045, refDistance: 3.0, minDistance: 1.08, closeShrink: 0.38 };
+// The globe's actual numbers, so these assertions track the real thing. `shell` is 1.0 --
+// markers are centred exactly on the surface so a dot sits at its true coordinates from every
+// angle; it used to be 1.045, which drew them up to 100px away from their own lat/lon.
+const OPTS = { shell: 1.0, refDistance: 3.0, minDistance: 1.08, closeShrink: 0.38 };
 
 describe('markerScaleForDistance', () => {
   it('leaves markers untouched at the reference zoom', () => {

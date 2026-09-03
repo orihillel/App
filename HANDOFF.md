@@ -345,6 +345,44 @@ there's intentionally one source of truth, not separate logic per view.
     show the drawn-map fallback. That is a sandbox limit, not a regression; the fallback path
     is what these screenshots exercise.
 
+- **Markers now sit exactly on their coordinates, and the globe renders sharper.** Reported as
+  "the dots are moving when I navigate zoomed in -- they should be exactly in the same place as
+  their coordinates", plus a request to raise the globe's resolution.
+  - *The drift was real and large.* Markers sat on a shell at `R*1.045` -- 4.5% of Earth's
+    radius, about **287km of altitude**. Something at altitude only projects to the same screen
+    point as the ground beneath it when you look straight down at it; every other angle offsets
+    it, and the offset swings around as you rotate, so the dots slid across the terrain.
+    Measured as the pixel gap between each marker's drawn position and its true lat/lon on the
+    surface, over every visible marker: **median 8.3px at the default zoom, median 55px and up
+    to 100px at the closest.** Now `MARKER_SHELL = R` (dot centred *on* the surface) and the
+    same measurement reads **0.0px at every zoom, for every marker**.
+  - *It costs nothing visually.* With the marker's centre on the surface the two spheres
+    intersect in a circle of exactly the marker's radius, so with a flat (unlit) material the
+    visible hemisphere renders as the same disc the whole sphere did. It also fixes the limb:
+    dots near the horizon used to float clear of the globe's silhouette and are now correctly
+    cut off by it.
+  - *Knock-on:* labels are placed from the same positions, so they were off by the same amount.
+    Steering a marker to the centre by dragging now lands it **1px** from centre, against 64px
+    before.
+  - *Resolution:* sphere tessellation 64x48 -> **128x96** (the old value predates the wider zoom
+    range; at the closest zoom the sphere is ~939px across in a 362px viewport, where 64
+    segments read as a faceted silhouette). Measured cost ~25ms on globe open, and this is
+    software rendering -- negligible on a real GPU. Satellite imagery now loads **progressively**:
+    2048 first and swapped in as soon as it lands, then 8192 (falling back to 4096) swapped over
+    it, with each superseded texture disposed. Ordering is deliberate -- going straight for the
+    8192 would leave a slow connection on the drawn map for the whole multi-MB download.
+  - *Rejected after measuring:* doubling the drawn fallback map to 4096x2048. It added **~200ms
+    of main-thread block to every globe open** (longest task 175ms -> 290ms) and bought little,
+    because that map's detail is capped by the `LANDMASSES` polygon data, not by the canvas.
+    Left at 2048, with the stroke widths now expressed relative to `mapW` so a future change
+    doesn't silently halve every line's weight.
+  - *Verified:* lint + check:classnames + 111/111 tests + build, the drift measurement above,
+    the marker-size curve re-measured after the shell change (13.2px -> 5.0px, unchanged intent),
+    and the staged-descent browser pass with an off-centre tap. No console errors.
+  - *Still unverifiable here:* nasa.gov is blocked by the sandbox proxy, so no browser check in
+    this environment has ever shown the real imagery -- all screenshots are the drawn fallback.
+    The candidate-list loader exists precisely because those URLs could not be checked.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
