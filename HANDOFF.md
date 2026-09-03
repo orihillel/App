@@ -383,6 +383,42 @@ there's intentionally one source of truth, not separate logic per view.
     this environment has ever shown the real imagery -- all screenshots are the drawn fallback.
     The candidate-list loader exists precisely because those URLs could not be checked.
 
+- **Globe renders at full screen resolution, and 77 more spots.** Reported as coastlines still
+  looking blurry when zoomed in, plus a request for more spots.
+  - *The blur was mostly ours, not the texture's.* `setPixelRatio` was capped at **2**, on a
+    comment arguing the extra pixels were "not visible at this size". That was written for a
+    small, barely-zoomable globe; with the zoom range now magnifying it ~2.8x, a 3x phone was
+    being handed **two-thirds of its native resolution** and every edge -- silhouette,
+    coastlines, dots -- was undersampled. Cap raised to 3.
+  - *Paid for by dropping MSAA at 3x*, where 9:1 supersampling already resolves edges about as
+    well. Measured at `deviceScaleFactor: 3`, dragging while zoomed in: **82.1ms/frame at
+    cap-2-with-MSAA, 85.6ms at cap-3-without**. So 2.25x the pixels for ~4%. (Software
+    rendering, so absolute numbers mean nothing; the ratio is the point.)
+  - *Correction to the previous entry:* it claimed a 4096 fallback map cost "~200ms of
+    main-thread block" and blamed the drawing. Timing the draw directly: **12ms at 2048, 40ms
+    at 4096**. The cost is the ~32MB texture upload and mipmap chain, not the canvas work. The
+    map stays at 2048 for that reason, which is a better-founded version of the same decision.
+  - *Also fixed while in there:* every landmass ring was drawn **three times** (for ±180°
+    wraparound), of which two passes land entirely off-canvas for all but a handful. Testing
+    the ring's x-extent first cuts the drawing to roughly a third -- 36ms -> 12ms at 2048.
+  - *Correction on the imagery URLs:* the `land_shallow_topo_4096/_8192` filenames in the
+    previous entry were **invented by pattern-matching** the 2048 one and could not be checked
+    (nasa.gov is blocked here). Replaced with Blue Marble Next Generation
+    `world.topo.bathy.200412.3x5400x2700.jpg`, whose filename is corroborated by widespread use
+    in three.js/R globe examples. 5400x2700 is 2.6x the linear detail of 2048 (~7x the pixels).
+    Still not fetched from here, which is why the loader still falls back rather than trusting
+    it.
+  - *Spots: 153 -> 230.* Fills coverage that was thin -- the US East Coast, northern Europe and
+    the North Sea (Sylt, Klitmøller, Hoddevik, Scheveningen), Australian city beaches, New
+    Zealand's South Island, more of Indonesia and Central America. Coordinates place each break
+    to within a few hundred metres, which is what the globe and the directions link need; they
+    are **not** surveyed line-ups, and they come from general knowledge rather than a verified
+    dataset -- worth spot-checking any that matter.
+  - *Verified:* lint + check:classnames + 111/111 tests + build; a data-integrity check
+    (ORDER and SPOTS agree, no duplicate keys/names, no malformed rows, coordinates in range);
+    and a browser pass at `deviceScaleFactor: 3` with all 230 spots -- staged descent, marker
+    steering landing 0.4px from centre, off-centre tap selecting. No console errors.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

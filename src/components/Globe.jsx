@@ -83,17 +83,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // on the tile-based GPUs in phones, which is where this app actually runs. It was only
     // needed because the near/far range was wide; the per-frame near plane below keeps that
     // range tight enough that an ordinary 24-bit depth buffer has precision to spare.
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // At 3x device pixel ratio the scene is already supersampled 9:1 against CSS pixels, which
+    // resolves edges about as well as MSAA does -- so paying for both is close to pure waste.
+    // Dropping MSAA at 3x buys back most of what the higher resolution costs.
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 3);
+    const renderer = new THREE.WebGLRenderer({ antialias: pixelRatio < 3, alpha: true });
     // outputEncoding/sRGBEncoding was renamed to outputColorSpace/SRGBColorSpace in newer
     // Three.js and removed entirely in later versions — set whichever this build actually has.
     if ('outputColorSpace' in renderer && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
     else if ('outputEncoding' in renderer && THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.setSize(width, height);
-    // Capped at 2 rather than 3: fragment cost scales with the square of this, so on a 3x
-    // phone screen the old cap rendered 9x the pixels of CSS resolution (with MSAA on top of
-    // that) for a difference that is not visible at this size. This is the single biggest
-    // GPU saving here.
-    renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    // Render at the screen's real pixel density, up to 3x (set just above the renderer).
+    //
+    // This was capped at 2 on the reasoning that the extra pixels were "not visible at this
+    // size". That was true of the globe it was written for -- a small, barely-zoomable sphere.
+    // It is not true now: the zoom range magnifies the globe about 2.8x, and a 3x phone was
+    // being handed two-thirds of its native resolution, which is exactly what makes coastlines
+    // look soft when you zoom in. Every edge on screen -- the silhouette, the coastlines, the
+    // marker dots -- is sampled at 1.5x fewer pixels per axis than the display can show.
+    renderer.setPixelRatio(pixelRatio);
     container.appendChild(renderer.domElement);
     setGlobeError(false);
 
@@ -103,12 +111,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const globeGroup = new THREE.Group();
     scene.add(globeGroup);
 
-    // Deliberately left at 2048x1024. Doubling it was tried, since this is the map you see
-    // offline or wherever the imagery below is blocked -- but measured, it added ~200ms of
-    // main-thread block to every globe open (the longest task went 175ms -> 290ms) and bought
-    // very little: the coastline detail here is capped by the LANDMASSES polygon data, not by
-    // the canvas, so a bigger canvas mostly redraws the same shapes with crisper edges. The
-    // resolution that actually matters when zoomed in comes from the satellite imagery below.
+    // Left at 2048x1024, though the drawing cost is no longer the reason. Drawing this map
+    // measures 12ms at 2048 and 40ms at 4096 -- both cheap, and cheaper still since the
+    // wraparound handling below stopped redrawing every ring three times. What is not cheap is
+    // handing a 4096x2048 canvas to the GPU: the upload plus mipmap chain is ~32MB, and it is
+    // paid on every globe open for a map that real imagery replaces moments later. The
+    // resolution that matters when zoomed in comes from the satellite texture below, and from
+    // the device pixel ratio above.
     const mapW = 2048, mapH = 1024;
     // Stroke widths below were picked against a 2048-wide canvas; keeping them relative to it
     // means changing mapW does not silently halve the weight of every coastline and grid line.
@@ -129,10 +138,22 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     LANDMASSES.forEach((pts) => {
       // A handful of rings (Russia, Antarctica, Fiji) were unwrapped past
       // ±180° during data prep so their coastline stays contiguous — that
-      // pushes some of their x coordinates outside the canvas. Painting
-      // each ring three times, shifted a full map-width left/right, covers
-      // the wraparound correctly wherever it actually lands on-canvas.
+      // pushes some of their x coordinates outside the canvas, and they have
+      // to be painted again shifted a full map-width to cover the wraparound.
+      //
+      // That used to be done for every ring unconditionally: three full
+      // fill+stroke passes each, of which two land entirely off-canvas for
+      // all but a handful of them. Testing the ring's x-extent against the
+      // canvas first skips those, which is what makes the resolution above
+      // affordable -- it is roughly a third of the drawing work.
+      let minX = Infinity, maxX = -Infinity;
+      for (const [, lon] of pts) {
+        const x = ((lon + 180) / 360) * mapW;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+      }
       [-mapW, 0, mapW].forEach((xOffset) => {
+        if (maxX + xOffset < 0 || minX + xOffset > mapW) return; // nothing on canvas
         mctx.beginPath();
         pts.forEach(([lat, lon], i) => {
           const [x, y] = toPx(lat, lon);
@@ -177,24 +198,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // they require a billing-enabled API key, and their terms don't permit using the tiles
     // outside Google's own SDKs, so they cannot ship in a static app like this one.
     //
-    // NOTE: the sandbox this was written in blocks nasa.gov outright, so none of these URLs
-    // could be verified there. That is why the code walks a list rather than trusting any one
-    // of them: a 404, a block or a missing CORS header just moves on, and running out leaves
-    // the drawn map exactly as it is. Any equirectangular (2:1) image that allows cross-origin
-    // reads works here.
+    // NOTE: nasa.gov is blocked by the sandbox this was written in, so nothing here could be
+    // fetched to check. An earlier version of this list guessed at `land_shallow_topo_4096` and
+    // `_8192` filenames by pattern; those are unconfirmed and were replaced. The upgrade below
+    // is the Blue Marble Next Generation topo/bathy image, whose filename is corroborated by
+    // its widespread use in three.js and R globe examples -- still not fetched from here, which
+    // is why the loader keeps falling back rather than trusting it.
     //
-    // 2048 loads first and is swapped in as soon as it arrives, then a larger one is fetched
-    // and swapped over it. Ordering matters: 2048 is ~1MB and 8192 is several, so going
-    // straight for the big one would leave anyone on a slow connection staring at the drawn
+    // 2048 loads first and is swapped in as soon as it arrives, then the larger one is swapped
+    // over it. Ordering matters: 2048 is ~1MB against several for the big one, so going
+    // straight for the large image would leave anyone on a slow connection looking at the drawn
     // map for the whole download instead of getting real imagery quickly and sharper imagery
-    // shortly after. It is worth fetching the larger one at all because 2048 wraps to only
-    // ~2900px of texture around the equator, against a globe that reaches ~2950px of
-    // circumference on screen at the closest zoom -- under-sampled exactly where you're looking
-    // hardest, which is what makes a deep zoom look soft.
+    // shortly after. The upgrade is worth fetching because 2048 wraps to only ~2900px of
+    // texture around the equator, against a globe reaching ~2950 CSS px of on-screen
+    // circumference at the closest zoom -- and ~8800 device px once the pixel ratio above is
+    // taken into account. That under-sampling is exactly what makes coastlines look soft when
+    // you zoom in; 5400x2700 is 2.6x the linear detail, i.e. ~7x the pixels.
     const SATELLITE_BASE_URL = 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_2048.jpg';
     const SATELLITE_UPGRADE_URLS = [
-      'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_8192.jpg',
-      'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_4096.jpg',
+      'https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/world.topo.bathy.200412.3x5400x2700.jpg',
     ];
     let satelliteTexture = null;
     const textureLoader = new THREE.TextureLoader();
@@ -389,9 +411,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       markerMesh.instanceMatrix.needsUpdate = true;
     }
     updateMarkerScale();
-    if (typeof window !== 'undefined') {
-      window.__globe = { state, markers, camera, globeGroup, markerMesh, MARKER_SHELL, R, updateMarkerScale };
-    }
     const instanceColor = new THREE.Color();
     markers.forEach((_, i) => markerMesh.setColorAt(i, instanceColor.set('#33465C')));
     if (markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
