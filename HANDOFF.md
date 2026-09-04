@@ -484,6 +484,28 @@ there's intentionally one source of truth, not separate logic per view.
     Tests include data integrity across all 230 spots (well-formed arcs, valid tide values, and
     every un-annotated spot still scoreable through the derived arc).
 
+- **Forecast confidence from model agreement.** Every number in the app is a model output, and
+  a model is a guess whose uncertainty nobody was showing. Two days out the major models agree
+  within inches; seven days out they can differ by a factor of two, and presenting that as one
+  confident number misleads exactly when it matters. Windguru's appeal is showing the spread;
+  this reduces it to one honest signal.
+  - Compares two independent centres' models (ECMWF and NOAA GFS) via Open-Meteo's `&models=`,
+    scoring the **relative** spread (half a foot means something different at 1ft than 10ft)
+    and taking the **worst** hour, not the average — averaging would hide the divergence this
+    exists to surface. Only renders when they actually disagree; a badge that is always on gets
+    ignored.
+  - *Model identifiers are unverified* (open-meteo.com is blocked here), so it tries candidate
+    pairs and reads the per-model keys **by pattern rather than by name**. If every candidate is
+    wrong the feature simply never renders — verified by stubbing a 404, which leaves the rest
+    of the page fully working.
+  - *Bug found and fixed during that check:* the effect depends on `forecast`, which changes on
+    every one of the 230 background spot loads, so a guard that only checked the stored result
+    refired before the first response landed — **20 requests for one spot**. Now marked in a ref
+    the moment a request starts: measured back down to 3 (one per candidate pair). Fetched only
+    for the spot being viewed, never during the bulk load.
+  - *Verified:* lint, check:classnames, 183/183 tests (13 new), build, and stubbed-API browser
+    passes for both the disagreement badge and the silent-degradation path.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
