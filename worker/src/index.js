@@ -6,7 +6,7 @@ import { verifyGoogleIdToken } from './googleAuth.js';
 import { verifyFacebookAccessToken } from './facebookAuth.js';
 import { createSessionToken, verifySessionToken } from './session.js';
 import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
-import { LATEST_OBS_URL, parseLatestObs, nearestWaveStation, isFresh, toObservation } from './buoys.js';
+import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -28,19 +28,8 @@ function json(body, env, status = 200) {
 // NDBC sends no CORS headers, so the browser cannot read this directly — and one fetch of the
 // all-stations table here serves every user and every spot, which is the polite way to consume
 // a free public service. Cached in KV so a busy minute is still one upstream request.
-const BUOY_CACHE_KEY = 'ndbc:latest_obs';
-const BUOY_CACHE_TTL_S = 600; // NDBC publishes roughly every 10 minutes
-
-async function loadStations(env) {
-  const cached = await env.SUBSCRIPTIONS.get(BUOY_CACHE_KEY);
-  if (cached) return parseLatestObs(cached);
-  const res = await fetch(LATEST_OBS_URL, { headers: { 'User-Agent': 'surfcast-surf-app' } });
-  if (!res.ok) throw new Error('NDBC request failed: ' + res.status);
-  const text = await res.text();
-  await env.SUBSCRIPTIONS.put(BUOY_CACHE_KEY, text, { expirationTtl: BUOY_CACHE_TTL_S });
-  return parseLatestObs(text);
-}
-
+// Live buoy observations, proxied and cached. Sources and caching live in buoySources.js —
+// each network is fetched and cached separately so one being down or slow costs only itself.
 async function handleBuoy(request, env) {
   const url = new URL(request.url);
   const lat = Number(url.searchParams.get('lat'));
@@ -49,14 +38,14 @@ async function handleBuoy(request, env) {
     return json({ error: 'lat and lon required' }, env, 400);
   }
   try {
-    const stations = await loadStations(env);
+    const stations = await loadAllStations(env);
     const nearest = nearestWaveStation(stations, lat, lon);
     // No buoy in range, or the nearest one has gone quiet: say so plainly rather than
     // presenting a stale or distant reading as if it were this spot's conditions.
     if (!nearest || !isFresh(nearest.observedAt)) return json({ observation: null }, env);
     return json({ observation: toObservation(nearest) }, env);
   } catch {
-    // NDBC being down must never take the app's own endpoints with it.
+    // Every source being down must never take the app's own endpoints with it.
     return json({ observation: null }, env);
   }
 }

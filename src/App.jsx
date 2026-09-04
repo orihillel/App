@@ -5,6 +5,7 @@ import { SPOTS, ORDER } from './lib/spots.js';
 import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
+import { addSample, calibration } from './lib/calibration.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
@@ -97,6 +98,10 @@ export default function App() {
   // Logged sessions: what you actually surfed, kept alongside what the app predicted at the
   // time so a rating can be checked against reality over a season. See lib/sessions.js.
   const [sessions, setSessions] = useState([]);
+  // Paired (forecast, buoy) readings per spot. Models carry persistent local biases — a grid
+  // cell offshore of a spot that sits behind a headland reads high there every time — and that
+  // part of the error is systematic, so it can be measured and subtracted. See lib/calibration.js.
+  const [calSamples, setCalSamples] = useState({});
   const [goToId, setGoToId] = useState('trestles');
   const [hourIdx, setHourIdx] = useState(1);
   const [contSelectedIdx, setContSelectedIdx] = useState(null);
@@ -132,6 +137,11 @@ export default function App() {
   // Read by the Globe component's animation loop so every rendered frame reflects whatever is
   // currently in `forecast`, without a separate effect keyed on [forecast, hourIdx, ...] that
   // could fall out of sync (see Globe.jsx).
+  // Read by the bulk loader, which must not re-run when either changes.
+  const activeIdRef = useRef(activeId);
+  const goToIdRef = useRef(goToId);
+  activeIdRef.current = activeId;
+  goToIdRef.current = goToId;
   const dataRef = useRef({ spots, order, forecast, hourIdx });
   useEffect(() => { dataRef.current = { spots, order, forecast, hourIdx }; });
 
@@ -152,9 +162,17 @@ export default function App() {
     let cancelled = false;
     (async () => {
       const chunkSize = 5;
-      for (let i = 0; i < ORDER.length; i += chunkSize) {
+      // The spot being looked at goes first, then the go-to spot, then everything else.
+      //
+      // This walked ORDER straight through, so the spot on screen waited behind up to 247
+      // others before its own forecast arrived — measured at over nine seconds still showing
+      // FETCHING, and worse the further down the catalog a spot sits. The backfill matters
+      // (the globe colours every marker from it) but it is not what anyone is waiting for.
+      const first = [activeIdRef.current, goToIdRef.current].filter((id) => id && SPOTS[id]);
+      const queue = [...new Set([...first, ...ORDER])];
+      for (let i = 0; i < queue.length; i += chunkSize) {
         if (cancelled) return;
-        const chunk = ORDER.slice(i, i + chunkSize);
+        const chunk = queue.slice(i, i + chunkSize);
         await Promise.all(chunk.map((id) => loadSpotData(id, SPOTS[id])));
       }
     })();
@@ -181,6 +199,17 @@ export default function App() {
     })();
   }, [activeId, spots, forecast]);
 
+  // Whatever spot is on screen gets fetched now, regardless of where the background backfill
+  // has got to. Reordering the queue only helps the spot that was active when the loader
+  // started; switching spots (picking one in onboarding, stepping through with the arrows,
+  // tapping a marker) has to jump the queue too, or you sit on FETCHING while 247 other
+  // forecasts load ahead of the one you asked for.
+  useEffect(() => {
+    const spotObj = spots[activeId];
+    if (!spotObj || forecast[activeId] || loadingIds.has(activeId)) return;
+    loadSpotData(activeId, spotObj);
+  }, [activeId, spots, forecast, loadingIds, loadSpotData]);
+
   const buoyRequested = useRef(new Set());
   useEffect(() => {
     const spotObj = spots[activeId];
@@ -190,6 +219,21 @@ export default function App() {
       let result = null;
       try { result = await fetchBuoyObservation(spotObj); } catch { /* no panel */ }
       setBuoy((prev) => ({ ...prev, [activeId]: result }));
+      // A buoy reading beside the forecast for the same moment is one calibration sample.
+      // Read through dataRef (refreshed every render) rather than closing over `forecast`:
+      // this effect must not re-run on each of the 248 background spot loads, and a captured
+      // `forecast` would be the one from whenever the request started.
+      const fc = dataRef.current.forecast[activeId];
+      const nowHour = fc && fc.hours && fc.hours.find((hr) => hr.hour === new Date().getHours());
+      if (result && result.waveFt != null && nowHour) {
+        setCalSamples((prev) => {
+          const next = { ...prev, [activeId]: addSample(prev[activeId], {
+            forecastFt: waveAvg(nowHour.wave), observedFt: result.waveFt,
+          }) };
+          storage.set('surf-calibration', JSON.stringify(next)).catch(() => {});
+          return next;
+        });
+      }
     })();
   }, [activeId, spots]);
 
@@ -199,6 +243,9 @@ export default function App() {
         const res = await storage.get('surf-sessions');
         const saved = res && res.value ? JSON.parse(res.value) : [];
         if (Array.isArray(saved) && saved.length) setSessions(saved);
+        const cal = await storage.get('surf-calibration');
+        const savedCal = cal && cal.value ? JSON.parse(cal.value) : null;
+        if (savedCal && typeof savedCal === 'object') setCalSamples(savedCal);
       } catch { /* nothing logged yet, or unreadable: start empty */ }
     })();
   }, []);
@@ -419,6 +466,7 @@ export default function App() {
   const safeHourIdx = Math.min(hourIdx, hourData.length - 1);
   const h = hourData[safeHourIdx];
   const isGoTo = activeId === goToId;
+  const spotCalibration = calibration(calSamples[activeId]);
   const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : PLACEHOLDER_TIDE_TODAY;
   const tideNext = (spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : PLACEHOLDER_TIDE_NEXT;
   const tide = linePath(tideToday, 100, 34, 4);
@@ -580,7 +628,7 @@ export default function App() {
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}
-            onLogSession={logSession}
+            onLogSession={logSession} calibration={spotCalibration}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext}
