@@ -1,4 +1,5 @@
-import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle } from 'lucide-react';
+import { useState } from 'react';
+import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
@@ -20,10 +21,18 @@ export function HomeView({
   setToast, units, toggleUnits, openSearch,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
 }) {
+  // Local to this view: the log panel is a transient bit of UI, not app state worth lifting.
+  const [logging, setLogging] = useState(false);
+  const [stars, setStars] = useState(3);
+  const [note, setNote] = useState('');
+  function submitLog() {
+    onLogSession({ stars, note });
+    setLogging(false); setStars(3); setNote('');
+  }
   return (
     <>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -163,6 +172,37 @@ export function HomeView({
             </>
           )}
         </div>
+      </div>
+
+      {/* Logging what you actually surfed. The value is not the diary: each entry keeps the
+          rating the app gave at the time, so over a season you can see whether the rating is
+          worth anything at your spots. See lib/sessions.js. */}
+      <div className="mx-6" style={{ marginTop: 14 }}>
+        {logging ? (
+          <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
+            <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.1em', color: COLORS.foamDim, fontWeight: 700, marginBottom: 8 }}>HOW WAS IT?</div>
+            <div className="flex items-center" style={{ gap: 6, marginBottom: 10 }}>
+              {[1, 2, 3, 4, 5].map((n) => (
+                <button key={n} className="tl-btn" aria-label={n + ' stars'} onClick={() => setStars(n)} style={{ background: 'none', border: 'none', padding: 2 }}>
+                  <Star size={20} color={n <= stars ? COLORS.gold : COLORS.navyBorder} fill={n <= stars ? COLORS.gold : 'none'} />
+                </button>
+              ))}
+            </div>
+            <input
+              value={note} onChange={(e) => setNote(e.target.value)} maxLength={280}
+              placeholder="Anything worth remembering?"
+              style={{ width: '100%', background: 'rgba(0,0,0,0.25)', border: '1px solid ' + COLORS.navyBorder, borderRadius: 6, padding: '7px 9px', color: COLORS.foam, fontSize: 12, marginBottom: 10 }}
+            />
+            <div className="flex items-center" style={{ gap: 8 }}>
+              <button className="tl-btn" onClick={submitLog} style={{ background: COLORS.foam, color: COLORS.navy, border: 'none', borderRadius: 6, padding: '6px 12px', fontSize: 12, fontWeight: 600 }}>Save</button>
+              <button className="tl-btn" onClick={() => setLogging(false)} style={{ background: 'none', color: COLORS.foamDim, border: '1px solid ' + COLORS.navyBorder, borderRadius: 6, padding: '6px 12px', fontSize: 12 }}>Cancel</button>
+            </div>
+          </div>
+        ) : (
+          <button className="tl-btn flex items-center justify-center" onClick={() => setLogging(true)} style={{ gap: 6, width: '100%', background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 14px', color: COLORS.foamDim, fontSize: 12 }}>
+            <Plus size={13} /> Log a session here
+          </button>
+        )}
       </div>
 
       {/* The only measurement on this page. Everything else is a model's opinion about the

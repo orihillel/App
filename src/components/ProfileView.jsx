@@ -1,16 +1,20 @@
-import { X } from 'lucide-react';
+import { X, Trash2 } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
+import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
+import { ratingBg } from '../lib/rating.js';
 import { AuthButtons } from './AuthButtons.jsx';
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
   // Globe are how you browse/find a spot; this section is for managing what you personally
   // added on top of that, so it's filtered down to non-seed spots only.
   const addedIds = order.filter((id) => spots[id] && !SEED_ORDER.includes(id));
+  const stats = sessionStats(sessions);
+  const accuracy = ratingAccuracy(sessions);
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -93,6 +97,54 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
         <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.4 }}>
           When on, your alerts are also checked in the background and pushed to this device — not just while the app is open.
         </div>
+      {/* Sessions. The list is the visible part; the reason it exists is the accuracy table
+          under it, which is the only honest way to find out whether the app's rating means
+          anything at the spots you actually surf. See lib/sessions.js. */}
+      <div style={{ padding: '0 24px', marginTop: 22 }}>
+        <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
+          <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.1em', color: COLORS.foamDim, fontWeight: 700 }}>YOUR SESSIONS</span>
+          {stats.total ? <span style={{ fontSize: 10.5, color: COLORS.foamDim }}>{stats.total} logged · {stats.spots} spots{stats.avgStars ? ' · ' + stats.avgStars + '★ avg' : ''}</span> : null}
+        </div>
+        {sessions.length === 0 ? (
+          <div style={{ fontSize: 12, color: COLORS.foamDim, lineHeight: 1.4 }}>
+            Nothing logged yet. Log one from a spot page and this fills in — including whether the
+            rating matched what you found.
+          </div>
+        ) : (
+          <>
+            {sessions.slice(0, 8).map((entry) => (
+              <div key={entry.id} className="flex items-center justify-between" style={{ padding: '8px 0', borderBottom: '1px solid ' + COLORS.navyBorder }}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5, color: COLORS.foam, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{entry.spotName || 'Unknown spot'}</div>
+                  <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginTop: 2 }}>
+                    {entry.date}{entry.rating ? ' · app said ' + entry.rating : ''}{entry.note ? ' · ' + entry.note : ''}
+                  </div>
+                </div>
+                <div className="flex items-center" style={{ gap: 8, flexShrink: 0 }}>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.gold }}>{'★'.repeat(entry.stars)}</span>
+                  <button className="tl-btn" aria-label="Delete session" onClick={() => deleteSession && deleteSession(entry.id)} style={{ background: 'none', border: 'none', color: COLORS.foamDim, padding: 2 }}>
+                    <Trash2 size={13} />
+                  </button>
+                </div>
+              </div>
+            ))}
+            {accuracy ? (
+              <div style={{ marginTop: 12, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 12px' }}>
+                <div style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.1em', color: COLORS.foamDim, fontWeight: 700, marginBottom: 6 }}>
+                  IS THE RATING RIGHT? ({accuracy.total} sessions)
+                </div>
+                {accuracy.rows.map((row) => (
+                  <div key={row.rating} className="flex items-center justify-between" style={{ padding: '3px 0' }}>
+                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11, color: ratingBg(row.rating) }}>{row.rating}</span>
+                    <span style={{ fontSize: 11, color: COLORS.foamDim }}>{row.avgStars}★ over {row.sessions}</span>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+          </>
+        )}
+      </div>
+
 
         <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 8 }}>YOUR SPOTS ({addedIds.length})</div>
         {addedIds.length === 0 ? (
