@@ -4,6 +4,7 @@ import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER } from './lib/spots.js';
 import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
+import { defaultUnits } from './lib/locale.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
@@ -119,7 +120,10 @@ export default function App() {
   const [alerts, setAlerts] = useState([]);
   const [alertSheetOpen, setAlertSheetOpen] = useState(false);
   const [alertDraft, setAlertDraft] = useState(null);
-  const [units, setUnits] = useState('imperial');
+  // Metric unless the browser says otherwise — the app is used far outside the US, and this
+  // toggle drives wind speed and water temperature as well as wave height. A stored preference
+  // (loaded just below) always wins over the guess. See lib/locale.js.
+  const [units, setUnits] = useState(defaultUnits);
 
   // Account login (Google/Meta) + cross-device sync — see src/lib/auth.js and worker/README.md.
   // Entirely optional: with no session, the app behaves exactly as it always has (local-only).
