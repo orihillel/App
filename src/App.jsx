@@ -490,6 +490,7 @@ export default function App() {
             h={h} isLoading={isLoading} hasError={hasError} retry={() => loadSpotData(activeId, spot)}
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
             best={spotForecast ? spotForecast.best : null}
+            waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext}
