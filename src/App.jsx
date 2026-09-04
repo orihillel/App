@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
-import { SPOTS, ORDER } from './lib/spots.js';
+import { SPOTS, ORDER, searchCatalog } from './lib/spots.js';
 import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
@@ -121,6 +121,7 @@ export default function App() {
   const [searchStep, setSearchStep] = useState('query');
   const [searchError, setSearchError] = useState('');
   const [pending, setPending] = useState(null);
+  const [searchMatches, setSearchMatches] = useState([]);
 
   const [alerts, setAlerts] = useState([]);
   const [alertSheetOpen, setAlertSheetOpen] = useState(false);
@@ -520,7 +521,15 @@ export default function App() {
 
   function closeSearch() { setSearchOpen(false); setSearchStep('query'); setSearchQuery(''); setSearchError(''); setPending(null); }
   async function runSearch() {
-    if (!searchQuery.trim()) return;
+    const q = searchQuery.trim();
+    if (!q) return;
+    // Look in the catalog before geocoding. This sheet only ever geocoded, which was fine when
+    // the built-in list was a few dozen spots you could scroll — with 317 there is otherwise no
+    // way to find one by name, and searching "Pipeline" would offer to add a *second* Pipeline
+    // as a custom spot rather than taking you to the one already here.
+    const found = searchCatalog(spots, q);
+    if (found.length) { setSearchMatches(found); setSearchStep('matches'); return; }
+    setSearchMatches([]);
     setSearchStep('loading');
     try {
       const place = await geocodePlace(searchQuery.trim());
@@ -532,6 +541,18 @@ export default function App() {
       setSearchError("Couldn't find that place — try a different spelling.");
       setSearchStep('error');
     }
+  }
+  function selectSearchMatch(id) {
+    setActiveId(id);
+    setView('home');
+    setSearchOpen(false);
+    setSearchStep('query');
+    setSearchQuery('');
+    setSearchMatches([]);
+  }
+  function searchAnywayAsNewPlace() {
+    setSearchMatches([]);
+    setSearchStep('query');
   }
   function nudge(delta) { setPending((prev) => prev && ({ ...prev, offshoreDeg: (prev.offshoreDeg + delta + 360) % 360 })); }
   async function confirmAddSpot() {
@@ -650,6 +671,7 @@ export default function App() {
             searchQuery={searchQuery} setSearchQuery={setSearchQuery} runSearch={runSearch}
             searchStep={searchStep} setSearchStep={setSearchStep} searchError={searchError}
             pending={pending} setPending={setPending} nudge={nudge} confirmAddSpot={confirmAddSpot}
+            matches={searchMatches} onSelectMatch={selectSearchMatch} onSearchAnyway={searchAnywayAsNewPlace}
             onClose={closeSearch}
           />
         )}
