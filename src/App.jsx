@@ -3,6 +3,7 @@ import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER } from './lib/spots.js';
 import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
+import { fetchBuoyObservation } from './lib/buoy.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
 import { checkAlertMatch } from './lib/alerts.js';
@@ -88,6 +89,9 @@ export default function App() {
   // second request per spot, and doing it for all 230 during the bulk load would double that
   // traffic for a signal nobody is reading on 229 of them.
   const [agreement, setAgreement] = useState({});
+  // Live buoy reading, cached per spot and fetched only for the spot being viewed — same
+  // reasoning as the model agreement above.
+  const [buoy, setBuoy] = useState({});
   const [goToId, setGoToId] = useState('trestles');
   const [hourIdx, setHourIdx] = useState(1);
   const [contSelectedIdx, setContSelectedIdx] = useState(null);
@@ -168,6 +172,18 @@ export default function App() {
       setAgreement((prev) => ({ ...prev, [activeId]: result }));
     })();
   }, [activeId, spots, forecast]);
+
+  const buoyRequested = useRef(new Set());
+  useEffect(() => {
+    const spotObj = spots[activeId];
+    if (!spotObj || buoyRequested.current.has(activeId)) return;
+    buoyRequested.current.add(activeId);
+    (async () => {
+      let result = null;
+      try { result = await fetchBuoyObservation(spotObj); } catch { /* no panel */ }
+      setBuoy((prev) => ({ ...prev, [activeId]: result }));
+    })();
+  }, [activeId, spots]);
 
   // load any spots saved earlier ("database")
   useEffect(() => {
@@ -516,6 +532,7 @@ export default function App() {
             best={spotForecast ? spotForecast.best : null}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             agreement={agreement[activeId] || null}
+            buoy={buoy[activeId] || null}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext}

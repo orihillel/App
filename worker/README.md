@@ -43,6 +43,28 @@ app's first screen and in Profile) and syncing an account's data across devices:
   and their synced app data (go-to spot, custom-added spots, alerts, units — deliberately
   *not* the built-in spot catalog, which is identical on every device already).
 
+## Live buoy observations (`GET /buoy?lat=&lon=`)
+
+Returns the most recent reading from the nearest NOAA NDBC buoy that is actually reporting
+waves, or `{"observation": null}` when there isn't one worth showing.
+
+This endpoint exists in the Worker for two reasons. NDBC serves no CORS headers, so a browser
+cannot read it directly; and one fetch of NDBC's all-stations table here serves every user and
+every spot, which is the polite way to consume a free public service. The response is cached in
+KV for 10 minutes, roughly NDBC's own publishing interval, so a busy minute is still one
+upstream request.
+
+It returns `null` rather than something misleading when:
+
+- no wave-reporting buoy is within 250km (a buoy further away is measuring a different piece of
+  ocean, and showing it beside a spot would imply a correspondence that doesn't exist);
+- the nearest buoy's last reading is over three hours old (stations drop out, and a stale number
+  presented as live is worse than nothing);
+- NDBC is unreachable — which must never take the app's own endpoints down with it.
+
+No configuration or API key is needed. The frontend calls it via `VITE_PUSH_API_URL` (the same
+base URL as push and auth) and simply shows no buoy panel if that isn't set.
+
 ## One-time setup
 
 You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
