@@ -3,10 +3,11 @@ import { degToCompass, windType, conditionsScore, scoreToRating } from './rating
 import { daylightHours } from './daylight.js';
 import { hourLabel12 } from './format.js';
 import { bestWindow } from './bestwindow.js';
+import { swellTrains, wetsuitFor } from './swell.js';
 
 export async function fetchSpotForecast(spot) {
   const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat + '&longitude=' + spot.lon +
-    '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
+    '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
   // sunrise/sunset drive which hours get sampled below, per spot and per date.
   const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + spot.lat + '&longitude=' + spot.lon +
     '&hourly=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto&forecast_days=7';
@@ -47,15 +48,31 @@ export async function fetchSpotForecast(spot) {
     const windMph = ws * 0.621371;
     const period = sp != null ? Math.round(sp) : Math.round(wp != null ? wp : 0);
     const swellDeg = sd != null ? sd : (wdir != null ? wdir : 0);
+    // The two trains, kept apart rather than collapsed into one number — see lib/swell.js.
+    const trains = swellTrains({
+      swellHeightFt: mh.swell_wave_height && mh.swell_wave_height[idx] != null ? mh.swell_wave_height[idx] * 3.28084 : null,
+      swellPeriod: sp,
+      swellDeg: sd,
+      windWaveHeightFt: mh.wind_wave_height && mh.wind_wave_height[idx] != null ? mh.wind_wave_height[idx] * 3.28084 : null,
+      windWavePeriod: mh.wind_wave_period ? mh.wind_wave_period[idx] : null,
+      windWaveDeg: mh.wind_wave_direction ? mh.wind_wave_direction[idx] : null,
+    });
     const type = windType(wdd, spot.offshoreDeg);
     const tideVal = seaToday[i];
     const tidePosition = (tideVal != null && tMin != null && tMax != null && tMax > tMin) ? (tideVal - tMin) / (tMax - tMin) : null;
-    const score = conditionsScore(waveFt, windMph, type, period, swellDeg, spot.offshoreDeg, tidePosition);
+    // Score against the *dominant* train rather than the groundswell period regardless of how
+    // little groundswell there is. Before the trains were separated this could not be told
+    // apart: a 6ft day that is almost entirely 6-second wind chop, with a foot of 15-second
+    // swell underneath it, was being scored as though the whole 6ft arrived at 15 seconds.
+    const dominant = trains[0] || null;
+    const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
+    const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : swellDeg;
+    const score = conditionsScore(waveFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition);
     const base = Math.max(1, Math.round(waveFt));
     return {
       t: hourLabel12(idx), hour: idx, wave: Math.max(1, base - 1) + '-' + (base + 1), period,
       swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
-      windDir: degToCompass(wdd), windDeg: wdd, type, score, rating: scoreToRating(score),
+      windDir: degToCompass(wdd), windDeg: wdd, type, score, rating: scoreToRating(score), trains,
     };
   });
 
@@ -114,7 +131,17 @@ export async function fetchSpotForecast(spot) {
     tideFine.push({ hour: i, ft: seaAll[i] * 3.28084 });
   }
 
-  return { hours, weekly, continuous, tideToday, tideFine, best: bestWindow(hours) };
+  // Water temperature: one more hourly variable from the same marine call, and the answer to
+  // "what do I take to the beach" that the app could not previously give at all.
+  const sstNow = (hAll.sea_surface_temperature || [])[hourIndices[0]];
+  const waterC = sstNow != null ? sstNow : null;
+
+  return {
+    hours, weekly, continuous, tideToday, tideFine,
+    best: bestWindow(hours),
+    waterC,
+    wetsuit: wetsuitFor(waterC),
+  };
 }
 
 export async function geocodePlace(query) {

@@ -1,5 +1,6 @@
-import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
+import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
+import { cToF } from '../lib/swell.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12 } from '../lib/format.js';
 
@@ -17,7 +18,7 @@ export function HomeView({
   setToast, units, toggleUnits, openSearch,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
-  waveChart, hourIdx, setHourIdx, hourData, best,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
 }) {
@@ -72,15 +73,37 @@ export function HomeView({
             <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 16, color: COLORS.foamDim, letterSpacing: '0.04em' }}>{waveUnit(units)}</span>
           </div>
           <div className="flex items-center" style={{ gap: 14, marginTop: 12 }}>
-            <div className="flex items-center" style={{ gap: 5 }}>
-              <Navigation size={13} color={COLORS.tealBright} style={{ transform: 'rotate(' + h.swellDeg + 'deg)' }} />
-              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foam }}>{h.period}s {h.swellDir}</span>
-            </div>
+            {/* Only when there are no trains to show below — otherwise this is the same
+                swell said twice, once with less detail. */}
+            {!(h.trains && h.trains.length) ? (
+              <div className="flex items-center" style={{ gap: 5 }}>
+                <Navigation size={13} color={COLORS.tealBright} style={{ transform: 'rotate(' + h.swellDeg + 'deg)' }} />
+                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foam }}>{h.period}s {h.swellDir}</span>
+              </div>
+            ) : null}
             <div className="flex items-center" style={{ gap: 5 }}>
               <Navigation size={13} color={COLORS.tealBright} style={{ transform: 'rotate(' + h.windDeg + 'deg)' }} />
               <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foam }}>{formatSpeed(h.windSpd, units)}{speedUnit(units)} {h.windDir}</span>
             </div>
           </div>
+          {/* Sea state is not one wave: a long-period groundswell from a distant storm and a
+              short-period wind swell raised locally arrive together, often from different
+              directions. Collapsing them into one height and one period (which is what this
+              card used to show) hides the difference between a clean day and a junk one at
+              the same size. See lib/swell.js. */}
+          {h.trains && h.trains.length ? (
+            <div style={{ marginTop: 12, display: 'flex', flexDirection: 'column', gap: 5 }}>
+              {h.trains.map((tr, i) => (
+                <div key={i} className="flex items-center" style={{ gap: 6 }}>
+                  <Navigation size={11} color={i === 0 ? COLORS.tealBright : COLORS.foamDim} style={{ transform: 'rotate(' + tr.deg + 'deg)', flexShrink: 0 }} />
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11.5, color: COLORS.foam }}>
+                    {formatWaveNum(tr.heightFt, units)}{heightUnit(units)} {tr.period}s {tr.dir}
+                  </span>
+                  <span style={{ fontSize: 10.5, color: COLORS.foamDim }}>{tr.kind}</span>
+                </div>
+              ))}
+            </div>
+          ) : null}
           {/* The answer to the question people actually opened the app to ask. Every number
               behind it was already being computed per hour; nothing surfaced the conclusion,
               so you had to scrub the hour strip and compare eight ratings yourself. Tapping it
@@ -107,7 +130,18 @@ export function HomeView({
               </button>
             </div>
           ) : (
-            <div style={{ fontSize: 12, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.4, maxWidth: 260 }}>{spot.blurb}</div>
+            <>
+              {waterC != null ? (
+                <div className="flex items-center" style={{ gap: 6, marginTop: 12 }}>
+                  <Thermometer size={12} color={COLORS.foamDim} />
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11.5, color: COLORS.foam }}>
+                    {units === 'metric' ? Math.round(waterC) + '°C' : Math.round(cToF(waterC)) + '°F'}
+                  </span>
+                  {wetsuit ? <span style={{ fontSize: 11, color: COLORS.foamDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wetsuit}</span> : null}
+                </div>
+              ) : null}
+              <div style={{ fontSize: 12, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.4, maxWidth: 260 }}>{spot.blurb}</div>
+            </>
           )}
         </div>
       </div>

@@ -443,6 +443,24 @@ there's intentionally one source of truth, not separate logic per view.
     the selection (7A -> 5A), and the hour strip follows sunrise/sunset (5a…8p for a 06:10/19:20
     day) rather than the old fixed list.
 
+- **Swell trains split apart, and water temperature.** Next two from the review.
+  - *Trains (`lib/swell.js`):* the card showed one height and one period, which hides the
+    difference that matters most — 2ft at 14s from the SW is a clean powerful day, 2ft at 6s
+    from the W is junk, and they read identically. Open-Meteo already returns the trains
+    separately, so the request now also asks for `wind_wave_height/direction/period` and the
+    hero lists each: *"4ft 13s WSW groundswell / 2ft 5s WNW windswell"*. Trains under half a
+    foot are dropped rather than listed as ripples, and the old single-swell line is hidden
+    when the trains block is showing so the same swell is not said twice.
+  - *Scoring fix this enables:* `conditionsScore` was fed the groundswell period regardless of
+    how little groundswell there was, so a 6ft day of almost entirely 6-second chop with a foot
+    of 15-second swell underneath scored as if all 6ft arrived at 15s. It now scores against
+    the **dominant** train.
+  - *Water temperature + wetsuit:* `sea_surface_temperature` from the same marine call, shown
+    with a thickness suggestion (`6/5mm + hood` through `boardshorts`). Deliberately a range,
+    not a prescription — tolerance varies and the boundaries are not sharp.
+  - *Verified:* lint, check:classnames, 149/149 tests (14 new), build, and the stubbed-API
+    browser pass showing both train lines and `63°F 2mm spring suit` rendering correctly.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
