@@ -8,7 +8,7 @@ export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openG
   return (
     <div style={{ padding: '26px 24px 24px' }}>
       <div style={{ textAlign: 'center', marginBottom: 26 }}>
-        <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 20, color: COLORS.foam, letterSpacing: '0.1em' }}>TIDELINE</div>
+        <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 20, color: COLORS.foam, letterSpacing: '0.1em' }}>SURFCAST</div>
         <div style={{ fontSize: 13, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.5 }}>Pick your go-to spot. It's the first thing you'll see every time you open the app.</div>
       </div>
 

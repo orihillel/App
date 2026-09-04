@@ -1,5 +1,5 @@
 {
-  "name": "tideline-push-worker",
+  "name": "surfcast-push-worker",
   "private": true,
   "version": "0.1.0",
   "type": "module",

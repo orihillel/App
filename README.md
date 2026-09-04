@@ -1,4 +1,4 @@
-# Tideline
+# Surfcast
 
 Wave forecast app — live surf conditions, an interactive 3D globe of spots, and
 wind/tide-aware alerts. Built with React + Vite.

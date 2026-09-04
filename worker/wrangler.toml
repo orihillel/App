@@ -1,3 +1,10 @@
+# Deliberately still "tideline-push" after the app was renamed to Surfcast. This is the
+# deployed Worker's service name, and it decides the live URL
+# (tideline-push.<subdomain>.workers.dev) that the frontend's VITE_PUSH_API_URL points at.
+# Changing it does not rename the running Worker: `wrangler deploy` would publish a *second*
+# one under the new name and leave this one serving, so push subscriptions and sessions would
+# keep going to the old URL until VITE_PUSH_API_URL was repointed. Rename it deliberately, not
+# as part of a cosmetic rename.
 name = "tideline-push"
 main = "src/index.js"
 compatibility_date = "2025-06-01"
