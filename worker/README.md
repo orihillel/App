@@ -1,4 +1,4 @@
-# Tideline push-notification Worker
+# Surfcast push-notification Worker
 
 The backend half of real push notifications (see the "PUSH NOTIFICATIONS" toggle in the app's
 Profile tab). It exists because the frontend alone can't notify you about anything while it
@@ -145,6 +145,12 @@ You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
    ```
    Note the `https://tideline-push.<your-subdomain>.workers.dev` URL it prints — that's your
    `VITE_PUSH_API_URL`.
+
+   The `tideline-push` in that URL is the Worker's service name (`name` in `wrangler.toml`),
+   which was kept when the app was renamed to Surfcast. It is not cosmetic: changing it makes
+   `wrangler deploy` publish a *second* Worker under the new name rather than renaming this
+   one, leaving the old URL serving until `VITE_PUSH_API_URL` is repointed. Rename it on
+   purpose, with that migration in mind — not as part of renaming the app.
 
 ## Wiring up the frontend
 

@@ -29,7 +29,10 @@ async function hmacKey(secret) {
 
 // `payload` should at minimum carry `sub` (the user id, "google:<id>" or "facebook:<id>").
 export async function createSessionToken(payload, secret, ttlSeconds = 60 * 60 * 24 * 30) {
-  const header = { alg: 'HS256', typ: 'TL1' }; // "TL1" (Tideline v1), not "JWT" -- this isn't one
+  // "SC1" (Surfcast v1), not "JWT" -- this isn't one. Safe to have renamed from the old "TL1":
+  // verifySessionToken never inspects `typ`, it verifies the HMAC over the header and payload
+  // exactly as they arrived, so tokens issued under the old tag keep working until they expire.
+  const header = { alg: 'HS256', typ: 'SC1' };
   const body = { ...payload, iat: Math.floor(Date.now() / 1000), exp: Math.floor(Date.now() / 1000) + ttlSeconds };
   const signingInput = base64UrlEncode(encoder.encode(JSON.stringify(header))) + '.' + base64UrlEncode(encoder.encode(JSON.stringify(body)));
   const key = await hmacKey(secret);

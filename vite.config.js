@@ -19,8 +19,8 @@ export default defineConfig({
       filename: 'sw.js',
       includeAssets: ['icons/favicon-32.png'],
       manifest: {
-        name: 'Tideline — Surf Forecast',
-        short_name: 'Tideline',
+        name: 'Surfcast — Surf Forecast',
+        short_name: 'Surfcast',
         description: 'Live surf forecast, an interactive spot globe, and wind/tide-aware alerts.',
         theme_color: '#070F18',
         background_color: '#070F18',

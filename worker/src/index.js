@@ -34,7 +34,7 @@ const BUOY_CACHE_TTL_S = 600; // NDBC publishes roughly every 10 minutes
 async function loadStations(env) {
   const cached = await env.SUBSCRIPTIONS.get(BUOY_CACHE_KEY);
   if (cached) return parseLatestObs(cached);
-  const res = await fetch(LATEST_OBS_URL, { headers: { 'User-Agent': 'tideline-surf-app' } });
+  const res = await fetch(LATEST_OBS_URL, { headers: { 'User-Agent': 'surfcast-surf-app' } });
   if (!res.ok) throw new Error('NDBC request failed: ' + res.status);
   const text = await res.text();
   await env.SUBSCRIPTIONS.put(BUOY_CACHE_KEY, text, { expirationTtl: BUOY_CACHE_TTL_S });

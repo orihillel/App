@@ -40,7 +40,7 @@ self.addEventListener('fetch', (event) => {
 self.addEventListener('push', (event) => {
   let data = {};
   try { data = event.data ? event.data.json() : {}; } catch { /* fall through with {} */ }
-  const title = data.title || 'Tideline';
+  const title = data.title || 'Surfcast';
   event.waitUntil(
     self.registration.showNotification(title, {
       body: data.body || '',

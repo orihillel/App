@@ -543,6 +543,23 @@ there's intentionally one source of truth, not separate logic per view.
     logging a session (toast, persistence across reload, appearing in Profile) and for the
     accuracy table.
 
+- **Renamed Tideline to Surfcast.** Header and onboarding wordmark, `<title>`, PWA manifest
+  `name`/`short_name`, the push-notification fallback title, both `package.json`s and their
+  lockfiles, and the READMEs.
+  - *Two things deliberately not renamed.* `contTideLine` in `App.jsx`/`HomeView.jsx` is the
+    **tide chart's** line, not the app name — a careless find-and-replace breaks the tide
+    graph. And `name = "tideline-push"` in `worker/wrangler.toml` is the deployed Worker's
+    service name, which decides the live URL the frontend's `VITE_PUSH_API_URL` points at:
+    changing it makes `wrangler deploy` publish a *second* Worker rather than renaming this
+    one, leaving the old URL serving. Both now carry comments saying so.
+  - The session token's `typ` went `TL1` -> `SC1`. Safe: `verifySessionToken` never inspects
+    `typ` — it verifies the HMAC over the header and payload exactly as they arrived — so
+    tokens issued under the old tag keep working until they expire. Nobody is logged out.
+  - *Verified:* both lockfiles still resolve under `npm ci --dry-run`, lint, check:classnames,
+    214/214 frontend + 75/75 worker tests, build, and a browser pass confirming SURFCAST on
+    onboarding and the home header with no TIDELINE anywhere, plus the built manifest and
+    `<title>`.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
