@@ -1,6 +1,7 @@
 import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
+import { arcCentre } from '../lib/spotmodel.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12 } from '../lib/format.js';
 
@@ -138,6 +139,12 @@ export function HomeView({
                     {units === 'metric' ? Math.round(waterC) + '°C' : Math.round(cToF(waterC)) + '°F'}
                   </span>
                   {wetsuit ? <span style={{ fontSize: 11, color: COLORS.foamDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{wetsuit}</span> : null}
+                </div>
+              ) : null}
+              {spot.swellWindow ? (
+                <div style={{ fontSize: 11, color: COLORS.foamDim, marginTop: 10, fontFamily: 'JetBrains Mono, monospace' }}>
+                  Needs {degToCompass(arcCentre(spot.swellWindow[0], spot.swellWindow[1]))} swell
+                  {spot.bestTide && spot.bestTide !== 'all' ? ' · best at ' + spot.bestTide + ' tide' : ''}
                 </div>
               ) : null}
               <div style={{ fontSize: 12, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.4, maxWidth: 260 }}>{spot.blurb}</div>

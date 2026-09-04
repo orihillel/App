@@ -1,4 +1,5 @@
 import { COLORS } from './colors.js';
+import { swellWindowFor, swellExposure, tideFit } from './spotmodel.js';
 
 export const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 export function degToCompass(deg) {
@@ -24,7 +25,7 @@ export function windAngleColor(windDeg, offshoreDeg) {
 // of one factor (wind direction) overriding everything else. Split into a raw numeric score
 // plus a bucketing step so the globe can use the continuous score for a color gradient while
 // everything else keeps using the FIRING/GOOD/FAIR/POOR label.
-export function conditionsScore(waveFt, windMph, type, period, swellDeg, offshoreDeg, tidePosition) {
+export function conditionsScore(waveFt, windMph, type, period, swellDeg, offshoreDeg, tidePosition, spot) {
   let score = 0;
 
   if (windMph < 3) {
@@ -52,26 +53,19 @@ export function conditionsScore(waveFt, windMph, type, period, swellDeg, offshor
     else if (period < 7) score -= 1; // short-period wind swell — weak, choppy
   }
 
-  // Approximate "does the swell actually hit this spot" using the same offshore-direction
-  // data collected when the spot was added — the ideal swell window is roughly opposite the
-  // offshore wind direction. Coastlines aren't perfectly straight, so this is a rough proxy,
-  // not a substitute for real per-spot swell-window data.
-  if (swellDeg != null && offshoreDeg != null) {
-    const idealSwellDeg = (offshoreDeg + 180) % 360;
-    const off = angDiff(swellDeg, idealSwellDeg);
-    if (off <= 35) score += 2;
-    else if (off <= 70) score += 0;
-    else score -= 2;
+  // Does the swell actually reach this spot? See lib/spotmodel.js — this used to assume the
+  // ideal direction was exactly opposite the offshore wind, which is only true of a straight
+  // beach break and penalised the angled swells that make points and reefs work at all.
+  if (swellDeg != null && (spot || offshoreDeg != null)) {
+    const window = swellWindowFor(spot || { offshoreDeg });
+    score += 2 * swellExposure(swellDeg, window);
   }
 
-  // Tide: with no per-spot "works best at X tide" data, the only generically defensible
-  // signal is distance from today's own mid-tide — many breaks get too full/soft at peak
-  // high and too shallow/exposed at peak low, while mid-tide is the safest broad guess.
-  // Kept deliberately small (±1) since this is the least certain factor in the score.
+  // Tide. Spots that carry a `bestTide` are scored against the tide they actually want;
+  // everything else falls back to "mid is the safest guess", at half weight because it is a
+  // guess. Kept small (±1) either way — it is still the least certain factor in the score.
   if (tidePosition != null) {
-    const distFromMid = Math.abs(tidePosition - 0.5); // 0 = exactly mid, 0.5 = a dead extreme
-    if (distFromMid <= 0.15) score += 1;
-    else if (distFromMid >= 0.4) score -= 1;
+    score += tideFit(spot && spot.bestTide, tidePosition);
   }
 
   return score;

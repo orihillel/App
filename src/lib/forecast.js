@@ -67,7 +67,7 @@ export async function fetchSpotForecast(spot) {
     const dominant = trains[0] || null;
     const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
     const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : swellDeg;
-    const score = conditionsScore(waveFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition);
+    const score = conditionsScore(waveFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition, spot);
     const base = Math.max(1, Math.round(waveFt));
     return {
       t: hourLabel12(idx), hour: idx, wave: Math.max(1, base - 1) + '-' + (base + 1), period,
@@ -110,7 +110,7 @@ export async function fetchSpotForecast(spot) {
     // No per-day tide range computed out here (would mean tracking a min/max per day across
     // the whole week), so this leaves tide out of the week-ahead score — the same score used
     // for today already includes it, just not this longer-range one.
-    const cScore = cWindMph != null ? conditionsScore(cWaveFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null) : null;
+    const cScore = cWindMph != null ? conditionsScore(cWaveFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot) : null;
     continuous.push({
       waveFt: cWaveFt,
       tideFt: seaAll[idx] != null ? seaAll[idx] * 3.28084 : null,

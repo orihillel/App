@@ -461,6 +461,29 @@ there's intentionally one source of truth, not separate logic per view.
   - *Verified:* lint, check:classnames, 149/149 tests (14 new), build, and the stubbed-API
     browser pass showing both train lines and `63°F 2mm spring suit` rendering correctly.
 
+- **Per-spot swell windows and tide preference — the rating's biggest correctness fix.**
+  - *The bug:* `conditionsScore` guessed each spot's ideal swell direction as
+    `offshoreDeg + 180` and docked 2 points for anything more than 70° off it. That assumes
+    swell arrives **perpendicular to the beach**, which is true of a straight beach break and
+    wrong about exactly the waves worth travelling for — what makes a point or reef peel is
+    swell arriving at a sharp angle to the shore normal. Jeffreys Bay carries
+    `offshoreDeg: 325`, so the old rule expected swell from 145°; the real window is ~190–240°.
+    **A classic J-Bay swell was scored 0 or −2** — the app marked the best day of the year as
+    worse than average. Pinned by a regression test.
+  - *Two-part fix (`lib/spotmodel.js`):* the generic fallback is now **physical** rather than a
+    guess — a coastline blocks swell from behind it, so the exposed arc is the shore normal
+    ±90°, tapering across it instead of cliff-edging. And 60 spots now carry an explicit
+    `swellWindow: [from, to]` plus `bestTide` ('low'/'mid'/'high'/'all'), which overrides it.
+    Arcs wrap through north correctly (Thurso East is [340, 50]).
+  - *Tide too:* was a fixed "mid is best" for every break. Spots with a `bestTide` are scored
+    against the tide they actually want; the rest keep the mid-tide guess at **half weight**,
+    because it is a guess.
+  - *Surfaced in the UI* as *"Needs SSW swell · best at mid tide"*, so the data is visible
+    rather than only felt through the rating.
+  - *Verified:* lint, check:classnames, 170/170 tests (21 new), build, stubbed-API browser pass.
+    Tests include data integrity across all 230 spots (well-formed arcs, valid tide values, and
+    every un-annotated spot still scoreable through the derived arc).
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
