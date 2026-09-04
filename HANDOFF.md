@@ -527,6 +527,22 @@ there's intentionally one source of truth, not separate logic per view.
     `latest_obs.txt` fixture including `MM` gaps, a wind-only station and a ragged line —
     ndbc.noaa.gov cannot be reached from this sandbox, so there is no live integration test.
 
+- **Session log.** The last of the eight. Everything else in the app is about deciding whether
+  to go; this is what happened when you did, and it is what turns a forecast checker into
+  something you come back to (Surfline built session tracking for the same reason).
+  - *The point is not a diary.* Each entry stores **the rating the app gave at the time**
+    alongside your own 1–5 stars, so Profile can show an accuracy table: over a season, whether
+    the rating means anything at the spots you actually surf. Verified with seeded data where
+    "FIRING" days averaged 1.5★ and "FAIR" days 4.5★ — the table surfaces that the rating is
+    upside down, which is precisely the case it exists to reveal.
+  - Rides along in the existing synced blob (so it follows an account across devices) and is
+    capped at 500 entries so it cannot grow without limit. Notes capped at 280 chars.
+  - Needs at least 3 comparable sessions before showing accuracy — below that it would be noise
+    presented as a finding.
+  - *Verified:* lint, check:classnames, 214/214 tests (17 new), build, and browser passes for
+    logging a session (toast, persistence across reload, appearing in Profile) and for the
+    accuracy table.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

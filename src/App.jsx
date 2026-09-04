@@ -4,6 +4,7 @@ import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER } from './lib/spots.js';
 import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
+import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
 import { checkAlertMatch } from './lib/alerts.js';
@@ -92,6 +93,9 @@ export default function App() {
   // Live buoy reading, cached per spot and fetched only for the spot being viewed — same
   // reasoning as the model agreement above.
   const [buoy, setBuoy] = useState({});
+  // Logged sessions: what you actually surfed, kept alongside what the app predicted at the
+  // time so a rating can be checked against reality over a season. See lib/sessions.js.
+  const [sessions, setSessions] = useState([]);
   const [goToId, setGoToId] = useState('trestles');
   const [hourIdx, setHourIdx] = useState(1);
   const [contSelectedIdx, setContSelectedIdx] = useState(null);
@@ -185,6 +189,16 @@ export default function App() {
     })();
   }, [activeId, spots]);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await storage.get('surf-sessions');
+        const saved = res && res.value ? JSON.parse(res.value) : [];
+        if (Array.isArray(saved) && saved.length) setSessions(saved);
+      } catch { /* nothing logged yet, or unreadable: start empty */ }
+    })();
+  }, []);
+
   // load any spots saved earlier ("database")
   useEffect(() => {
     (async () => {
@@ -262,6 +276,7 @@ export default function App() {
     if (appData.goToId) setGoToId(appData.goToId);
     if (appData.units === 'metric' || appData.units === 'imperial') setUnits(appData.units);
     if (Array.isArray(appData.alerts)) { setAlerts(appData.alerts); persistAlertsLocally(appData.alerts); }
+    if (Array.isArray(appData.sessions)) { setSessions(appData.sessions); persistSessionsLocally(appData.sessions); }
     if (Array.isArray(appData.customSpots) && appData.customSpots.length) {
       setSpots((prev) => { const merged = { ...prev }; appData.customSpots.forEach((s) => { merged[s.id] = s; }); return merged; });
       setOrder((prev) => { const ids = appData.customSpots.map((s) => s.id).filter((id) => !prev.includes(id)); return [...prev, ...ids]; });
@@ -289,12 +304,39 @@ export default function App() {
     setSession(null);
     setToast('Signed out — your spots and alerts stay on this device');
   }
+  async function persistSessionsLocally(next) {
+    try { await storage.set('surf-sessions', JSON.stringify(next)); } catch { /* best-effort */ }
+  }
+  function logSession({ stars, note }) {
+    const hr = hourData[safeHourIdx];
+    const entry = makeSession({
+      spotId: activeId,
+      spotName: spot.name,
+      // What the app predicted for the hour being looked at, captured now so it can be
+      // compared with how it actually was later.
+      rating: hr && hr.rating !== 'LOADING' ? hr.rating : null,
+      waveFt: hr ? waveAvg(hr.wave) : null,
+      stars,
+      note,
+    });
+    const next = addSession(sessions, entry);
+    setSessions(next);
+    persistSessionsLocally(next);
+    setToast('Session logged at ' + spot.name);
+  }
+  function deleteSession(id) {
+    const next = removeSession(sessions, id);
+    setSessions(next);
+    persistSessionsLocally(next);
+  }
+
   function currentAppData(overrides = {}) {
     return {
       goToId,
       customSpots: order.filter((id) => !ORDER.includes(id)).map((id) => spots[id]).filter(Boolean),
       alerts,
       units,
+      sessions,
       ...overrides,
     };
   }
@@ -522,7 +564,8 @@ export default function App() {
         ) : view === 'profile' ? (
           <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
             pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
-            session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast} />
+            session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast}
+            sessions={sessions} deleteSession={deleteSession} />
         ) : (
           <HomeView
             setToast={setToast} units={units} toggleUnits={toggleUnits} openSearch={openSearch}
@@ -533,6 +576,7 @@ export default function App() {
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}
+            onLogSession={logSession}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext}
