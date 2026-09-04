@@ -419,6 +419,30 @@ there's intentionally one source of truth, not separate logic per view.
     and a browser pass at `deviceScaleFactor: 3` with all 230 spots -- staged descent, marker
     steering landing 0.4px from centre, off-centre tap selecting. No console errors.
 
+- **"Best today" window, and daylight-aware forecast hours.** First of the improvements from the
+  competitive review (Surfline/MSW/Windy/Windguru).
+  - *Best window (`lib/bestwindow.js`):* the app scored every sampled hour and never surfaced
+    the conclusion, so answering "when should I go?" meant scrubbing the hour strip and
+    comparing eight ratings by eye. Now a tappable line in the hero card — *"5a–11a best today ·
+    4-6ft offshore"* — jumps the page to that hour. It picks the **longest run** at or within one
+    point of the day's best (a three-hour stretch beats a one-hour peak), ties break earlier,
+    and it renders **nothing** on a day where the best is still poor, since a "best window" on a
+    bad day reads as a recommendation.
+  - *Daylight hours (`lib/daylight.js`):* sampling was the fixed list `[5,7,9,11,13,15,17,19]`
+    for every spot and date. Right for a mid-latitude summer, wrong elsewhere, and badly wrong
+    for the catalog's own high-latitude spots — **Unstad is at 68.3°N, inside the Arctic Circle,
+    where the sun does not rise at all through December**, so the app was offering eight hours
+    of darkness. Hours now come from the spot's own sunrise/sunset (`daily=sunrise,sunset`),
+    opening an hour before sunrise for first light. A short winter day returns **fewer** hours
+    rather than repeating one, so nothing downstream may assume a length of 8 — `App.jsx` clamps
+    `hourIdx`, and each hour now carries its own `hour` field (the tide readout indexes by it
+    instead of the removed `HOUR_INDICES`).
+  - *Verified:* 135/135 tests (24 new), lint, check:classnames, build. Browser check with the
+    Open-Meteo endpoints **stubbed via `page.route`** — the sandbox proxy blocks open-meteo.com
+    outright, so the live path cannot run here: confirmed the window renders, tapping it moves
+    the selection (7A -> 5A), and the hour strip follows sunrise/sunset (5a…8p for a 06:10/19:20
+    day) rather than the old fixed list.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

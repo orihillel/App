@@ -1,25 +1,38 @@
-import { HOUR_LABELS, HOUR_INDICES, DAY_LABELS } from './spots.js';
+import { DAY_LABELS } from './spots.js';
 import { degToCompass, windType, conditionsScore, scoreToRating } from './rating.js';
+import { daylightHours } from './daylight.js';
+import { hourLabel12 } from './format.js';
+import { bestWindow } from './bestwindow.js';
 
 export async function fetchSpotForecast(spot) {
   const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat + '&longitude=' + spot.lon +
     '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
+  // sunrise/sunset drive which hours get sampled below, per spot and per date.
   const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + spot.lat + '&longitude=' + spot.lon +
-    '&hourly=wind_speed_10m,wind_direction_10m&timezone=auto&forecast_days=7';
+    '&hourly=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto&forecast_days=7';
   const [marineRes, windRes] = await Promise.all([fetch(marineUrl), fetch(windUrl)]);
   if (!marineRes.ok || !windRes.ok) throw new Error('Forecast request failed');
   const marine = await marineRes.json();
   const wind = await windRes.json();
 
+  // Which hours to sample, from this spot's own sunrise and sunset rather than a fixed
+  // 5am-7pm list — see lib/daylight.js for why that fixed list was actively wrong at the
+  // high-latitude spots in the catalog.
+  const windDaily = wind.daily || {};
+  const hourIndices = daylightHours(
+    (windDaily.sunrise || [])[0],
+    (windDaily.sunset || [])[0],
+  );
+
   // Today's tide range, computed up front so each hour can be scored by how close it sits
   // to today's own mid-tide (see conditionsScore) — not an absolute tide height.
   const mhForTide = marine.hourly || {};
-  const seaToday = HOUR_INDICES.map((idx) => (mhForTide.sea_level_height_msl ? mhForTide.sea_level_height_msl[idx] : null));
+  const seaToday = hourIndices.map((idx) => (mhForTide.sea_level_height_msl ? mhForTide.sea_level_height_msl[idx] : null));
   const validTidesToday = seaToday.filter((v) => v != null);
   const tMin = validTidesToday.length ? Math.min(...validTidesToday) : null;
   const tMax = validTidesToday.length ? Math.max(...validTidesToday) : null;
 
-  const hours = HOUR_INDICES.map((idx, i) => {
+  const hours = hourIndices.map((idx, i) => {
     const mh = marine.hourly || {};
     const wh = mh.wave_height ? mh.wave_height[idx] : null;
     const wp = mh.wave_period ? mh.wave_period[idx] : null;
@@ -40,7 +53,7 @@ export async function fetchSpotForecast(spot) {
     const score = conditionsScore(waveFt, windMph, type, period, swellDeg, spot.offshoreDeg, tidePosition);
     const base = Math.max(1, Math.round(waveFt));
     return {
-      t: HOUR_LABELS[i], wave: Math.max(1, base - 1) + '-' + (base + 1), period,
+      t: hourLabel12(idx), hour: idx, wave: Math.max(1, base - 1) + '-' + (base + 1), period,
       swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
       windDir: degToCompass(wdd), windDeg: wdd, type, score, rating: scoreToRating(score),
     };
@@ -94,14 +107,14 @@ export async function fetchSpotForecast(spot) {
     });
   }
 
-  const tideToday = HOUR_INDICES.map((idx) => (seaAll[idx] != null ? seaAll[idx] * 3.28084 : null));
+  const tideToday = hourIndices.map((idx) => (seaAll[idx] != null ? seaAll[idx] * 3.28084 : null));
   const tideFine = [];
   for (let i = 0; i < Math.min(24, timesAll.length); i++) {
     if (seaAll[i] == null) continue;
     tideFine.push({ hour: i, ft: seaAll[i] * 3.28084 });
   }
 
-  return { hours, weekly, continuous, tideToday, tideFine };
+  return { hours, weekly, continuous, tideToday, tideFine, best: bestWindow(hours) };
 }
 
 export async function geocodePlace(query) {
