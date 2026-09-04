@@ -560,6 +560,36 @@ there's intentionally one source of truth, not separate logic per view.
     onboarding and the home header with no TIDELINE anywhere, plus the built manifest and
     `<title>`.
 
+- **Tailored for Israel, where the app is mainly used.** Four changes, one of which came out of
+  measurement rather than assumption.
+  - *Israeli coast: 2 spots -> 20.* Nahariya down to Ashkelon — Bat Galim, Atlit, Habonim,
+    Nahsholim, Michmoret, Beit Yanai, Sironit, Poleg, Acadia, Maravi, Banana Beach, Bat Yam,
+    Palmachim, Ashdod and the rest. The coast runs north-south facing west, so offshore is
+    easterly and the swell window is the western arc. **`bestTide: 'all'` throughout**, because
+    the eastern Mediterranean is close to tideless there (~30-40cm range) — a tide preference
+    would be inventing a signal. The two pre-existing Israeli spots were missing the swell
+    window and tide entirely; a test caught that and they now carry both.
+  - *The rating was saturated, not harsh.* I assumed the score would be pessimistic in the Med
+    (short-period windswell, small surf). Measured at Tel Aviv, the opposite: offshore wind is
+    worth +3 and being in the swell window +2, so on a coast whose mornings are usually offshore
+    **a 2.5ft 7s morning and a 6ft storm both read FIRING** — the badge had stopped
+    discriminating. FIRING now requires at least 3ft. Small surf keeps every point it earns and
+    GOOD is its honest ceiling; the cap only ever caps, so nothing rated lower moves up. A 2ft
+    clean Trestles day drops FIRING -> GOOD too, which is right.
+  - *Units default from the browser* (`lib/locale.js`): metric everywhere but the US, since this
+    toggle drives wind speed and water temperature as well as wave height. A stored preference
+    still wins. Verified: `he-IL` opens on **M**, `en-US` on **FT**.
+  - *Onboarding offers nearby spots*, ranked from the catalog against a timezone anchor, with the
+    global list as fallback wherever coverage is too thin to be honest. Verified: Asia/Jerusalem
+    opens on Maravi/Hilton/Banana Beach/Acadia; America/Los_Angeles on Trestles/Oceanside/Wedge.
+  - *Known gap:* **NDBC has no stations in the eastern Mediterranean**, so the live buoy panel
+    will not appear in Israel at all. The code already returns nothing beyond 250km, so it
+    degrades correctly rather than showing an Atlantic buoy — but the feature is effectively
+    US-only. A Mediterranean source (Copernicus Marine, or Israel's own IOLR buoys) would be a
+    separate piece of work.
+  - *Verified:* lint, check:classnames, 229/229 tests (20 new), build, and browser passes under
+    both `he-IL`/Asia/Jerusalem and `en-US`/America/Los_Angeles.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

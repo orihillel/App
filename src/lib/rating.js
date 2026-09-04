@@ -25,6 +25,11 @@ export function windAngleColor(windDeg, offshoreDeg) {
 // of one factor (wind direction) overriding everything else. Split into a raw numeric score
 // plus a bucketing step so the globe can use the continuous score for a color gradient while
 // everything else keeps using the FIRING/GOOD/FAIR/POOR label.
+// The smallest surf that can be called FIRING, and the score that label starts at (kept next
+// to each other so the cap below cannot drift out of step with scoreToRating).
+export const FIRING_MIN_WAVE_FT = 3;
+export const FIRING_SCORE = 6;
+
 export function conditionsScore(waveFt, windMph, type, period, swellDeg, offshoreDeg, tidePosition, spot) {
   let score = 0;
 
@@ -68,10 +73,20 @@ export function conditionsScore(waveFt, windMph, type, period, swellDeg, offshor
     score += tideFit(spot && spot.bestTide, tidePosition);
   }
 
+  // FIRING has to mean something. Offshore wind alone is worth +3 and being in the swell window
+  // another +2, so on a coast where the mornings are usually offshore — the Israeli
+  // Mediterranean, say — almost any clean day cleared the FIRING threshold and the badge stopped
+  // discriminating: measured at Tel Aviv, a 2.5ft 7s morning and a 6ft storm both read FIRING.
+  // Small surf can be excellent, and still is: it keeps every point it earned, and GOOD is the
+  // honest ceiling for it. This only ever caps, so nothing that was rated lower moves up.
+  if (waveFt != null && waveFt < FIRING_MIN_WAVE_FT) {
+    score = Math.min(score, FIRING_SCORE - 0.5);
+  }
+
   return score;
 }
 export function scoreToRating(score) {
-  if (score >= 6) return 'FIRING';
+  if (score >= FIRING_SCORE) return 'FIRING';
   if (score >= 3) return 'GOOD';
   if (score >= 0) return 'FAIR';
   return 'POOR';

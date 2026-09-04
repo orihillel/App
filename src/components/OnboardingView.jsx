@@ -1,10 +1,16 @@
 import { Search, Map } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { SPOTS, ONBOARDING_PICKS } from '../lib/spots.js';
+import { nearbyPicks } from '../lib/locale.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { AuthButtons } from './AuthButtons.jsx';
 
 export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding, onLoggedIn, setToast }) {
+  // Seven world-famous breaks was a fine default when the catalog was small, but it offers
+  // nothing within thousands of kilometres of most people opening this. Nearby spots first,
+  // falling back to the global list wherever the catalog is too thin to be useful — see
+  // lib/locale.js.
+  const picks = nearbyPicks(SPOTS, undefined, ONBOARDING_PICKS);
   return (
     <div style={{ padding: '26px 24px 24px' }}>
       <div style={{ textAlign: 'center', marginBottom: 26 }}>
@@ -25,7 +31,7 @@ export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openG
 
       <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 10 }}>POPULAR SPOTS</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
-        {ONBOARDING_PICKS.map((id) => {
+        {picks.map((id) => {
           const s = SPOTS[id];
           if (!s) return null;
           return (
