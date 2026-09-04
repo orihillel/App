@@ -1,4 +1,4 @@
-import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12 } from '../lib/format.js';
@@ -17,7 +17,7 @@ export function HomeView({
   setToast, units, toggleUnits, openSearch,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
-  waveChart, hourIdx, setHourIdx, hourData,
+  waveChart, hourIdx, setHourIdx, hourData, best,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
 }) {
@@ -81,6 +81,24 @@ export function HomeView({
               <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foam }}>{formatSpeed(h.windSpd, units)}{speedUnit(units)} {h.windDir}</span>
             </div>
           </div>
+          {/* The answer to the question people actually opened the app to ask. Every number
+              behind it was already being computed per hour; nothing surfaced the conclusion,
+              so you had to scrub the hour strip and compare eight ratings yourself. Tapping it
+              jumps the rest of the page to that hour. Absent on a day with nothing worth
+              singling out — see lib/bestwindow.js. */}
+          {best && !isLoading && !hasError ? (
+            <button
+              className="tl-btn flex items-center"
+              onClick={() => setHourIdx(best.startIdx)}
+              style={{ gap: 7, marginTop: 14, width: '100%', textAlign: 'left', background: 'rgba(0,0,0,0.22)', border: '1px solid ' + COLORS.navyBorder, borderRadius: 8, padding: '8px 10px' }}
+            >
+              <Clock size={13} color={ratingBg(best.rating)} />
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 11.5, color: COLORS.foam, fontWeight: 700 }}>{best.label}</span>
+              <span style={{ fontSize: 11.5, color: COLORS.foamDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                best today · {formatWaveRange(best.wave, units)}{heightUnit(units)} {best.windType}
+              </span>
+            </button>
+          ) : null}
           {hasError ? (
             <div style={{ marginTop: 12, fontSize: 11.5, color: COLORS.foam, background: 'rgba(0,0,0,0.28)', padding: '8px 10px', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
               <span>Live data didn't load for this spot.</span>

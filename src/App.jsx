@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
-import { SPOTS, ORDER, HOUR_INDICES } from './lib/spots.js';
+import { SPOTS, ORDER } from './lib/spots.js';
 import { fetchSpotForecast, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
@@ -328,10 +328,13 @@ export default function App() {
   const contTideLine = linePath(contData.map((p) => (p.tideFt != null ? p.tideFt : 0)), 300, 70, 10);
   const contWindLine = linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10);
   const contSelected = contSelectedIdx != null ? contData[contSelectedIdx] : null;
-  const h = hourData[hourIdx];
+  // The sampled hours are no longer a fixed list of eight — a short winter day at a
+  // high-latitude spot yields fewer — so an index chosen for one spot can overshoot the next.
+  const safeHourIdx = Math.min(hourIdx, hourData.length - 1);
+  const h = hourData[safeHourIdx];
   const isGoTo = activeId === goToId;
   const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : PLACEHOLDER_TIDE_TODAY;
-  const tideNext = (spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, HOUR_INDICES[hourIdx]) : PLACEHOLDER_TIDE_NEXT;
+  const tideNext = (spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : PLACEHOLDER_TIDE_NEXT;
   const tide = linePath(tideToday, 100, 34, 4);
   const waveChart = linePath(hourData.map((hr) => waveAvg(hr.wave)), 300, 56, 8);
   const isLoading = loadingIds.has(activeId);
@@ -485,7 +488,8 @@ export default function App() {
             setToast={setToast} units={units} toggleUnits={toggleUnits} openSearch={openSearch}
             spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1} onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
             h={h} isLoading={isLoading} hasError={hasError} retry={() => loadSpotData(activeId, spot)}
-            waveChart={waveChart} hourIdx={hourIdx} setHourIdx={setHourIdx} hourData={hourData}
+            waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
+            best={spotForecast ? spotForecast.best : null}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext}
