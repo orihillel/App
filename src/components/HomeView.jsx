@@ -1,9 +1,10 @@
 import { useState } from 'react';
-import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus } from 'lucide-react';
+import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
+import { calibrationLabel } from '../lib/calibration.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg } from '../lib/format.js';
 
@@ -21,7 +22,7 @@ export function HomeView({
   setToast, units, toggleUnits, openSearch,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
 }) {
@@ -132,6 +133,16 @@ export function HomeView({
                 best today · {formatWaveRange(best.wave, units)}{heightUnit(units)} {best.windType}
               </span>
             </button>
+          ) : null}
+          {/* The consistent part of the model's error at this spot, learned from buoy readings
+              and reported here rather than in the buoy panel: it qualifies the forecast above,
+              and it still holds on a day the buoy happens to be offline. See
+              lib/calibration.js. */}
+          {calibrationLabel(calibration) && !isLoading && !hasError ? (
+            <div className="flex items-center" style={{ gap: 6, marginTop: 10 }}>
+              <TrendingUp size={11} color={COLORS.tealBright} />
+              <span style={{ fontSize: 11, color: COLORS.foamDim }}>{calibrationLabel(calibration)}</span>
+            </div>
           ) : null}
           {/* Every number here is a model output, and a model is a guess. Two days out the
               major models agree within inches; seven days out they can differ by a factor of

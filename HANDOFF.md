@@ -590,6 +590,40 @@ there's intentionally one source of truth, not separate logic per view.
   - *Verified:* lint, check:classnames, 229/229 tests (20 new), build, and browser passes under
     both `he-IL`/Asia/Jerusalem and `en-US`/America/Los_Angeles.
 
+- **Multi-source buoys (incl. Israel), and forecast calibration from what the buoy measured.**
+  - *Sources are now a registry* (`worker/src/buoySources.js`): NOAA NDBC plus ISRAMAR/IOLR
+    (Israel), each normalising to one station shape, each cached separately and each
+    independently allowed to fail. Adding a country is one entry, not a change to the endpoint.
+    Israel matters because **NDBC has nothing in the eastern Mediterranean** — without IOLR the
+    buoy panel never appears there at all.
+  - *Honest limits.* There is no "all the buoys" API: the global network is a patchwork of
+    national programmes and the nearest thing to a registry (WMO's DBCP) distributes over the
+    GTS, which a web app cannot query. Copernicus Marine needs an account and serves
+    NetCDF/Zarr subsets, not point observations — a separate piece of work needing the owner's
+    credentials as a Worker secret.
+  - *Nothing here is live-verified.* **The sandbox's egress proxy denies every ocean-data host**
+    (checked: ndbc.noaa.gov, isramar.ocean.org.il, both Copernicus hosts, two ERDDAP servers,
+    open-meteo — all refused at CONNECT). Parsers are fixture-tested, which proves they match
+    *my understanding* of each format, not the format itself. Every source is fail-safe, so a
+    wrong guess yields no stations rather than bad ones.
+  - *Calibration (`lib/calibration.js`)* is the real answer to "make it exact", which no
+    forecast can be. Models carry **persistent local biases** — a grid cell offshore of a spot
+    behind a headland reads high there every time — and that part of the error is systematic, so
+    it can be measured and subtracted. Pairs the live forecast with the buoy reading for the
+    same hour, takes the **median ratio** over up to 60 samples (median so one dropout cannot
+    move it; per-sample ratios so rare big days cannot dominate), and reports *"Runs 30% bigger
+    than forecast here (20 checks)"*. Needs 8 samples before saying anything, ignores
+    corrections under 8%, and refuses one over 2.5x as evidence of a bad pairing rather than a
+    bias.
+  - **Bug found while verifying:** the bulk loader walked `ORDER` straight through in chunks of
+    5, so the spot on screen waited behind up to 247 others — measured **still FETCHING after
+    9 seconds**, and made materially worse by growing the catalog to 248. The active spot is now
+    loaded on demand the moment it changes, and seeded first in the queue.
+  - *Verified:* lint, check:classnames, **258 frontend + 89 worker tests** (51 new), build. The
+    calibration UI is covered by a component test rather than a browser pass: stubbing
+    Open-Meteo for 248 spots saturates Playwright's request interception, so the active spot is
+    still fetching when the assertion runs.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
