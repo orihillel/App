@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER } from './lib/spots.js';
-import { fetchSpotForecast, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
+import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
 import { checkAlertMatch } from './lib/alerts.js';
@@ -84,6 +84,10 @@ export default function App() {
   const [spots, setSpots] = useState(SPOTS);
   const [order, setOrder] = useState(ORDER);
   const [activeId, setActiveId] = useState('trestles');
+  // Model agreement, cached per spot. Fetched only for the spot being looked at — it is a
+  // second request per spot, and doing it for all 230 during the bulk load would double that
+  // traffic for a signal nobody is reading on 229 of them.
+  const [agreement, setAgreement] = useState({});
   const [goToId, setGoToId] = useState('trestles');
   const [hourIdx, setHourIdx] = useState(1);
   const [contSelectedIdx, setContSelectedIdx] = useState(null);
@@ -144,6 +148,26 @@ export default function App() {
     })();
     return () => { cancelled = true; };
   }, [loadSpotData]);
+
+  // Marked in a ref the moment a request starts, not when it finishes. This effect depends on
+  // `forecast`, which changes on every one of the 230 spots loading in the background, so a
+  // guard that only checked the stored result would refire dozens of times before the first
+  // response landed — measured at 20 requests for one spot.
+  const agreementRequested = useRef(new Set());
+  useEffect(() => {
+    const spotObj = spots[activeId];
+    const hours = forecast[activeId] && forecast[activeId].hours;
+    if (!spotObj || !hours || agreementRequested.current.has(activeId)) return;
+    agreementRequested.current.add(activeId);
+    (async () => {
+      // Never allowed to fail the page: a null result just means no badge.
+      let result = null;
+      try {
+        result = await fetchModelAgreement(spotObj, hours.map((hr) => hr.hour));
+      } catch { /* leave it null */ }
+      setAgreement((prev) => ({ ...prev, [activeId]: result }));
+    })();
+  }, [activeId, spots, forecast]);
 
   // load any spots saved earlier ("database")
   useEffect(() => {
@@ -491,6 +515,7 @@ export default function App() {
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
             best={spotForecast ? spotForecast.best : null}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
+            agreement={agreement[activeId] || null}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext}

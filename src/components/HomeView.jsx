@@ -1,4 +1,4 @@
-import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer } from 'lucide-react';
+import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
@@ -19,7 +19,7 @@ export function HomeView({
   setToast, units, toggleUnits, openSearch,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
 }) {
@@ -122,6 +122,17 @@ export function HomeView({
                 best today · {formatWaveRange(best.wave, units)}{heightUnit(units)} {best.windType}
               </span>
             </button>
+          ) : null}
+          {/* Every number here is a model output, and a model is a guess. Two days out the
+              major models agree within inches; seven days out they can differ by a factor of
+              two, and showing that as one confident number is misleading exactly when it
+              matters. Only rendered when they actually disagree — a badge that is always on
+              gets ignored. See lib/confidence.js. */}
+          {agreement && agreement.level !== 'high' && !isLoading && !hasError ? (
+            <div className="flex items-center" style={{ gap: 6, marginTop: 10 }}>
+              <AlertTriangle size={11} color={agreement.level === 'low' ? COLORS.coral : COLORS.gold} />
+              <span style={{ fontSize: 11, color: COLORS.foamDim }}>{agreement.label}</span>
+            </div>
           ) : null}
           {hasError ? (
             <div style={{ marginTop: 12, fontSize: 11.5, color: COLORS.foam, background: 'rgba(0,0,0,0.28)', padding: '8px 10px', borderRadius: 6, display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>

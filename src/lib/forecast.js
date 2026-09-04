@@ -4,6 +4,7 @@ import { daylightHours } from './daylight.js';
 import { hourLabel12 } from './format.js';
 import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
+import { confidenceForSeries, confidenceLabel } from './confidence.js';
 
 export async function fetchSpotForecast(spot) {
   const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat + '&longitude=' + spot.lon +
@@ -142,6 +143,41 @@ export async function fetchSpotForecast(spot) {
     waterC,
     wetsuit: wetsuitFor(waterC),
   };
+}
+
+// Model agreement, fetched separately and allowed to fail.
+//
+// Open-Meteo will serve individual models via `&models=`, and returns each one under a
+// suffixed key (wave_height_<model>). The exact marine model identifiers could not be checked
+// from the sandbox this was written in — open-meteo.com is blocked by its proxy — so rather
+// than depend on getting a name right, this tries a few candidate pairs and reads whatever
+// per-model keys come back, by pattern rather than by name. If none of them work the whole
+// feature simply does not render: a wrong guess costs one failed request and nothing else.
+const CONFIDENCE_MODEL_PAIRS = ['ecmwf_wam025,gfs_wave025', 'ewam,gwam', 'ecmwf_wam,gfs_wave'];
+
+export async function fetchModelAgreement(spot, hourIndices) {
+  for (const pair of CONFIDENCE_MODEL_PAIRS) {
+    try {
+      const url = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat +
+        '&longitude=' + spot.lon + '&hourly=wave_height&timezone=auto&forecast_days=3&models=' + pair;
+      const res = await fetch(url);
+      if (!res.ok) continue;
+      const json = await res.json();
+      const hourly = json.hourly || {};
+      // Read the per-model series by shape rather than by name, so this does not depend on
+      // having guessed the identifiers correctly.
+      const series = Object.keys(hourly)
+        .filter((k) => k.startsWith('wave_height_') && Array.isArray(hourly[k]))
+        .map((k) => hourly[k]);
+      if (series.length < 2) continue;
+      const pick = (arr) => hourIndices.map((i) => (arr[i] != null ? arr[i] : null));
+      const level = confidenceForSeries(pick(series[0]), pick(series[1]));
+      if (level) return { level, label: confidenceLabel(level) };
+    } catch {
+      // Offline, blocked, or an identifier this build guessed wrong: try the next pair.
+    }
+  }
+  return null;
 }
 
 export async function geocodePlace(query) {
