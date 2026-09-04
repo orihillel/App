@@ -2,8 +2,9 @@ import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, Chevron
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
+import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
-import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12 } from '../lib/format.js';
+import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg } from '../lib/format.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -19,7 +20,7 @@ export function HomeView({
   setToast, units, toggleUnits, openSearch,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
 }) {
@@ -163,6 +164,32 @@ export function HomeView({
           )}
         </div>
       </div>
+
+      {/* The only measurement on this page. Everything else is a model's opinion about the
+          future; this is an instrument in the water reporting what the ocean is doing right
+          now, which is what lets someone judge how much to trust today's forecast. Absent
+          when no buoy is in range, when the nearest one has gone quiet, or when no Worker is
+          configured — see lib/buoy.js and worker/src/buoys.js. */}
+      {buoy ? (
+        <div className="mx-6" style={{ marginTop: 14, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 6 }}>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10, letterSpacing: '0.1em', color: COLORS.foamDim, fontWeight: 700 }}>LIVE BUOY {buoy.station}</span>
+            <span style={{ fontSize: 10, color: COLORS.foamDim }}>{buoy.km}km · {formatAge(buoy.ageMinutes)}</span>
+          </div>
+          <div className="flex items-baseline" style={{ gap: 8 }}>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 20, color: COLORS.foam }}>
+              {formatWaveNum(buoy.waveFt, units)}{heightUnit(units)}
+            </span>
+            {buoy.period ? <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foamDim }}>{buoy.period}s</span> : null}
+            {buoy.dirDeg != null ? <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foamDim }}>{degToCompass(buoy.dirDeg)}</span> : null}
+          </div>
+          {compareLabel(compareToForecast(buoy.waveFt, waveAvg(h.wave))) ? (
+            <div style={{ fontSize: 11, color: COLORS.foamDim, marginTop: 4 }}>
+              {compareLabel(compareToForecast(buoy.waveFt, waveAvg(h.wave)))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
 
       <div className="mx-6" style={{ marginTop: 14, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 4 }}>

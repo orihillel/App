@@ -6,6 +6,7 @@ import { verifyGoogleIdToken } from './googleAuth.js';
 import { verifyFacebookAccessToken } from './facebookAuth.js';
 import { createSessionToken, verifySessionToken } from './session.js';
 import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
+import { LATEST_OBS_URL, parseLatestObs, nearestWaveStation, isFresh, toObservation } from './buoys.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -20,6 +21,44 @@ function corsHeaders(env) {
 }
 function json(body, env, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(env) } });
+}
+
+// Live buoy observations, proxied and cached.
+//
+// NDBC sends no CORS headers, so the browser cannot read this directly — and one fetch of the
+// all-stations table here serves every user and every spot, which is the polite way to consume
+// a free public service. Cached in KV so a busy minute is still one upstream request.
+const BUOY_CACHE_KEY = 'ndbc:latest_obs';
+const BUOY_CACHE_TTL_S = 600; // NDBC publishes roughly every 10 minutes
+
+async function loadStations(env) {
+  const cached = await env.SUBSCRIPTIONS.get(BUOY_CACHE_KEY);
+  if (cached) return parseLatestObs(cached);
+  const res = await fetch(LATEST_OBS_URL, { headers: { 'User-Agent': 'tideline-surf-app' } });
+  if (!res.ok) throw new Error('NDBC request failed: ' + res.status);
+  const text = await res.text();
+  await env.SUBSCRIPTIONS.put(BUOY_CACHE_KEY, text, { expirationTtl: BUOY_CACHE_TTL_S });
+  return parseLatestObs(text);
+}
+
+async function handleBuoy(request, env) {
+  const url = new URL(request.url);
+  const lat = Number(url.searchParams.get('lat'));
+  const lon = Number(url.searchParams.get('lon'));
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return json({ error: 'lat and lon required' }, env, 400);
+  }
+  try {
+    const stations = await loadStations(env);
+    const nearest = nearestWaveStation(stations, lat, lon);
+    // No buoy in range, or the nearest one has gone quiet: say so plainly rather than
+    // presenting a stale or distant reading as if it were this spot's conditions.
+    if (!nearest || !isFresh(nearest.observedAt)) return json({ observation: null }, env);
+    return json({ observation: toObservation(nearest) }, env);
+  } catch {
+    // NDBC being down must never take the app's own endpoints with it.
+    return json({ observation: null }, env);
+  }
 }
 
 async function handleSubscribe(request, env) {
@@ -148,6 +187,7 @@ export default {
     if (request.method === 'POST' && url.pathname === '/auth/facebook') return handleFacebookAuth(request, env);
     if (request.method === 'GET' && url.pathname === '/me') return handleGetMe(request, env);
     if (request.method === 'PUT' && url.pathname === '/me/data') return handlePutMeData(request, env);
+    if (request.method === 'GET' && url.pathname === '/buoy') return handleBuoy(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
   },

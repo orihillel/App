@@ -506,6 +506,27 @@ there's intentionally one source of truth, not separate logic per view.
   - *Verified:* lint, check:classnames, 183/183 tests (13 new), build, and stubbed-API browser
     passes for both the disagreement badge and the silent-degradation path.
 
+- **Live buoy observations (NDBC), via the Worker.** The one number in the app that is a
+  *measurement* rather than a model's opinion about the future — and the piece a small app can
+  genuinely compete on. Surfline's moat is a thousand HD cameras, which is not winnable; "the
+  model says 4ft and the buoy 19km offshore says 6ft at 13s" is, and most apps don't show it.
+  - `GET /buoy?lat=&lon=` on the Worker, because NDBC sends no CORS headers and because one
+    fetch of its all-stations table serves every user and every spot. Cached in KV for 10
+    minutes (NDBC's own publishing interval).
+  - *Returns nothing rather than something misleading:* no wave-reporting buoy within 250km (a
+    buoy further out is measuring a different piece of ocean), a reading over 3 hours old
+    (stations drop out), or NDBC being down — which must never take the app's endpoints with it.
+    Stations reporting wind but no waves are skipped, however close.
+  - The panel shows the reading, its distance and age, and **how it compares with the forecast**
+    ("forecast running true" / "running bigger than forecast"), which is the actual point:
+    whether to trust today's model.
+  - *Bug caught by its own test:* the column offsets read `ATMP` (air temperature) as the water
+    temperature — `WTMP` sits one column later.
+  - *Verified:* 197/197 frontend tests + 75/75 worker tests (32 new), lint, check:classnames,
+    build, stubbed browser pass showing the panel. The parser is tested against a realistic
+    `latest_obs.txt` fixture including `MM` gaps, a wind-only station and a ragged line —
+    ndbc.noaa.gov cannot be reached from this sandbox, so there is no live integration test.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
