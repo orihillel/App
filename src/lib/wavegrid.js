@@ -15,7 +15,21 @@
 // Arctic Norway (Unstad sits at 68.3N) and the Southern Ocean latitudes where the swell that
 // reaches half the catalog is actually generated.
 export const GRID_MAX_LAT = 75;
-export const GRID_LAT_STEP = 5;
+
+// 10 degrees, and the number is set by the rate limit rather than by taste.
+//
+// At 5 degrees this grid was 1,612 points. Open-Meteo's free tier allows roughly 600 calls a
+// minute, so 1,612 points cannot be fetched inside a minute *at all* — and every design that
+// spread them across several minutes then collided with the platform's bounded invocations.
+// Three attempts failed that way: unpaced (half the grid), paced over 3.2 minutes (never
+// finished), sliced across cron runs (needed ~2.5 hours of ticks). The grid has to fit the
+// budget, not the other way round.
+//
+// 10 degrees is 406 points: one pass, about 32 seconds, comfortably inside a minute's budget.
+// The overlay is interpolated to a 720x360 texture before it reaches the screen, so the cost is
+// detail in the swell field rather than visible blocks — and a coarse map that exists beats a
+// fine one that never loads.
+export const GRID_LAT_STEP = 10;
 
 // Rows are spaced evenly in latitude, but the number of cells in a row scales with cos(lat) so
 // that cells stay roughly equal *area* rather than equal *degrees*. A 5-degree lon cell at 70N

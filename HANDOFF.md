@@ -831,6 +831,30 @@ there's intentionally one source of truth, not separate logic per view.
     tests cover resuming without refetching a completed batch, retrying a failed one on the next
     slice, the subrequest ceiling, the lease, and the all-land case that exposed fault 3.
 
+- **Swell overlay, fourth attempt: make the grid fit the budget.**
+  - *The mistake behind the first three fixes.* Each one accepted a 1,612-point grid as given
+    and tried to schedule around the rate limit. But Open-Meteo's free tier allows ~600 calls a
+    minute, so **1,612 points cannot be fetched inside one minute at all** — and every design
+    that spread them across minutes then collided with the platform's bounded invocations:
+    unpaced fetched half the grid; paced over 3.2 minutes never finished; sliced across cron
+    runs needed **~2.5 hours of ticks**, which is why it was still not working. The grid had to
+    fit the budget, not the other way round.
+  - *The fix:* `GRID_LAT_STEP` 5 -> 10. **406 points, 5 batches, ~32 seconds, one pass**, inside
+    a single minute's allowance. Two tests now pin exactly that — under 600 cells, and
+    completable in one slice — so the constraint cannot be quietly violated again.
+  - *The resolution cost is close to nothing here.* The grid is interpolated to a 720x360
+    texture before it reaches the screen; rendered side by side with the 5-degree version the
+    globe is indistinguishable at this zoom. A coarse map that exists beats a fine one that
+    never loads.
+  - *And the endpoint now says where it is.* `/wavegrid` reports `build: {batchesDone,
+    batchesTotal, lastStatus}` when there is nothing to draw yet, so "not working" can be told
+    apart from "fetching batch 3 of 5", and an upstream 429 is visible as a number. Added
+    because three fixes in a row were made purely by inference: this sandbox reaches neither
+    Cloudflare nor Open-Meteo, so the only evidence available was the user saying it was broken.
+  - *Verified:* lint (app + worker), **331 app + 116 worker tests**, build, and a browser render
+    of the coarser grid confirming the North Pacific storm and Southern Ocean band still read
+    correctly with land masked out.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

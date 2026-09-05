@@ -16,17 +16,32 @@ describe('the grid itself', () => {
 
   it('thins rows toward the poles so cells stay roughly equal-area', () => {
     const rows = gridRows();
-    const equator = rows.find((r) => r.lat === 0);
-    const high = rows.find((r) => r.lat === 70);
+    // By position, not by an exact latitude: the step size is a tuning knob and no row is
+    // guaranteed to land on 0 or 70.
+    const nearest = (target) => rows.reduce((a, b) => (Math.abs(b.lat - target) < Math.abs(a.lat - target) ? b : a));
+    const equator = nearest(0);
+    const high = nearest(75);
     expect(high.count).toBeLessThan(equator.count / 2);
     // Never so thin that a row degenerates.
     for (const r of rows) expect(r.count).toBeGreaterThanOrEqual(8);
   });
 
-  it('stays small enough to refresh inside a free API budget', () => {
-    // The reason for the cos(lat) thinning. Four refreshes a day must sit under 10k points.
-    expect(gridCellCount()).toBeLessThan(2000);
+  it('fits inside a single minute of the API budget', () => {
+    // The constraint that decided the grid's resolution, and the one three failed attempts
+    // ignored. Open-Meteo's free tier allows roughly 600 calls a minute; a grid larger than
+    // that cannot be fetched in one pass at all, and every design that spread it over several
+    // minutes then ran into the platform's bounded invocations. The grid fits the budget.
+    expect(gridCellCount()).toBeLessThan(600);
+    // And four refreshes a day stay well under the daily allowance.
     expect(gridCellCount() * 4).toBeLessThan(10000);
+  });
+
+  it('completes in one pass, rather than needing several invocations', () => {
+    // 5 batches of 100, 8s apart, is ~32s: inside a single slice. At 5 degrees this was 17
+    // batches over 3.2 minutes, which needed ~2.5 hours of cron ticks to finish and so never
+    // did.
+    const batches = Math.ceil(gridCellCount() / 100);
+    expect((batches - 1) * 8).toBeLessThan(45);
   });
 
   it('agrees with itself about how many cells there are', () => {
@@ -89,7 +104,8 @@ describe('sampleGrid', () => {
 
   it('returns the value of the cell containing the position', () => {
     const cells = gridCells();
-    for (const i of [0, 1, 500, 900, cells.length - 1]) {
+    // Indices relative to the grid, so resizing it does not silently skip the middle.
+    for (const i of [0, 1, Math.floor(cells.length / 3), Math.floor(cells.length * 2 / 3), cells.length - 1]) {
       expect(sampleGrid(indexed, cells[i].lat, cells[i].lon)).toBeCloseTo((i % 250) / 10, 5);
     }
   });
