@@ -75,8 +75,14 @@ export async function fetchWaveGrid() {
     const res = await fetch(base.replace(/\/$/, '') + '/wavegrid');
     if (!res.ok) return null;
     const data = await res.json();
-    if (!data || typeof data.data !== 'string') return null;
-    return { data: data.data, cells: data.cells, generatedAt: data.generatedAt, stale: !!data.stale };
+    // The build diagnostics come back either way, so the UI can say *why* there is no map
+    // rather than only that there isn't one — which is what four rounds of "still not working"
+    // cost. `build` is a plain object from our own Worker; it is displayed, never trusted.
+    if (!data || typeof data.data !== 'string') return { data: null, build: data && data.build };
+    return {
+      data: data.data, cells: data.cells, generatedAt: data.generatedAt,
+      stale: !!data.stale, build: data.build || null,
+    };
   } catch {
     return null;
   }

@@ -855,6 +855,27 @@ there's intentionally one source of truth, not separate logic per view.
     of the coarser grid confirming the North Pacific storm and Southern Ocean band still read
     correctly with land masked out.
 
+- **Swell overlay, fifth attempt: the build was never running.**
+  - *The evidence that ended the guessing.* `/wavegrid` reported `batchesDone: 0, lastStatus:
+    null, startedAt: null` — **no build record existed at all**. Not rate-limited, not partial:
+    never started. Every earlier fix (pacing, slicing, retries, resumable progress) was tuning a
+    build that never ran, and none of it could be *seen* failing, because background work leaves
+    no trace.
+  - *So the background machinery is gone.* No `waitUntil`, no progress records, no time slices,
+    no lease. At 406 points the grid is 5 requests, which fits in one response: `/wavegrid`
+    builds it inline and answers with either a map or the reason there isn't one. The cron still
+    warms the cache, but nothing depends on it firing any more.
+  - *Failures are now legible end to end.* `fetchBatch` reads Open-Meteo's own `reason` out of a
+    4xx body, records **only failures** (a later successful batch used to overwrite the 429 that
+    explained the gap — the diagnostic erasing itself), and the app prints it under the toggle:
+    *"Fetched 0 of 5 batches · HTTP 400 · latitude must be a number"*. Four rounds were spent
+    with nothing but "it doesn't work" to act on; that cannot happen again.
+  - *Verified:* lint (app + worker), **331 app + 110 worker tests**, build, and browser passes of
+    both paths — a successful grid still renders, and a stubbed 400 shows the reason on screen.
+  - **Still unverified:** whether Open-Meteo accepts the multi-coordinate request shape at all.
+    That is the remaining unknown, and the next `/wavegrid` response will state it outright
+    instead of leaving it to inference.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

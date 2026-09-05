@@ -368,7 +368,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       waveRequested = true;
       fetchWaveGrid()
         .then((grid) => {
-          if (cancelled || !grid) { setWaveMeta({ ok: false }); return; }
+          if (cancelled) return;
+          if (!grid || !grid.data) { setWaveMeta({ ok: false, build: grid && grid.build }); return; }
           const heights = decodeHeights(base64ToBytes(grid.data));
           waveTexture = buildWaveTexture(heights);
           waveMesh = new THREE.Mesh(
@@ -905,8 +906,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         {wavesOn && (
           <div style={{ marginBottom: 12 }}>
             {waveMeta && waveMeta.ok === false ? (
-              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>
+              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center', lineHeight: 1.5 }}>
                 Swell map unavailable right now — the rest of the globe is unaffected.
+                {waveMeta.build && (
+                  <div style={{ marginTop: 3, opacity: 0.8 }}>
+                    {'Fetched ' + (waveMeta.build.batchesDone ?? 0) + ' of ' + (waveMeta.build.batchesTotal ?? 0) + ' batches'}
+                    {waveMeta.build.lastStatus ? ' · HTTP ' + waveMeta.build.lastStatus : ''}
+                    {waveMeta.build.lastError ? ' · ' + String(waveMeta.build.lastError).slice(0, 120) : ''}
+                  </div>
+                )}
               </div>
             ) : !waveMeta ? (
               <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>Loading swell map…</div>
