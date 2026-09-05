@@ -807,6 +807,30 @@ there's intentionally one source of truth, not separate logic per view.
     cover the retry, the pacing, the subrequest ceiling, the coverage report, rejection of a
     half-grid both fresh and cached, and that a request never triggers a build.
 
+- **Swell overlay still unavailable: the build could never finish.**
+  - *Fault 1 — all-or-nothing builds.* One scheduled run fetched the entire grid: 17 batches,
+    12s apart, ~3.2 minutes. Anything that ended that invocation early discarded **every batch
+    already fetched**, and the next run began again from zero. A build that can only succeed by
+    completing in one uninterrupted run, on a platform that bounds invocations, is a build that
+    may never complete — presenting as an overlay that is never available. Now `advanceBuild`
+    does bounded work (`BUILD_SLICE_MS`) and **saves after every batch**, so a run that is cut
+    off costs a slice rather than the build.
+  - *Fault 2 — a cold cache meant waiting for the cron.* Builds were cron-only, so a fresh
+    deploy showed "unavailable" for up to 30 minutes. Opening the overlay now kicks a build off
+    via `ctx.waitUntil` and answers immediately — no hang, and the grid lands on a later load.
+    (`fetch(request, env)` had to become `fetch(request, env, ctx)`; without `ctx` the kick
+    would have silently never fired.)
+  - *Fault 3, caught by a failing test — an all-land batch stalled the build forever.* `ok` was
+    `values.some(v => v != null)`, so a batch sitting entirely over Antarctica — legitimately
+    nothing but nulls — was marked *failed*, retried every slice, and left the build permanently
+    one batch short of done. `ok` now means the response carried readable series
+    (`answered > 0`), which is what actually distinguishes a rate-limited batch from empty ocean.
+  - *Also:* a `BUILD_LEASE_MS` window keeps the cron and a request-triggered build from doubling
+    the upstream traffic.
+  - *Verified:* lint (app + worker), **330 app + 116 worker tests** (12 new), build. The new
+    tests cover resuming without refetching a completed batch, retrying a failed one on the next
+    slice, the subrequest ceiling, the lease, and the all-land case that exposed fault 3.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
