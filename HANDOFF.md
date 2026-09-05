@@ -777,6 +777,36 @@ there's intentionally one source of truth, not separate logic per view.
     after, renders the legend with the right units and ticks, and paints a synthetic North
     Pacific storm and Southern Ocean band correctly with land masked out.
 
+- **Swell overlay had no northern hemisphere. Three faults, one symptom.**
+  - *The symptom named the cause.* `gridCells()` runs south to north, so "works below the
+    equator, nothing above" means the fetch filled cells in order and stopped. The equator falls
+    52% through the cell order, during batch 9 of 17 — the build fired all 17 requests in about
+    two seconds, and a burst limiter took the rest. Not a bad request shape: that fails every
+    batch alike, not the back half. Not rendering either — the synthetic-grid test had already
+    drawn a North Pacific storm correctly.
+  - *Fault 1, the cause:* no pacing. Now **12s between batches** — 100 points per 12s is 500 a
+    minute, under Open-Meteo's documented 600/min, and walks the grid in ~3.2 minutes. Under a
+    minute of pacing is still over the limit, so the real choice was a slow build or a broken
+    one.
+  - *Fault 2, why one bad build persisted:* the cache gate asked only whether a build was
+    *entirely* empty. A half-world grid passed it and was served for six hours. Now gated on
+    `MIN_COVERAGE` (0.85), applied **on read as well as write**, so the bad grid already in KV
+    is discarded rather than served until it expires. Grids cached before `coverage` existed are
+    judged by counting their own bytes.
+  - *Fault 3, latent:* failed batches were never retried. Now retried after 5s and 15s, inside a
+    45-request budget — Cloudflare's free plan allows 50 subrequests per invocation, and
+    retrying without a ceiling would get the build cut off mid-way, which looks exactly like the
+    original bug.
+  - *And a consequence of the fix:* a 3.2-minute build must never run inside a request or it
+    hangs the user's fetch. `loadGrid` takes `mayBuild`; the endpoint passes `false` and serves
+    only what is cached, and the cron is the sole builder.
+  - *Diagnosability:* `fetchBatch` now reports HTTP status (a 429 is otherwise indistinguishable
+    from empty ocean), and `/wavegrid` returns `coverage`, so half a world can be told from a
+    whole one without decoding bytes and eyeballing a globe.
+  - *Verified:* lint (app + worker), **330 app + 114 worker tests** (10 new), build. New tests
+    cover the retry, the pacing, the subrequest ceiling, the coverage report, rejection of a
+    half-grid both fresh and cached, and that a request never triggers a build.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

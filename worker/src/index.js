@@ -54,13 +54,18 @@ async function handleBuoy(request, env) {
 // The global wave-height grid for the globe's ocean overlay. See waveGrid.js.
 async function handleWaveGrid(request, env) {
   try {
-    const grid = await loadGrid(env);
+    // Never build here: a build is paced over minutes and would hang this request. The cron
+    // below keeps the cache warm; a cold cache answers null and the app simply shows no overlay.
+    const grid = await loadGrid(env, { mayBuild: false });
     // Nothing cached and the first build failed: say so plainly. The app draws no overlay
     // rather than an empty ocean, which would read as "flat everywhere" — the one wrong
     // answer worse than no answer.
     if (!grid) return json({ grid: null }, env);
     return json({
       generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data, stale: !!grid.stale,
+      // Reported so a whole ocean can be told from half of one without decoding the bytes —
+      // the exact question that went unanswerable when the first build came back half-empty.
+      coverage: typeof grid.coverage === 'number' ? grid.coverage : null,
     }, env);
   } catch {
     return json({ grid: null }, env);
