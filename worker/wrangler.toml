@@ -15,17 +15,19 @@ compatibility_date = "2025-06-01"
 [triggers]
 crons = ["*/30 * * * *"]
 
-# One entry per push subscription — see src/store.js. Replace `id` with a real namespace's
-# id after running `wrangler kv namespace create SUBSCRIPTIONS` (see README.md).
+# One entry per push subscription — see src/store.js. Also the cache for buoy station data
+# (src/buoySources.js), which is why /buoy needs this binding even with no push subscribers.
+# Namespace ids are identifiers, not credentials: they are safe to commit, and are meaningless
+# without an API token for the account that owns them.
 [[kv_namespaces]]
 binding = "SUBSCRIPTIONS"
-id = "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+id = "0a90c0a4e49946cf8113ab388f174056"
 
-# One entry per logged-in account — see src/userStore.js. Replace `id` with a real namespace's
-# id after running `wrangler kv namespace create USERS` (see README.md).
+# One entry per logged-in account — see src/userStore.js. Unused until Google or Meta login is
+# configured, but the binding must resolve to a real namespace for the Worker to deploy at all.
 [[kv_namespaces]]
 binding = "USERS"
-id = "REPLACE_WITH_YOUR_USERS_KV_NAMESPACE_ID"
+id = "bd11b99628224918a7785f4d49f325c4"
 
 [vars]
 # Shown to push services as who to contact about this VAPID identity if something's wrong
