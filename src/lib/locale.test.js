@@ -98,6 +98,70 @@ describe('Israeli coverage', () => {
   });
 });
 
+describe('Southern African coverage', () => {
+  const inRegion = (re) => Object.entries(SPOTS).filter(([, s]) => re.test(s.region));
+  const southernAfrica = inRegion(/South Africa|Namibia|Mozambique|Angola|Madagascar|Mauritius|Réunion/);
+
+  it('covers the region rather than a handful of famous names', () => {
+    expect(southernAfrica.length).toBeGreaterThanOrEqual(40);
+  });
+
+  it('runs the length of the South African coast, Atlantic to KwaZulu-Natal', () => {
+    const sa = inRegion(/South Africa/);
+    expect(sa.length).toBeGreaterThanOrEqual(20);
+    const lons = sa.map(([, s]) => s.lon);
+    expect(Math.min(...lons)).toBeLessThan(18.5);    // the cold Atlantic side, west of Cape Town
+    expect(Math.max(...lons)).toBeGreaterThan(31.5); // up to Richards Bay
+    const lats = sa.map(([, s]) => s.lat);
+    expect(Math.max(...lats)).toBeGreaterThan(-29);  // northern KwaZulu-Natal
+    expect(Math.min(...lats)).toBeLessThan(-34);     // the Cape
+  });
+
+  it('gives the neighbouring countries more than one spot each', () => {
+    for (const country of [/Namibia/, /Mozambique/, /Angola/, /Madagascar/, /Réunion/]) {
+      expect(inRegion(country).length, String(country)).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('takes its swell from the ocean each stretch of coast actually faces', () => {
+    // South Africa's coast turns through nearly 180 degrees, so the swell window has to turn
+    // with it: South Atlantic west of Cape Town, Southern Ocean along the south coast, Indian
+    // Ocean up the KwaZulu-Natal side. A spot with a window from the wrong quadrant would be
+    // rated off swell that its own headland blocks, every day of the year.
+    const bands = [
+      [(lon) => lon < 20, 220, 280],               // Cape Peninsula and the Atlantic: SW
+      [(lon) => lon > 22 && lon < 25.5, 195, 225], // south coast and the points: S to SSW
+      [(lon) => lon > 25.5 && lon < 27, 160, 200], // Algoa Bay, where the coast turns north
+      [(lon) => lon > 27, 125, 200],               // Wild Coast and KwaZulu-Natal: SE to E
+    ];
+    for (const [key, s] of inRegion(/South Africa/)) {
+      if (!s.swellWindow) continue; // falls back to an arc derived from offshoreDeg
+      const [from, to] = s.swellWindow;
+      const centre = (from + to) / 2;
+      for (const [inBand, lo, hi] of bands) {
+        if (!inBand(s.lon)) continue;
+        expect(centre, key).toBeGreaterThanOrEqual(lo);
+        expect(centre, key).toBeLessThanOrEqual(hi);
+      }
+    }
+  });
+
+  it('offers local spots to someone in each country the region covers', () => {
+    const cases = [
+      ['Africa/Windhoek', /Namibia/],
+      ['Africa/Maputo', /Mozambique|South Africa/],
+      ['Africa/Luanda', /Angola/],
+      ['Indian/Antananarivo', /Madagascar/],
+      ['Indian/Reunion', /Réunion|Mauritius|Madagascar/],
+    ];
+    for (const [tz, re] of cases) {
+      const picks = nearbyPicks(SPOTS, tz, ONBOARDING_PICKS);
+      expect(picks, tz).not.toBe(ONBOARDING_PICKS); // i.e. it found real local spots
+      for (const id of picks) expect(SPOTS[id].region, tz + ' ' + id).toMatch(re);
+    }
+  });
+});
+
 describe('global coverage', () => {
   const spots = Object.entries(SPOTS);
   const countryOf = (s) => s.region.split(',').pop().trim();

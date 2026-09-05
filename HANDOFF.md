@@ -644,6 +644,58 @@ there's intentionally one source of truth, not separate logic per view.
     ocean basin represented, both hemispheres past 60°N and -38°S, no duplicate names, and every
     spot well-formed.
 
+- **Globe markers went grey: colour by clock hour, not array index.**
+  - `Globe.jsx` picked each marker's conditions with `hours[hourIdx]` — the *Nth sample of that
+    spot's day*. Safe while every spot shared a fixed eight hours; broken once the hours became
+    daylight-derived and per-spot. Short days yield **shorter arrays**, so an index chosen at a
+    long-day spot ran off the end at a short-day one and every such marker fell through to the
+    "no data" grey. The home view already clamped (`safeHourIdx`); the ref handed to the globe
+    passed the raw index.
+  - *Second, deeper flaw:* even in range it was the wrong sample — index 3 is late morning at one
+    spot and mid-afternoon at another, so the globe was **never showing one moment in time**.
+  - *Measured, not assumed:* browser run with a stubbed short day (sunrise 10:50, sunset 13:40 ->
+    six samples) and the hour strip scrubbed to its end — **0 of 317 markers rated before the
+    fix, 20 of 20 loaded markers rated after** (13 GOOD, 7 FIRING), none grey.
+  - `pickHourAt(hours, clockHour)` in `lib/daylight.js` selects each spot's sample nearest the
+    selected wall-clock hour. `hourIdx` was **removed from the globe's ref entirely** — reading
+    it there is what caused this.
+
+- **317 -> 348 spots: Southern Africa properly covered.**
+  - The region had 14 spots total: seven in South Africa (a country with ~2,800km of surfable
+    coast), one in Namibia, two in Mozambique, one in Angola, three in Mauritius, **nothing in
+    Madagascar or Réunion**. Now 45. 80 countries/regions -> 82.
+  - *South Africa 7 -> 25*, running the whole coast: the cold Atlantic side and Cape Peninsula
+    (Kommetjie, Llandudno, Scarborough, Big Bay), the Garden Route (Victoria Bay, Outer Pool,
+    Buffalo Bay, Wilderness, Lookout Beach), the Eastern Cape points (Bruce's Beauties, Pipe,
+    Nahoon Reef), the Wild Coast (Mdumbi, Coffee Bay) and KwaZulu-Natal (Scottburgh, St
+    Michael's-on-Sea, Umhlanga Rocks, Alkantstrand).
+  - *Namibia, Angola, Mozambique* get a second and third spot each; *Madagascar* (Lavanono,
+    Anakao, Libanona) and *Réunion* (Saint-Leu, Boucan Canot, Trois-Bassins) are new. The Réunion
+    blurbs say surfing is restricted to supervised zones after the 2013 shark ban — turning up
+    without knowing that is a safety problem, not a trivia point.
+  - *Six new timezone anchors* (`Africa/Windhoek`, `Africa/Maputo`, `Africa/Luanda`,
+    `Indian/Antananarivo`, `Indian/Mauritius`, `Indian/Reunion`) so onboarding in the region
+    offers local spots instead of falling back to the global list.
+  - **A check of mine that was wrong, twice, and what it took to get right:** first attempt
+    asserted "west-coast spots have an easterly offshore" — it failed on *Muizenberg*, which is
+    correct: False Bay faces south, so a northerly is offshore there. Second attempt compared
+    `offshoreDeg` against the swell-window centre expecting ~180° apart — that flagged J-Bay,
+    Seal Point and Cabo Ledo, all long-shipped and all right: a **point break is precisely where
+    the offshore blows across a wrapping swell**. The invariant that does hold, and is now the
+    test, is that the swell window rotates with the coast: SW on the Atlantic side, S along the
+    south coast, SE-to-E up KwaZulu-Natal.
+  - *Verified:* lint, check:classnames, **282 tests** (5 new), build; `searchCatalog` finds every
+    new spot by name and region; a browser pass confirms onboarding in `Africa/Johannesburg` now
+    offers seven South African spots, and searching "Madagascar" -> selecting Lavanono lands on
+    its page. Coordinates were checked visually on the globe over three views (South Africa,
+    Namibia/Angola, Mozambique/Madagascar) — the markers trace the coastline in the right order.
+    *An offline check against `landmasses.json` was attempted and discarded as meaningless: that
+    dataset does not resolve the African coast, and long-shipped spots scored the same.*
+  - Same provenance caveat as every earlier batch: coordinates place each break to within a few
+    hundred metres, from general knowledge rather than a surveyed dataset. **Bruce's Beauties and
+    Mdumbi are the loosest** — named breaks without widely published coordinates, placed against
+    the nearest documented reference point.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
