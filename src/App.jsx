@@ -638,7 +638,7 @@ export default function App() {
           )
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
-            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} />
+            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} units={units} />
           </Suspense>
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />

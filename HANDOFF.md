@@ -734,6 +734,49 @@ there's intentionally one source of truth, not separate logic per view.
     Aviv (12 Israeli spots individually separated), Oahu (Pearl Harbor's notch and Molokai drawn
     crisply over unreadable imagery) and the wide globe (coastline correctly invisible).
 
+- **Live global swell overlay on the globe.**
+  - *What it is:* the ocean painted by wave height right now — a 1,612-cell global grid,
+    interpolated to a 720x360 equirectangular texture and wrapped on a sphere just above the
+    surface. Off by default behind a "Show live swell" toggle, because defaulting it on buries
+    the spot markers that are the point of that screen.
+  - *Why the Worker fetches it, not the app.* A global grid is a very different request from the
+    app's per-spot forecasts: over a thousand points, identical for every user, changing a few
+    times a day. Per-browser that is a thousand requests per session; fetched once on the
+    existing cron it is ~2KB from KV, and it is the only version that fits a free API's budget.
+  - *The grid is sized by that budget.* Rows are evenly spaced in latitude but hold cells in
+    proportion to cos(lat), so cells are roughly equal *area* — a uniform 5-degree grid spends a
+    third of its points on the two thinnest slivers of the map. That is 1,612 cells rather than
+    2,232 (**-28%**), and at four refreshes a day, 6,448 points against the free tier's ~10,000.
+    A test pins that arithmetic so the grid cannot quietly grow past it.
+  - *Refresh cadence is the model's, not a guess:* WaveWatch III runs at 00/06/12/18Z, so
+    refreshing faster would re-fetch numbers that have not changed.
+  - **Land must never read as calm.** The one wrong answer worse than no answer is a flat blue
+    ocean presented as data. So: `null` survives encode/decode distinctly from `0`; the bilinear
+    sampler reweights around no-data neighbours instead of averaging land in as 0m (which would
+    drag a band of false calm along every coast, exactly where people look); `waveColor(null)`
+    returns null rather than the 0m colour; and `loadGrid` treats an all-null build as a
+    *failure*, keeping the previous grid marked `stale` rather than storing it.
+  - *A rendering bug caught by looking at it.* The overlay first shipped on a 128x96 sphere and
+    the ocean showed through it in a regular diamond stipple. A faceted sphere sags below the
+    true surface at each quad's centre; at 128x96 the overlay's surface dips to 0.999865 against
+    the ocean's vertices at 1.0, so the globe pokes through. Matching the ocean's 256x192
+    (dips to 1.000191) clears it. Same arithmetic as the coastline shell — applied to the
+    coastline and then not to the overlay.
+  - *A guard added after a self-inflicted bug:* `COLORS.seafoam` — a token this palette has
+    never had — rendered as `border: 1px solid undefined`, which browsers silently drop. It
+    throws nothing and looks like a design choice. `lib/colors.test.js` now checks every
+    `COLORS.<token>` reference in `src/`, in the same spirit as `check:classnames`; it was
+    confirmed to fail on the real bug before being kept.
+  - **Unverified, and it is the same limitation as the buoys:** Open-Meteo is blocked by this
+    sandbox's egress proxy, so the multi-coordinate request shape in `worker/src/waveGrid.js`
+    is fixture-tested, not live-tested. `fetchBatch` therefore accepts both an array and a bare
+    object response, and every failure path yields nulls rather than throwing, so a wrong guess
+    about the shape leaves the overlay empty instead of breaking the globe or the app.
+  - *Verified:* lint, check:classnames, **330 app + 104 worker tests** (37 new), build; and in a
+    browser that the grid is *not* fetched until the toggle is used, is fetched exactly once
+    after, renders the legend with the right units and ticks, and paints a synthetic North
+    Pacific storm and Southern Ocean band correctly with land masked out.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

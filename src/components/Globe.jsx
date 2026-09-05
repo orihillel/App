@@ -5,6 +5,9 @@ import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
+import { base64ToBytes, decodeHeights, sampleGridSmooth } from '../lib/wavegrid.js';
+import { waveColor, waveScaleGradient, waveScaleTicks, waveScaleUnitLabel, gridAgeLabel } from '../lib/wavescale.js';
+import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
 import LANDMASSES from '../data/landmasses.json';
@@ -19,8 +22,22 @@ import { ConditionScale } from './ConditionScale.jsx';
 // `{ spots, order, forecast, clockHour }` — read directly inside the animation loop so every
 // rendered frame reflects whatever is currently in `forecast`, with no separate sync effect
 // to fall out of date.
-export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spots', hint }) {
+export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spots', hint, units = 'metric' }) {
   const containerRef = useRef(null);
+  // The wave overlay is off by default. It is a second reading of the same globe -- where the
+  // swell is, rather than which spots are good -- and defaulting it on would bury the markers
+  // that are the point of this screen under a wash of colour.
+  const [wavesOn, setWavesOn] = useState(false);
+  const [waveMeta, setWaveMeta] = useState(null);
+  // The three.js scene is built once in a mount effect, so React state cannot reach it. Same
+  // bridge the parent uses for forecast data: a ref the render loop reads.
+  const wavesOnRef = useRef(false);
+  wavesOnRef.current = wavesOn;
+  // The render loop skips frames when nothing has moved, which is what keeps an idle globe off
+  // the battery. Toggling the overlay changes what should be drawn without moving anything, so
+  // it has to say so explicitly or the screen would not update until the next drag.
+  const markDirtyRef = useRef(null);
+  useEffect(() => { if (markDirtyRef.current) markDirtyRef.current(); }, [wavesOn]);
   const [globeError, setGlobeError] = useState(false);
 
   useEffect(() => {
@@ -90,6 +107,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       dataDirty: true, // set when marker colors/labels change, so an idle frame still redraws once
     };
     camera.position.set(0, 0, state.distance);
+    markDirtyRef.current = () => { state.dataDirty = true; };
 
     // logarithmicDepthBuffer is deliberately OFF. It makes every shader write gl_FragDepth,
     // which disables the GPU's early-Z rejection — a serious cost everywhere and a brutal one
@@ -303,6 +321,72 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     });
     let coastlineMesh = null;
     let coastlineRequested = false;
+
+    // Live wave-height overlay: the ocean painted by how big the sea is right now.
+    //
+    // Built as an equirectangular canvas and wrapped on a sphere just above the surface, rather
+    // than blended into the ocean material, so it can be toggled without rebuilding anything
+    // and so land stays untouched -- cells with no data are left fully transparent, which is
+    // also exactly what makes the continents show through.
+    const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
+    const WAVE_TEX_W = 720;        // half a degree per texel: smooth against a 5-degree grid
+    const WAVE_TEX_H = 360;
+    let waveMesh = null;
+    let waveTexture = null;
+    let waveRequested = false;
+
+    function buildWaveTexture(heights) {
+      const cv = document.createElement('canvas');
+      cv.width = WAVE_TEX_W;
+      cv.height = WAVE_TEX_H;
+      const ctx = cv.getContext('2d');
+      const img = ctx.createImageData(WAVE_TEX_W, WAVE_TEX_H);
+      const px = img.data;
+      for (let y = 0; y < WAVE_TEX_H; y++) {
+        // Texel centres, and latitude runs north-to-south down an equirectangular image.
+        const lat = 90 - ((y + 0.5) / WAVE_TEX_H) * 180;
+        for (let x = 0; x < WAVE_TEX_W; x++) {
+          const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
+          const o = (y * WAVE_TEX_W + x) * 4;
+          const c = waveColor(sampleGridSmooth(heights, lat, lon));
+          if (!c) { px[o + 3] = 0; continue; } // land, ice, or off the grid: draw nothing
+          px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
+        }
+      }
+      ctx.putImageData(img, 0, 0);
+      const tex = new THREE.CanvasTexture(cv);
+      if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      return tex;
+    }
+
+    function ensureWaveOverlay() {
+      if (waveRequested || !wavesOnRef.current) return;
+      waveRequested = true;
+      fetchWaveGrid()
+        .then((grid) => {
+          if (cancelled || !grid) { setWaveMeta({ ok: false }); return; }
+          const heights = decodeHeights(base64ToBytes(grid.data));
+          waveTexture = buildWaveTexture(heights);
+          waveMesh = new THREE.Mesh(
+            // Must match the ocean sphere's tessellation, not the old 128x96. A coarser
+            // overlay sags further at each quad's centre than its own 3e-4 offset clears
+            // (0.999865 against the ocean's vertices at 1.0), so the globe pokes through it in
+            // a regular diamond stipple that reads as a rendering artifact — because it is one.
+            new THREE.SphereGeometry(WAVE_SHELL, 256, 192),
+            new THREE.MeshBasicMaterial({
+              map: waveTexture, transparent: true, opacity: 0.62, depthWrite: false,
+            }),
+          );
+          globeGroup.add(waveMesh);
+          setWaveMeta({ ok: true, generatedAt: grid.generatedAt, stale: grid.stale });
+          state.dataDirty = true;
+        })
+        .catch(() => setWaveMeta({ ok: false }));
+    }
 
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
@@ -739,6 +823,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       updateMarkerScale();
       updateLabels();
       ensureCoastline();
+      ensureWaveOverlay();
+      if (waveMesh) waveMesh.visible = wavesOnRef.current;
       if (coastlineMesh) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
         coastlineMat.opacity = o;
@@ -751,6 +837,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
 
     return () => {
       cancelled = true;
+      markDirtyRef.current = null;
       cancelAnimationFrame(state.raf);
       clearInterval(dataTimer);
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
@@ -770,6 +857,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       // open/close cycles of the globe would actually be felt on a phone.
       if (coastlineMesh) coastlineMesh.geometry.dispose();
       coastlineMat.dispose();
+      if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
+      if (waveTexture) waveTexture.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };
@@ -800,6 +889,47 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         </div>
       )}
       <div className="mx-6" style={{ padding: '10px 0 4px' }}>
+        <button
+          className="tl-btn"
+          onClick={() => setWavesOn((v) => !v)}
+          aria-pressed={wavesOn}
+          style={{
+            width: '100%', padding: '7px 10px', marginBottom: 10, borderRadius: 8, fontSize: 11.5,
+            background: wavesOn ? COLORS.navyCard : 'none',
+            border: '1px solid ' + (wavesOn ? COLORS.tealBright : COLORS.navyBorder),
+            color: wavesOn ? COLORS.tealBright : COLORS.foamDim,
+          }}
+        >
+          {wavesOn ? 'Hide live swell' : 'Show live swell'}
+        </button>
+        {wavesOn && (
+          <div style={{ marginBottom: 12 }}>
+            {waveMeta && waveMeta.ok === false ? (
+              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>
+                Swell map unavailable right now — the rest of the globe is unaffected.
+              </div>
+            ) : !waveMeta ? (
+              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>Loading swell map…</div>
+            ) : (
+              <>
+                <div style={{ height: 8, borderRadius: 4, background: waveScaleGradient() }} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                  {waveScaleTicks(units).map((t) => (
+                    <span key={t.label} style={{ fontSize: 9, color: COLORS.foamDim }}>{t.label}</span>
+                  ))}
+                </div>
+                <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
+                  {'Open-ocean wave height (' + waveScaleUnitLabel(units) + ') · '}
+                  {gridAgeLabel(waveMeta.generatedAt) || 'age unknown'}
+                  {waveMeta.stale ? ' · last good data' : ''}
+                </div>
+                <div style={{ fontSize: 9, color: COLORS.foamDim, marginTop: 3, textAlign: 'center', opacity: 0.8 }}>
+                  Big is not the same as good — the spot colours below already account for wind, tide and swell direction.
+                </div>
+              </>
+            )}
+          </div>
+        )}
         <ConditionScale />
         <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 6, textAlign: 'center' }}>Spot color = live conditions right now</div>
       </div>

@@ -7,6 +7,7 @@ import { verifyFacebookAccessToken } from './facebookAuth.js';
 import { createSessionToken, verifySessionToken } from './session.js';
 import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
+import { loadGrid } from './waveGrid.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -47,6 +48,22 @@ async function handleBuoy(request, env) {
   } catch {
     // Every source being down must never take the app's own endpoints with it.
     return json({ observation: null }, env);
+  }
+}
+
+// The global wave-height grid for the globe's ocean overlay. See waveGrid.js.
+async function handleWaveGrid(request, env) {
+  try {
+    const grid = await loadGrid(env);
+    // Nothing cached and the first build failed: say so plainly. The app draws no overlay
+    // rather than an empty ocean, which would read as "flat everywhere" — the one wrong
+    // answer worse than no answer.
+    if (!grid) return json({ grid: null }, env);
+    return json({
+      generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data, stale: !!grid.stale,
+    }, env);
+  } catch {
+    return json({ grid: null }, env);
   }
 }
 
@@ -177,6 +194,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/me') return handleGetMe(request, env);
     if (request.method === 'PUT' && url.pathname === '/me/data') return handlePutMeData(request, env);
     if (request.method === 'GET' && url.pathname === '/buoy') return handleBuoy(request, env);
+    if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
   },
@@ -185,6 +203,11 @@ export default {
   // subscribed device's alerts against live conditions and push notifications for matches,
   // independent of whether the app is open anywhere.
   async scheduled(event, env, ctx) {
+    // Refresh the wave grid here rather than on a user's request. loadGrid only does upstream
+    // work when the cache is older than the model's own update cadence, so this is a no-op on
+    // most of the half-hourly runs — but it means the first person to open the globe after a
+    // model run gets a warm cache instead of waiting on a thousand upstream points.
+    ctx.waitUntil(loadGrid(env).catch(() => {}));
     for await (const { endpoint, record } of listSubscriptions(env)) {
       ctx.waitUntil(checkSubscription(env, endpoint, record));
     }
