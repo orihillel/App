@@ -7,7 +7,7 @@ import { verifyFacebookAccessToken } from './facebookAuth.js';
 import { createSessionToken, verifySessionToken } from './session.js';
 import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
-import { loadGrid, advanceBuild } from './waveGrid.js';
+import { loadGrid, advanceBuild, buildStatus } from './waveGrid.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -65,7 +65,9 @@ async function handleWaveGrid(request, env, ctx) {
     // Nothing cached and the first build failed: say so plainly. The app draws no overlay
     // rather than an empty ocean, which would read as "flat everywhere" — the one wrong
     // answer worse than no answer.
-    if (!grid) return json({ grid: null }, env);
+    // Report where the build has got to even when there is nothing to draw yet, so "not
+    // working" can be told apart from "still fetching batch 3 of 5" from a single URL.
+    if (!grid) return json({ grid: null, build: await buildStatus(env) }, env);
     return json({
       generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data, stale: !!grid.stale,
       // Reported so a whole ocean can be told from half of one without decoding the bytes —

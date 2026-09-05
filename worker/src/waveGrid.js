@@ -39,7 +39,9 @@ export const BATCH_SIZE = 100;
 // all for a cron job: it is spent awaiting, not computing, and Cron Triggers allow far more
 // wall time than this. Under a minute of pacing would still be over the limit, so the choice
 // is really between a slow build and a broken one.
-export const BATCH_GAP_MS = 12000;
+// 8 seconds between 5 batches is 32 seconds for the whole grid — one pass, inside one
+// invocation, and 406 points a minute against a budget of roughly 600.
+export const BATCH_GAP_MS = 8000;
 export const RETRY_PAUSES_MS = [5000, 15000];
 
 // Cloudflare's free plan allows 50 subrequests per invocation, so retries need a budget rather
@@ -131,6 +133,22 @@ function batchStarts(total) {
   return starts;
 }
 
+// What the build is currently doing, for the endpoint to report.
+//
+// Added because three fixes in a row were made by inference: this sandbox cannot reach
+// Cloudflare or Open-Meteo, so the only evidence available was "it doesn't work". One URL now
+// answers how many batches are done, out of how many, and what upstream last said.
+export async function buildStatus(env) {
+  const total = batchStarts(gridCellCount()).length;
+  const progress = await readProgress(env, gridCellCount());
+  return {
+    batchesDone: progress ? progress.done.length : 0,
+    batchesTotal: total,
+    lastStatus: progress && progress.lastStatus != null ? progress.lastStatus : null,
+    startedAt: progress ? progress.touchedAt || null : null,
+  };
+}
+
 async function readProgress(env, cells) {
   try {
     const p = await env.SUBSCRIPTIONS.get(PROGRESS_KEY, { type: 'json' });
@@ -179,13 +197,15 @@ export async function advanceBuild(env, opts = {}) {
     if (requests > 0) await wait(opts.gapMs ?? BATCH_GAP_MS);
     requests++;
     const batch = cells.slice(start, start + BATCH_SIZE);
-    const { values, ok } = await fetchBatch(batch, opts);
-    if (!ok) continue; // left un-done, so the next slice retries it
+    const { values, ok, status } = await fetchBatch(batch, opts);
+    // Recorded on every batch, failed or not, so buildStatus can report what upstream last
+    // said rather than only that the build is stuck.
+    if (!ok) { await save({ lastStatus: status }); continue; } // un-done, so the next slice retries it
     const encoded = encodeHeights(values);
     for (let i = 0; i < batch.length; i++) bytes[start + i] = encoded[i];
     done.add(start);
     // Saved per batch, so nothing is lost if this invocation ends here.
-    await save();
+    await save({ lastStatus: status });
   }
 
   if (done.size < starts.length) return null;
