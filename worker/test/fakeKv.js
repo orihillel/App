@@ -6,8 +6,16 @@
 export function createFakeKv() {
   const store = new Map();
   return {
-    async get(key) {
-      return store.has(key) ? store.get(key) : null;
+    // Real KV's get takes an options bag, and `{ type: 'json' }` parses for you. Ignoring it
+    // here would hand a caller the raw string and make correct code look broken.
+    async get(key, options) {
+      if (!store.has(key)) return null;
+      const raw = store.get(key);
+      const type = typeof options === 'string' ? options : options && options.type;
+      if (type === 'json') {
+        try { return JSON.parse(raw); } catch { return null; }
+      }
+      return raw;
     },
     async put(key, value) {
       store.set(key, value);

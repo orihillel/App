@@ -61,3 +61,23 @@ export function compareLabel(comparison) {
     default: return null;
   }
 }
+
+// The global wave-height grid for the globe's ocean overlay, via the same Worker.
+//
+// Lives here rather than beside the grid maths in wavegrid.js because that module is shared
+// with the Worker, where `import.meta.env` and this app's Worker URL mean nothing. This is the
+// browser's half.
+export async function fetchWaveGrid() {
+  const base = workerBase();
+  // No Worker configured: no overlay, and no toggle offered for one. The globe is unaffected.
+  if (!base) return null;
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/wavegrid');
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || typeof data.data !== 'string') return null;
+    return { data: data.data, cells: data.cells, generatedAt: data.generatedAt, stale: !!data.stale };
+  } catch {
+    return null;
+  }
+}
