@@ -8,6 +8,7 @@
     "build": "vite build",
     "preview": "vite preview",
     "build:landmasses": "node scripts/build-landmasses.mjs",
+    "build:coastline": "node scripts/build-coastline.mjs",
     "build:icons": "node scripts/build-icons.mjs",
     "test": "vitest run",
     "test:watch": "vitest",

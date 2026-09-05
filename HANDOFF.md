@@ -696,6 +696,44 @@ there's intentionally one source of truth, not separate logic per view.
     Mdumbi are the loosest** — named breaks without widely published coordinates, placed against
     the nearest documented reference point.
 
+- **Globe: 5.4x deeper zoom, and a coastline that stays sharp at it.**
+  - *The measurement that decided the design.* "Bump the texture resolution" cannot work, and
+    not marginally. At the old closest zoom (`MIN_DISTANCE` 1.08) the view is ~3.8 degrees
+    wide, which the 5400px global image covers with **57 texture pixels** against ~1170 device
+    pixels of screen — a **20x shortfall**. Closing it with a bigger image needs ~110,000px
+    around the equator at that zoom, and **over a million** at the zoom this change opens up.
+    No such texture exists, and it could not be held in memory if it did.
+  - *So the coastline became vector.* Lines have no resolution: 4,075 Natural Earth 1:10m arcs
+    (`world-atlas`), 409k points, drawn as one `LineSegments` of 809,764 vertices directly on
+    the sphere. **743KB gzipped, one draw call**, sharp at 79km across and at 6,000km alike.
+    Decoding is a running sum over TopoJSON's delta-encoded arcs — `lib/coastline.js`, no
+    TopoJSON dependency at runtime.
+  - *Zoom floor set by the data, not by taste.* `MIN_DISTANCE` 1.08 -> **1.015**: a 426km view
+    becomes 79km, and two spots 5km apart go from 14px to **74px** apart — from one blob to two
+    things you can aim at. It stops there because the coastline is quantized to a ~401m grid,
+    which is ~6 screen pixels at that distance; deeper would only magnify the grid into
+    stair-steps.
+  - *Lazy and invisible when not needed.* Fetched only when the camera first comes within
+    `COASTLINE_FADE_START`, so first paint never waits on it, and **excluded from the PWA
+    precache** (`injectManifest.globIgnores`) — precache stayed 9 entries / 964KB rather than
+    quadrupling for users who never open the globe. Opacity ramps across the zoom range instead
+    of switching at a threshold, which would pop mid-pinch.
+  - *Sphere 128x96 -> 256x192.* Not for the silhouette this time but for the surface: a
+    faceted sphere sags below the true surface at each quad's centre (~4.4e-4 of a radius at
+    128x96), close enough to the coastline's own 6e-4 offset to let terrain poke through the
+    lines. Quartering the sag to ~1.1e-4 clears it.
+  - **What could not be verified here, and why:** this container has **no GPU** — WebGL runs on
+    SwiftShader, where the globe renders at ~5fps *with or without* this change (main measured
+    6fps dragging, this branch 5fps; coastline on vs off was 5 vs 5). So real-device frame rate
+    is untested. What can be said structurally: one extra draw call, one static ~9.7MB vertex
+    buffer — about **a sixth of the 58MB the 5400x2700 satellite texture already uploads** — and
+    no per-frame CPU work beyond writing one opacity float.
+  - *Verified:* lint, check:classnames, **293 tests** (11 new), build; and in-browser that the
+    asset is *not* fetched at globe view, *is* fetched on zoom (3,051,046 bytes), builds
+    809,764 vertices, reaches opacity 1 at closest zoom and 0 at wide view. Screenshots over Tel
+    Aviv (12 Israeli spots individually separated), Oahu (Pearl Harbor's notch and Molokai drawn
+    crisply over unreadable imagery) and the wide globe (coastline correctly invisible).
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

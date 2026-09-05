@@ -17,6 +17,13 @@ export default defineConfig({
       strategies: 'injectManifest',
       srcDir: 'src',
       filename: 'sw.js',
+      injectManifest: {
+        // The vector coastline is ~3MB and is only fetched once the globe is zoomed in far
+        // enough to show it. Precaching it would triple the install payload for every user,
+        // including everyone who never opens the globe, to prefetch something the globe
+        // already fetches lazily and works fine without.
+        globIgnores: ['**/coastline-10m.json'],
+      },
       includeAssets: ['icons/favicon-32.png'],
       manifest: {
         name: 'Surfcast — Surf Forecast',
