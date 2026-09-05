@@ -34,6 +34,16 @@ export const BUILD_GAP_MS = 300;
 // as "the rest of the ocean is flat", which is worse than showing no overlay at all.
 export const MIN_COVERAGE = 0.85;
 
+// After a failed build, stop trying for a while.
+//
+// Without this, every tap of the overlay toggle fires another five upstream requests, and a
+// failure is exactly when they are least affordable — a rate limit answered by more traffic. It
+// also matters because a *daily* quota, once spent, cannot recover until it resets: retrying
+// into it just keeps it spent. Tonight's broken builds each cost ~4,800 units against a ~10,000
+// daily allowance, which is how a bug in one request parameter became an outage.
+export const FAIL_COOLDOWN_MS = 10 * 60 * 1000;
+export const FAIL_KEY = 'wavegrid:fail:v1';
+
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 const MARINE_URL = 'https://marine-api.open-meteo.com/v1/marine';
@@ -207,6 +217,19 @@ export async function loadGrid(env, opts = {}) {
     return { grid: { ...cached, stale: false }, build: null };
   }
 
+  // A recent failure means don't ask again yet: report what went wrong last time instead of
+  // spending five more requests to be told the same thing.
+  let failure = null;
+  try {
+    failure = await env.SUBSCRIPTIONS.get(FAIL_KEY, { type: 'json' });
+  } catch { /* no cooldown record readable; proceed to build */ }
+  if (failure && failure.at && now - failure.at < FAIL_COOLDOWN_MS && !opts.ignoreCooldown) {
+    return {
+      grid: isUsable(cached) ? { ...cached, stale: true } : null,
+      build: { ...failure.build, cooling: true, retryInSeconds: Math.round((FAIL_COOLDOWN_MS - (now - failure.at)) / 1000) },
+    };
+  }
+
   let fresh;
   try {
     fresh = await (opts.build ? opts.build(opts) : buildGrid({ ...opts, now }));
@@ -225,9 +248,15 @@ export async function loadGrid(env, opts = {}) {
   if (isUsable(fresh)) {
     try {
       await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(fresh));
+      await env.SUBSCRIPTIONS.delete(FAIL_KEY);
     } catch { /* still worth returning even if it could not be cached */ }
     return { grid: { ...fresh, stale: false }, build };
   }
+
+  // Remember the failure so the next few minutes of taps cost nothing upstream.
+  try {
+    await env.SUBSCRIPTIONS.put(FAIL_KEY, JSON.stringify({ at: now, build }));
+  } catch { /* the cooldown is an optimisation, not a correctness requirement */ }
   // An old complete grid is a better answer than a fresh partial one.
   if (isUsable(cached)) return { grid: { ...cached, stale: true }, build };
   return { grid: null, build };

@@ -23,7 +23,11 @@ describe('addSample', () => {
   });
 
   it('takes at most one sample an hour', () => {
-    const now = Date.now();
+    // Pinned to the middle of an hour rather than Date.now(). Samples are bucketed by clock
+    // hour, so a wall-clock `now` within two minutes of the top of an hour puts the third
+    // sample in the *next* bucket and this fails — for about two minutes in every sixty. It
+    // did exactly that at 20:59.
+    const now = Date.parse('2026-09-05T14:30:00Z');
     let list = addSample([], { forecastFt: 4, observedFt: 5, at: now });
     list = addSample(list, { forecastFt: 4, observedFt: 5, at: now + 60000 });
     list = addSample(list, { forecastFt: 4, observedFt: 5, at: now + 120000 });

@@ -898,6 +898,24 @@ there's intentionally one source of truth, not separate logic per view.
     should have been in the first version, not the sixth.
   - *Verified:* lint (app + worker), **331 app + 113 worker tests**, build.
 
+- **Swell overlay: stop retrying into an exhausted quota.**
+  - *What tonight cost.* Each broken build spent ~4,800 upstream units (the `hourly` bug above)
+    against a ~10,000 **daily** allowance, and there were many attempts. A minutely limit clears
+    in sixty seconds; a daily one does not clear until it resets, and every retry into it keeps
+    it spent. "Fetched 2 of 5" became "fetched 0 of 5" for that reason, not a new fault.
+  - *The fix:* a 10-minute cooldown after a failed build (`FAIL_KEY` in KV). Taps during it are
+    answered from the stored diagnostics at zero upstream cost, and any cached grid is still
+    served — a rate limit must not hide a map that already exists. A success clears it.
+  - *Said plainly on screen:* "Not retrying for another N min — retrying now would only spend
+    more of the same limit." A cooldown is a wait, not a fault, and reading it as a dead feature
+    is what produces the retrying that caused it.
+  - **A flaky test, found by it failing:** `calibration.test.js` "takes at most one sample an
+    hour" built its samples from `Date.now()` plus 60s and 120s. Samples bucket by clock hour, so
+    a run starting within two minutes of the top of an hour puts the third sample in the *next*
+    bucket — it fails for about two minutes in every sixty, and did, at 20:59. Now pinned to a
+    fixed instant. The sibling cases step by whole hours and were never at risk.
+  - *Verified:* lint (app + worker), **331 app + 117 worker tests** (5 new), build.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
