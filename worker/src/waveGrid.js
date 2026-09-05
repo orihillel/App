@@ -90,64 +90,118 @@ export async function fetchBatch(cells, { fetchImpl = fetch, now = Date.now() } 
   // silently produce a grid of nulls.
   const list = Array.isArray(payload) ? payload : [payload];
   const wanted = currentHourIso(now);
+  // "Answered" counts locations that came back with a readable series, whatever it contained.
+  // The distinction matters: a batch sitting entirely over Antarctica legitimately returns
+  // nothing but nulls, and judging failure by non-null values would mark it failed, retry it
+  // forever, and leave the build permanently one batch short of finishing.
+  let answered = 0;
   const values = cells.map((_, i) => {
     const loc = list[i];
     const hourly = loc && loc.hourly;
     if (!hourly || !Array.isArray(hourly.time) || !Array.isArray(hourly.wave_height)) return null;
+    answered++;
     let idx = hourly.time.findIndex((t) => typeof t === 'string' && t.startsWith(wanted));
     if (idx < 0) idx = 0; // clock skew, or a model run that starts later today
     const v = hourly.wave_height[idx];
     return typeof v === 'number' && Number.isFinite(v) ? v : null;
   });
-  // A 200 carrying nothing usable is still a failed batch, and worth retrying.
-  return { values, ok: values.some((v) => v != null), status };
+  // A 200 carrying no readable series at all is still a failed batch, and worth retrying.
+  return { values, ok: answered > 0, status };
 }
 
-// Fetch every cell and pack the result.
+export const PROGRESS_KEY = 'wavegrid:build:v1';
+
+// How long one invocation will spend before saving and stopping.
 //
-// `coverage` rides along so a caller — and anyone reading the endpoint — can tell a whole
-// ocean from half of one without having to decode the bytes and eyeball a globe.
-export async function buildGrid(opts = {}) {
-  const wait = opts.sleep || sleep;
-  const cells = gridCells();
-  const heights = new Array(cells.length).fill(null);
+// The first version built the whole grid in a single scheduled run: seventeen batches, twelve
+// seconds apart, three and a bit minutes. If the platform cut that off anywhere before the end,
+// every fetched batch was lost and the next run started again from nothing — a build that could
+// never finish, presenting as an overlay that was never available. So a run now does bounded
+// work and *saves what it got*, and the build simply continues on the next one.
+export const BUILD_SLICE_MS = 45000;
+
+// Two builders at once would double the upstream traffic for no gain. KV is eventually
+// consistent so this cannot be a real lock, but a recently-touched progress record is enough to
+// keep the cron and a request-triggered build off each other's toes.
+export const BUILD_LEASE_MS = 90000;
+
+function batchStarts(total) {
   const starts = [];
-  for (let start = 0; start < cells.length; start += BATCH_SIZE) starts.push(start);
+  for (let start = 0; start < total; start += BATCH_SIZE) starts.push(start);
+  return starts;
+}
 
-  let requests = 0;
-  let pending = starts;
-  const attempts = [0, ...RETRY_PAUSES_MS];
+async function readProgress(env, cells) {
+  try {
+    const p = await env.SUBSCRIPTIONS.get(PROGRESS_KEY, { type: 'json' });
+    if (!p || p.cells !== cells || typeof p.bytes !== 'string' || !Array.isArray(p.done)) return null;
+    return p;
+  } catch {
+    return null;
+  }
+}
 
-  for (let round = 0; round < attempts.length && pending.length; round++) {
-    if (attempts[round]) await wait(attempts[round]);
-    const failed = [];
-    for (const start of pending) {
-      if (requests >= MAX_REQUESTS) { failed.push(start); continue; }
-      // Space the requests apart, but never pay the gap before the very first one.
-      if (requests > 0) await wait(opts.gapMs ?? BATCH_GAP_MS);
-      requests++;
-      const batch = cells.slice(start, start + BATCH_SIZE);
-      const { values, ok } = await fetchBatch(batch, opts);
-      if (!ok) { failed.push(start); continue; }
-      for (let i = 0; i < batch.length; i++) heights[start + i] = values[i];
-    }
-    pending = failed;
+// Do as much of the build as fits in one invocation, then save.
+//
+// Returns the finished grid when the last batch lands, and null while there is still work to do.
+export async function advanceBuild(env, opts = {}) {
+  const wait = opts.sleep || sleep;
+  const now = opts.now || Date.now();
+  const cells = gridCells();
+  const starts = batchStarts(cells.length);
+
+  let progress = await readProgress(env, cells.length);
+  if (progress && progress.touchedAt && now - progress.touchedAt < BUILD_LEASE_MS && !opts.ignoreLease) {
+    return null; // another invocation is mid-slice
   }
 
-  // Land is legitimately null, so coverage is measured against the cells that came back at all
-  // rather than against the ocean — a batch that failed contributes nothing either way.
-  const got = heights.reduce((n, v) => n + (v != null ? 1 : 0), 0);
-  return {
+  const bytes = progress
+    ? base64ToBytes(progress.bytes)
+    : encodeHeights(new Array(cells.length).fill(null));
+  const done = new Set(progress ? progress.done : []);
+
+  const save = async (extra = {}) => {
+    try {
+      await env.SUBSCRIPTIONS.put(PROGRESS_KEY, JSON.stringify({
+        cells: cells.length, bytes: bytesToBase64(bytes), done: [...done],
+        touchedAt: opts.now || Date.now(), ...extra,
+      }));
+    } catch { /* the slice still counts even if it could not be recorded */ }
+  };
+
+  const started = opts.clock ? opts.clock() : Date.now();
+  const elapsed = () => (opts.clock ? opts.clock() : Date.now()) - started;
+  let requests = 0;
+
+  for (const start of starts) {
+    if (done.has(start)) continue;
+    if (requests >= MAX_REQUESTS || elapsed() >= BUILD_SLICE_MS) break;
+    if (requests > 0) await wait(opts.gapMs ?? BATCH_GAP_MS);
+    requests++;
+    const batch = cells.slice(start, start + BATCH_SIZE);
+    const { values, ok } = await fetchBatch(batch, opts);
+    if (!ok) continue; // left un-done, so the next slice retries it
+    const encoded = encodeHeights(values);
+    for (let i = 0; i < batch.length; i++) bytes[start + i] = encoded[i];
+    done.add(start);
+    // Saved per batch, so nothing is lost if this invocation ends here.
+    await save();
+  }
+
+  if (done.size < starts.length) return null;
+
+  let got = 0;
+  for (let i = 0; i < bytes.length; i++) if (bytes[i] !== NO_DATA) got++;
+  const grid = {
     generatedAt: opts.now || Date.now(),
     cells: cells.length,
-    data: bytesToBase64(encodeHeights(heights)),
+    data: bytesToBase64(bytes),
     coverage: Math.round((got / cells.length) * 1000) / 1000,
-    requests,
   };
+  try { await env.SUBSCRIPTIONS.delete(PROGRESS_KEY); } catch { /* harmless if it lingers */ }
+  return grid;
 }
 
-// Coverage as recorded by the build, or measured from the bytes for a grid stored before the
-// field existed — so an older cache entry is judged on the same terms as a new one.
 function coverageOf(grid) {
   if (!grid || typeof grid.data !== 'string') return 0;
   if (typeof grid.coverage === 'number') return grid.coverage;
@@ -197,8 +251,10 @@ export async function loadGrid(env, opts = {}) {
 
   let fresh = null;
   try {
-    fresh = await (opts.build ? opts.build(opts) : buildGrid({ ...opts, now }));
+    fresh = await (opts.build ? opts.build(opts) : advanceBuild(env, { ...opts, now }));
   } catch { /* handled below */ }
+  // Still mid-build: nothing new to publish, and whatever is cached stands.
+  if (!fresh) return isUsable(cached) ? { ...cached, stale: true } : null;
 
   // Good enough to keep? This used to ask only whether the build was *entirely* empty, which
   // is why a half-fetched grid — every batch after the ninth rate-limited away — was cached and

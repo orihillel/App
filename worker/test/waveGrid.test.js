@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, MAX_REQUESTS } from '../src/waveGrid.js';
-import { gridCellCount, base64ToBytes, encodeHeights, bytesToBase64, NO_DATA } from '../../src/lib/wavegrid.js';
+import { fetchBatch, advanceBuild, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, MAX_REQUESTS } from '../src/waveGrid.js';
+import { gridCellCount, base64ToBytes, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
 const NOW = Date.parse('2026-09-05T14:20:00Z');
@@ -54,6 +54,16 @@ describe('fetchBatch', () => {
     expect((await fetchBatch(cells, { fetchImpl, now: NOW })).values).toEqual([null, 2]);
   });
 
+  it('counts an all-land batch as answered, not as failed', async () => {
+    // A batch sitting entirely over Antarctica legitimately returns nothing but nulls. Judging
+    // failure by non-null values would mark it failed, retry it forever, and leave the build
+    // permanently one batch short of ever completing.
+    const fetchImpl = async () => okRes(cells.map(() => ({ hourly: { time: [HOUR], wave_height: [null] } })));
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(out.values).toEqual([null, null]);
+    expect(out.ok).toBe(true);
+  });
+
   it('returns nulls rather than throwing when the request fails', async () => {
     for (const fetchImpl of [
       async () => { throw new Error('network'); },
@@ -76,84 +86,102 @@ describe('fetchBatch', () => {
   });
 });
 
-describe('buildGrid', () => {
-  it('covers every cell, in batches, and packs them in grid order', async () => {
+describe('advanceBuild', () => {
+  const allOk = async (url) => {
+    const lats = new URL(url).searchParams.get('latitude').split(',');
+    return okRes(lats.map((l) => loc(Math.abs(Number(l)) / 10)));
+  };
+
+  it('covers every cell in one slice when nothing fails', async () => {
     let calls = 0;
-    // Answer each location with a height derived from its latitude, so misalignment shows.
-    const fetchImpl = async (url) => {
-      calls++;
-      const lats = new URL(url).searchParams.get('latitude').split(',');
-      return okRes(lats.map((l) => loc(Math.abs(Number(l)) / 10)));
-    };
-    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
+    const fetchImpl = async (url) => { calls++; return allOk(url); };
+    const grid = await advanceBuild(env(), { fetchImpl, now: NOW, ...INSTANT });
+    expect(grid).not.toBeNull();
     expect(grid.cells).toBe(gridCellCount());
     expect(calls).toBe(Math.ceil(gridCellCount() / BATCH_SIZE));
-    const bytes = base64ToBytes(grid.data);
-    expect(bytes.length).toBe(gridCellCount());
-    // First cell is the -75 row: |−75|/10 = 7.5m -> 75 decimetres.
-    expect(bytes[0]).toBe(75);
+    expect(grid.coverage).toBe(1);
+    // First cell is the -75 row: |-75|/10 = 7.5m -> 75 decimetres.
+    expect(base64ToBytes(grid.data)[0]).toBe(75);
   });
 
-  it('retries a batch that failed once, rather than leaving a hole', async () => {
-    // The bug this exists for: the first build fired every batch at once, roughly half were
-    // rate-limited away, and because gridCells() runs south to north the result was a swell
-    // map with no northern hemisphere. A transient failure must not become a permanent gap.
-    let n = 0;
-    const fetchImpl = async (url) => {
-      if (n++ === 0) throw new Error('first batch rate-limited');
-      const lats = new URL(url).searchParams.get('latitude').split(',');
-      return okRes(lats.map(() => loc(2)));
-    };
-    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
-    expect(base64ToBytes(grid.data)[0]).toBe(20); // the retried batch landed
+  it('saves what it fetched and resumes, instead of restarting from nothing', async () => {
+    // The bug this exists for. A single run built the whole grid; if the platform cut it off
+    // anywhere before the end, every fetched batch was lost and the next run began again from
+    // zero — a build that could never finish, showing as an overlay that never appeared.
+    const e = env();
+    let calls = 0;
+    const fetchImpl = async (url) => { calls++; return allOk(url); };
+    // A clock that runs out after three batches, forcing the slice to end early.
+    let t = 0;
+    const clock = () => { t += 20000; return t; };
+    const first = await advanceBuild(e, { fetchImpl, now: NOW, ...INSTANT, clock });
+    expect(first).toBeNull();                       // not finished
+    const afterFirst = calls;
+    expect(afterFirst).toBeGreaterThan(0);
+    expect(afterFirst).toBeLessThan(Math.ceil(gridCellCount() / BATCH_SIZE));
+
+    // Next invocation picks up where it stopped rather than refetching from the start.
+    const grid = await advanceBuild(e, { fetchImpl, now: NOW, ...INSTANT, ignoreLease: true });
+    expect(grid).not.toBeNull();
+    expect(calls).toBe(Math.ceil(gridCellCount() / BATCH_SIZE)); // no batch fetched twice
     expect(grid.coverage).toBe(1);
   });
 
-  it('leaves cells empty only when a batch fails every attempt', async () => {
+  it('retries a batch that failed, on the next slice', async () => {
+    const e = env();
+    let failFirst = true;
     const fetchImpl = async (url) => {
       const lats = new URL(url).searchParams.get('latitude').split(',');
-      if (Number(lats[0]) === -75) throw new Error('this batch is always down');
-      return okRes(lats.map(() => loc(2)));
+      if (failFirst && Number(lats[0]) === -75) throw new Error('rate limited');
+      return allOk(url);
     };
-    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
-    expect(base64ToBytes(grid.data)[0]).toBe(NO_DATA);
-    expect(grid.coverage).toBeLessThan(1);
-    expect(grid.coverage).toBeGreaterThan(0.9);
-  });
-
-  it('reports the coverage it actually achieved', async () => {
-    // Half the batches failing is the exact shape of the shipped bug, and it has to be visible
-    // as a number rather than only as a picture of half a globe.
-    let n = 0;
-    const fetchImpl = async (url) => {
-      if (n++ >= 9) throw new Error('rate limited from here on');
-      const lats = new URL(url).searchParams.get('latitude').split(',');
-      return okRes(lats.map(() => loc(2)));
-    };
-    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
-    expect(grid.coverage).toBeGreaterThan(0.4);
-    expect(grid.coverage).toBeLessThan(0.65);
-  });
-
-  it('paces the requests instead of firing them all at once', async () => {
-    const waits = [];
-    const fetchImpl = async (url) => {
-      const lats = new URL(url).searchParams.get('latitude').split(',');
-      return okRes(lats.map(() => loc(2)));
-    };
-    await buildGrid({ fetchImpl, now: NOW, sleep: async (ms) => { waits.push(ms); } });
-    expect(waits.length).toBe(Math.ceil(1612 / BATCH_SIZE) - 1); // a gap between each pair, none before the first
-    expect(Math.min(...waits)).toBeGreaterThan(0);
+    expect(await advanceBuild(e, { fetchImpl, now: NOW, ...INSTANT })).toBeNull();
+    failFirst = false;
+    const grid = await advanceBuild(e, { fetchImpl, now: NOW, ...INSTANT, ignoreLease: true });
+    expect(grid).not.toBeNull();
+    expect(base64ToBytes(grid.data)[0]).toBe(75);
   });
 
   it('stops before exhausting the platform subrequest budget', async () => {
-    // Retrying without a ceiling gets the invocation cut off mid-build, which looks exactly
-    // like the bug being fixed.
+    // Cloudflare's free plan allows 50 subrequests per invocation; walking past that gets the
+    // run cut off, which is indistinguishable from the bug being fixed.
     let calls = 0;
     const fetchImpl = async () => { calls++; throw new Error('everything is down'); };
-    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
+    const out = await advanceBuild(env(), { fetchImpl, now: NOW, ...INSTANT });
+    expect(out).toBeNull();
     expect(calls).toBeLessThanOrEqual(MAX_REQUESTS);
-    expect(grid.coverage).toBe(0);
+  });
+
+  it('paces its requests rather than firing them all at once', async () => {
+    const waits = [];
+    const fetchImpl = allOk;
+    await advanceBuild(env(), { fetchImpl, now: NOW, sleep: async (ms) => { waits.push(ms); } });
+    expect(waits.length).toBe(Math.ceil(gridCellCount() / BATCH_SIZE) - 1);
+    expect(Math.min(...waits)).toBeGreaterThan(0);
+  });
+
+  it('does not start a second builder while one is mid-slice', async () => {
+    // Two builders would double the upstream traffic for no gain.
+    const e = env();
+    let t = 0;
+    const clock = () => { t += 20000; return t; };
+    const fetchImpl = allOk;
+    await advanceBuild(e, { fetchImpl, now: NOW, ...INSTANT, clock });
+    let calls = 0;
+    const out = await advanceBuild(e, { fetchImpl: async (u) => { calls++; return allOk(u); }, now: NOW, ...INSTANT });
+    expect(out).toBeNull();
+    expect(calls).toBe(0);
+  });
+
+  it('reports the coverage it achieved, so half a world is visible as a number', async () => {
+    const fetchImpl = async (url) => {
+      const lats = new URL(url).searchParams.get('latitude').split(',');
+      // Land everywhere north of the equator.
+      return okRes(lats.map((l) => (Number(l) > 0 ? { hourly: { time: [HOUR], wave_height: [null] } } : loc(2))));
+    };
+    const grid = await advanceBuild(env(), { fetchImpl, now: NOW, ...INSTANT });
+    expect(grid.coverage).toBeGreaterThan(0.4);
+    expect(grid.coverage).toBeLessThan(0.65);
   });
 });
 
