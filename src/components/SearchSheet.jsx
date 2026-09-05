@@ -2,12 +2,12 @@ import { X, Navigation, ChevronLeft, ChevronRight } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass } from '../lib/rating.js';
 
-export function SearchSheet({ searchQuery, setSearchQuery, runSearch, searchStep, setSearchStep, searchError, pending, setPending, nudge, confirmAddSpot, onClose }) {
+export function SearchSheet({ searchQuery, setSearchQuery, runSearch, searchStep, setSearchStep, searchError, pending, setPending, nudge, confirmAddSpot, matches = [], onSelectMatch, onSearchAnyway, onClose }) {
   return (
     <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(5,12,20,0.6)', display: 'flex', alignItems: 'flex-end', zIndex: 10 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', background: COLORS.navyCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: '18px 20px 26px', maxHeight: '82%', overflowY: 'auto' }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
-          <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 16, color: COLORS.foam }}>Add a spot</span>
+          <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 16, color: COLORS.foam }}>{searchStep === 'matches' ? 'Spots' : 'Find a spot'}</span>
           <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 4 }}><X size={18} color={COLORS.foamDim} /></button>
         </div>
         {searchStep === 'query' && (
@@ -17,6 +17,23 @@ export function SearchSheet({ searchQuery, setSearchQuery, runSearch, searchStep
               style={{ width: '100%', boxSizing: 'border-box', background: COLORS.navy, border: '1px solid ' + COLORS.foamFaint, borderRadius: 12, padding: '11px 13px', color: COLORS.foam, fontSize: 14, fontFamily: 'Inter, sans-serif' }} />
             <button className="tl-btn" onClick={runSearch} style={{ width: '100%', marginTop: 10, background: COLORS.tealBright, border: 'none', borderRadius: 12, padding: '11px 13px', color: COLORS.navy, fontWeight: 700, fontSize: 14 }}>Search</button>
             <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginTop: 10, lineHeight: 1.4 }}>Any coastal place works — I'll pull live wave/wind data and guess which wind direction is offshore from the coastline shape.</div>
+          </div>
+        )}
+        {/* Catalog matches come first: with 300+ built-in spots, searching for one that is
+            already here used to geocode it and offer to add a duplicate. */}
+        {searchStep === 'matches' && (
+          <div>
+            {matches.map(({ id, spot }) => (
+              <button key={id} className="tl-btn w-full" onClick={() => onSelectMatch && onSelectMatch(id)}
+                style={{ display: 'block', width: '100%', textAlign: 'left', background: COLORS.navy, border: '1px solid ' + COLORS.foamFaint, borderRadius: 12, padding: '10px 13px', marginBottom: 8 }}>
+                <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 14, color: COLORS.foam }}>{spot.name}</div>
+                <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 2 }}>{spot.region}</div>
+              </button>
+            ))}
+            <button className="tl-btn" onClick={() => onSearchAnyway && onSearchAnyway()}
+              style={{ width: '100%', marginTop: 4, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 12, padding: '9px 13px', color: COLORS.foamDim, fontSize: 12.5 }}>
+              Not what you meant? Add a new place instead
+            </button>
           </div>
         )}
         {searchStep === 'loading' && <div className="tl-pulse" style={{ fontSize: 13, color: COLORS.foamDim, padding: '10px 0' }}>Looking it up…</div>}

@@ -624,6 +624,26 @@ there's intentionally one source of truth, not separate logic per view.
     Open-Meteo for 248 spots saturates Playwright's request interception, so the active spot is
     still fetching when the assertion runs.
 
+- **248 -> 317 spots, and search that can actually find them.**
+  - *Coverage chosen by gap, not by fame.* 69 spots picked to fill whole countries the catalog
+    had missed rather than to thicken regions already dense: **Argentina, Guatemala, Jamaica,
+    Trinidad and Tobago, the Azores, Cape Verde, Ghana, Liberia, Sierra Leone, Angola, Kenya,
+    Lebanon, Cyprus, Sweden, Belgium, Malaysia, Tonga, Samoa, Vanuatu, New Caledonia, Papua New
+    Guinea, Micronesia and Guam all appear for the first time.** 56 countries/regions -> 80.
+  - **Bug this exposed, and the reason more spots were nearly useless:** the search sheet
+    (titled "Add a spot") only ever *geocoded* arbitrary place names — **it never searched the
+    catalog**. Fine at a few dozen spots you could scroll past; at 317 there was no way to reach
+    one by name, and searching for a spot already in the app would offer to add a **duplicate**
+    of it as a custom spot. `searchCatalog` now runs first and the sheet lists matches, ranked
+    exact-name > starts-with > contains > region, with "add a new place instead" as the fallback.
+  - *A test caught two spots both named "Playa Grande"* (Mar del Plata and the Dominican north
+    coast — both genuinely are). Disambiguated in the names rather than dropping one.
+  - *Verified:* lint, check:classnames, **272 tests** (14 new), build, plus a browser pass
+    searching "Robertsport" (Liberia — a country that had no spots before this), selecting the
+    match, and landing on the spot page. New tests pin the coverage intent: 75+ countries, every
+    ocean basin represented, both hemispheres past 60°N and -38°S, no duplicate names, and every
+    spot well-formed.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
