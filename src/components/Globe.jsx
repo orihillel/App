@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
+import { pickHourAt } from '../lib/daylight.js';
 import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
 import LANDMASSES from '../data/landmasses.json';
 import { ConditionScale } from './ConditionScale.jsx';
@@ -14,7 +15,7 @@ import { ConditionScale } from './ConditionScale.jsx';
 // to watch a "view" prop the way the single-file version watched `view` state.
 //
 // `dataRef` is a ref (owned by the parent) whose `.current` is kept fresh every render with
-// `{ spots, order, forecast, hourIdx }` — read directly inside the animation loop so every
+// `{ spots, order, forecast, clockHour }` — read directly inside the animation loop so every
 // rendered frame reflects whatever is currently in `forecast`, with no separate sync effect
 // to fall out of date.
 export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spots', hint }) {
@@ -614,7 +615,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         const m = markers[i];
         const sfm = live.forecast[m.id];
         const hrs = (sfm && sfm.hours) || PLACEHOLDER_HOURS;
-        const hr = hrs[live.hourIdx];
+        // By clock hour, not array index: each spot's hours come from its own daylight window,
+        // so index N is a different time of day at each spot — and out of range entirely at one
+        // with a shorter day, which left those markers grey.
+        const hr = pickHourAt(hrs, live.clockHour);
         const rating = hr ? hr.rating : 'LOADING';
         const color = (rating === 'LOADING' || !hr || hr.score == null) ? '#33465C' : scoreToColor(hr.score);
         markerMesh.setColorAt(i, instanceColor.set(color));

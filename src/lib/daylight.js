@@ -61,3 +61,31 @@ function spanHours(start, end, count) {
 export function hourLabels(hours) {
   return hours.map((h) => hourLabel12(h));
 }
+
+// The sample at (or nearest to) a given clock hour.
+//
+// The globe used to colour each marker with `hours[hourIdx]` — the Nth sample of that spot's
+// day. That silently broke when hours became daylight-derived and per-spot:
+//
+//  1. Arrays are no longer all 8 long. A short winter day yields fewer, so an index chosen at
+//     a spot with a long day is out of range at one with a short day, and every such marker
+//     fell through to the "no data" grey. Reproduced at 6-hour days: 15 of 15 loaded spots
+//     rendered grey.
+//  2. Even in range it was the wrong sample. Index 3 is late morning at one spot and mid
+//     afternoon at another, so the globe was not showing one moment in time at all.
+//
+// Selecting by clock hour fixes both: every marker shows the same time of day, and a spot
+// whose window does not reach that hour shows its closest one rather than nothing.
+export function pickHourAt(hours, clockHour) {
+  if (!Array.isArray(hours) || hours.length === 0) return null;
+  if (!Number.isFinite(clockHour)) return hours[0];
+  let best = null;
+  let bestGap = Infinity;
+  for (const h of hours) {
+    if (!h || !Number.isFinite(h.hour)) continue;
+    const gap = Math.abs(h.hour - clockHour);
+    if (gap < bestGap) { bestGap = gap; best = h; }
+  }
+  // Nothing carried an hour (placeholder rows before the first fetch): fall back to the first.
+  return best || hours[0];
+}

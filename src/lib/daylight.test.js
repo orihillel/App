@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isoLocalHour, daylightHours } from './daylight.js';
+import { isoLocalHour, daylightHours, pickHourAt } from './daylight.js';
 
 describe('isoLocalHour', () => {
   it('reads the local wall-clock hour as a fraction', () => {
@@ -69,5 +69,45 @@ describe('daylightHours', () => {
   it('handles a sunset that does not follow its sunrise by falling back', () => {
     const hours = daylightHours('2026-06-21T20:00', '2026-06-21T05:00');
     expect(hours.length).toBeGreaterThan(0);
+  });
+});
+
+describe('pickHourAt', () => {
+  const hours = [5, 8, 11, 14, 17, 20].map((h) => ({ hour: h, t: h + 'h' }));
+
+  it('finds the exact hour when the spot samples it', () => {
+    expect(pickHourAt(hours, 11).hour).toBe(11);
+  });
+
+  it('falls back to the closest hour the spot actually has', () => {
+    // The bug this replaces: a spot whose day is shorter than the one you were looking at had
+    // no sample at that index and rendered as "no data" grey.
+    expect(pickHourAt(hours, 12).hour).toBe(11);
+    expect(pickHourAt(hours, 13).hour).toBe(14);
+    expect(pickHourAt(hours, 3).hour).toBe(5);
+    expect(pickHourAt(hours, 23).hour).toBe(20);
+  });
+
+  it('always returns a sample for a spot that has any', () => {
+    const short = [{ hour: 10 }, { hour: 12 }, { hour: 14 }];
+    for (let h = 0; h <= 23; h++) expect(pickHourAt(short, h)).toBeTruthy();
+  });
+
+  it('shows the same moment across spots with different windows', () => {
+    const arctic = [{ hour: 10 }, { hour: 12 }, { hour: 14 }];
+    const tropical = [{ hour: 5 }, { hour: 8 }, { hour: 11 }, { hour: 14 }, { hour: 17 }];
+    // Asking both for 2pm gets 2pm at each, rather than "the 4th sample" — which is out of
+    // range at one and mid-morning at the other.
+    expect(pickHourAt(arctic, 14).hour).toBe(14);
+    expect(pickHourAt(tropical, 14).hour).toBe(14);
+  });
+
+  it('handles empty, missing and unhoured input', () => {
+    expect(pickHourAt([], 12)).toBeNull();
+    expect(pickHourAt(null, 12)).toBeNull();
+    expect(pickHourAt(undefined, 12)).toBeNull();
+    const noHours = [{ t: '5a' }, { t: '7a' }];
+    expect(pickHourAt(noHours, 12)).toBe(noHours[0]);
+    expect(pickHourAt(hours, undefined)).toBe(hours[0]);
   });
 });
