@@ -4,6 +4,7 @@ import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
+import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
 import LANDMASSES from '../data/landmasses.json';
@@ -53,8 +54,19 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // same disc as the whole sphere did. It also fixes the limb: dots near the horizon used to
     // float clear of the globe's silhouette, and now they're correctly cut off by it.
     const MARKER_SHELL = R;
-    const MIN_DISTANCE = 1.08;
+    // How close the camera may get, in Earth radii from the centre. 1.08 showed a 426km-wide
+    // view; 1.015 shows 79km, which is what it takes to separate spots on a busy coast -- two
+    // breaks 5km apart go from 14px apart to 74px, i.e. from one blob to two things you can
+    // aim at. The floor is not arbitrary: the coastline data below is quantized to a ~401m
+    // grid, which at this distance is ~6 screen pixels, and going deeper would just magnify
+    // that grid into visible stair-steps. Zoom as far as the data supports, and no further.
+    const MIN_DISTANCE = 1.015;
     const MAX_DISTANCE = 6;
+    // The coastline layer is pointless at globe view and essential up close, so it fades in
+    // across the range where the imagery starts running out of pixels rather than switching on
+    // at a threshold, which would read as a glitch mid-pinch.
+    const COASTLINE_FADE_START = 1.7;
+    const COASTLINE_FADE_END = 1.15;
 
     const scene = new THREE.Scene();
     const camera = new THREE.PerspectiveCamera(45, width / height, 0.02, 20);
@@ -271,8 +283,50 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // horizontal segment spans several pixels and the silhouette reads as visibly faceted.
     // 128x96 is ~24k triangles -- still trivial for one mesh, and the only mesh that scales
     // with zoom -- and holds a smooth edge across the whole range.
-    const oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 128, 96), oceanMat);
+    // 256x192 rather than 128x96 now that the zoom goes deeper. This is not about the
+    // silhouette any more but about the surface: a sphere approximated by flat quads sags below
+    // the true surface at each quad's centre, and the coastline lines below sit just above the
+    // true surface. At 128x96 that sag is ~4.4e-4 of a radius, close enough to the lines' own
+    // offset to let the terrain poke through them. Doubling the segments quarters the sag to
+    // ~1.1e-4, comfortably clear, for ~98k triangles -- still one mesh and still trivial.
+    const oceanMesh = new THREE.Mesh(new THREE.SphereGeometry(R, 256, 192), oceanMat);
     globeGroup.add(oceanMesh);
+
+    // High-resolution vector coastline. See lib/coastline.js for why this exists at all: no
+    // single global texture can be sharp at this zoom, and lines have no resolution to run out
+    // of. Fetched lazily the first time the camera comes near enough to show it, so the globe's
+    // first paint never waits on 743KB that a user who only ever looks at the whole Earth
+    // would not have needed.
+    const COASTLINE_SHELL = R * 1.0006;
+    const coastlineMat = new THREE.LineBasicMaterial({
+      color: 0x8fe9d4, transparent: true, opacity: 0, depthWrite: false,
+    });
+    let coastlineMesh = null;
+    let coastlineRequested = false;
+
+    function ensureCoastline() {
+      if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
+      coastlineRequested = true;
+      const base = (import.meta.env && import.meta.env.BASE_URL) || '/';
+      fetch(base.replace(/\/$/, '') + '/coastline-10m.json')
+        .then((r) => (r.ok ? r.json() : null))
+        .then((topo) => {
+          if (cancelled || !topo) return;
+          const positions = arcsToLineVertices(topo, COASTLINE_SHELL, latLonToVector3);
+          if (!positions.length) return;
+          const geo = new THREE.BufferGeometry();
+          geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
+          coastlineMesh = new THREE.LineSegments(geo, coastlineMat);
+          // Drawn after the globe and writing no depth, so it never fights the surface it sits
+          // on -- but still depth-*tested*, which is what hides the far side of the world.
+          coastlineMesh.renderOrder = 1;
+          globeGroup.add(coastlineMesh);
+          state.dataDirty = true;
+        })
+        // Offline, or the asset missing: the globe is fully usable without it, so there is
+        // nothing to report and nothing to retry.
+        .catch(() => {});
+    }
 
     scene.add(new THREE.AmbientLight(0xbcd4e0, 0.55));
     const dirLight = new THREE.DirectionalLight(0xfff2d8, 0.95);
@@ -684,6 +738,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       updateNearPlane();
       updateMarkerScale();
       updateLabels();
+      ensureCoastline();
+      if (coastlineMesh) {
+        const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
+        coastlineMat.opacity = o;
+        coastlineMesh.visible = o > 0;
+      }
       renderer.render(scene, camera);
       state.raf = requestAnimationFrame(animate);
     }
@@ -706,6 +766,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       mapTexture.dispose(); oceanMat.dispose(); oceanMesh.geometry.dispose();
       if (satelliteTexture) satelliteTexture.dispose();
       markerGeo.dispose(); markerMat.dispose(); markerMesh.dispose();
+      // ~10MB of line vertices: the one buffer here big enough that leaking it across a few
+      // open/close cycles of the globe would actually be felt on a phone.
+      if (coastlineMesh) coastlineMesh.geometry.dispose();
+      coastlineMat.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };
