@@ -34,9 +34,9 @@ VAPID_SUBJECT = "mailto:replace-with-your-email@example.com"
 # Safe to commit — VAPID public keys are, by design, not secret. The matching private key is
 # NOT set here; see README.md (`wrangler secret put VAPID_PRIVATE_KEY`).
 VAPID_PUBLIC_KEY = "REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY"
-# CORS: only this origin may call the API. Replace with your actual GitHub Pages origin
-# (https://<owner>.github.io, no path).
-ALLOWED_ORIGIN = "https://REPLACE-owner.github.io"
+# CORS: only this origin may call the API. This is the GitHub Pages origin the app is served
+# from — origin only, no /App path, since CORS matches on origin.
+ALLOWED_ORIGIN = "https://orihillel.github.io"
 # OAuth client ids for "Continue with Google" / "Continue with Meta" — both safe to commit,
 # same as the VAPID public key: they identify your app, they don't authenticate anything by
 # themselves. The matching secrets are NOT set here; see README.md.

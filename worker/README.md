@@ -139,12 +139,26 @@ You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
    - `ALLOWED_ORIGIN` — your GitHub Pages origin, e.g. `https://<owner>.github.io` (CORS: only
      this origin may call this Worker's endpoints).
 
-8. **Deploy:**
+8. **Make sure your account has a `workers.dev` subdomain.** Open the Workers & Pages
+   dashboard once; Cloudflare auto-generates one (e.g. `your-name.workers.dev`) the first time
+   you visit. Without it there is no URL for a deploy to publish to, and `wrangler deploy`
+   fails on an otherwise correct configuration — which reads like a problem with this Worker
+   and is not one.
+
+9. **Deploy:**
    ```bash
    npx wrangler deploy
    ```
    Note the `https://tideline-push.<your-subdomain>.workers.dev` URL it prints — that's your
    `VITE_PUSH_API_URL`.
+
+   **Deploy from a checkout of this repository.** `wrangler deploy` uploads the code in
+   `worker/src/`; run from anywhere else — an empty directory, a dashboard-hosted agent
+   workspace, a different project — it has nothing to upload. This Worker also cannot be
+   assembled by hand-writing endpoints into some *other* Worker on the account: `/buoy` alone
+   depends on the multi-source station registry, the KV cache, and the range and staleness
+   rules in `src/buoySources.js` and `src/buoys.js`, all covered by the test suite here. A
+   re-implementation would be a second, untested copy that silently disagrees with this one.
 
    The `tideline-push` in that URL is the Worker's service name (`name` in `wrangler.toml`),
    which was kept when the app was renamed to Surfcast. It is not cosmetic: changing it makes
@@ -158,7 +172,7 @@ The app needs a few build-time env vars — all meant to be public, safe to comm
 repo variable:
 
 - `VITE_VAPID_PUBLIC_KEY` — the same public key from step 3 above (see `src/lib/push.js`).
-- `VITE_PUSH_API_URL` — the Worker URL from step 8 (no trailing slash) — used for both push
+- `VITE_PUSH_API_URL` — the Worker URL from step 9 (no trailing slash) — used for both push
   notifications and account login/sync, since they're the same Worker.
 - `VITE_GOOGLE_CLIENT_ID` — the Client ID from step 4, if you set up Google (see
   `src/lib/auth.js`). Omit it and the Google button just doesn't render.
