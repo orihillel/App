@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE } from '../src/waveGrid.js';
+import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS } from '../src/waveGrid.js';
 import { gridCellCount, base64ToBytes, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
@@ -246,6 +246,50 @@ describe('loadGrid', () => {
     const build = vi.fn(async () => good);
     await loadGrid(e, { build, now: NOW });
     expect(build).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not retry into a quota it just exhausted', async () => {
+    // Every tap of the overlay toggle used to fire five more upstream requests, and a failure
+    // is exactly when they are least affordable. A daily quota, once spent, cannot recover
+    // until it resets — retrying into it only keeps it spent.
+    const e = env();
+    const build = vi.fn(async () => ({
+      batchesDone: 0, batchesTotal: 5, coverage: 0, lastStatus: 429, lastError: 'Daily API request limit exceeded',
+    }));
+    await loadGrid(e, { build, now: NOW });
+    expect(build).toHaveBeenCalledTimes(1);
+
+    const again = await loadGrid(e, { build, now: NOW + 60000 });
+    expect(build).toHaveBeenCalledTimes(1); // no second attempt
+    expect(again.build.cooling).toBe(true);
+    expect(again.build.lastError).toContain('Daily');
+    expect(again.build.retryInSeconds).toBeGreaterThan(0);
+  });
+
+  it('tries again once the cooldown has passed', async () => {
+    const e = env();
+    const build = vi.fn(async () => ({ batchesDone: 0, batchesTotal: 5, coverage: 0, lastStatus: 429 }));
+    await loadGrid(e, { build, now: NOW });
+    await loadGrid(e, { build, now: NOW + FAIL_COOLDOWN_MS + 1000 });
+    expect(build).toHaveBeenCalledTimes(2);
+  });
+
+  it('clears the cooldown after a build succeeds', async () => {
+    const e = env();
+    await e.SUBSCRIPTIONS.put(FAIL_KEY, JSON.stringify({ at: NOW - FAIL_COOLDOWN_MS - 1, build: {} }));
+    await loadGrid(e, { build: async () => good, now: NOW });
+    expect(await e.SUBSCRIPTIONS.get(FAIL_KEY)).toBeNull();
+  });
+
+  it('still serves a cached grid while cooling down', async () => {
+    // A rate limit must not hide a map that already exists.
+    const e = env();
+    await e.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(good));
+    const build = vi.fn(async () => ({ batchesDone: 0, batchesTotal: 5, coverage: 0, lastStatus: 429 }));
+    await loadGrid(e, { build, now: NOW + REFRESH_MS + 1 });
+    const out = await loadGrid(e, { build, now: NOW + REFRESH_MS + 2000 });
+    expect(out.grid.data).toBe(good.data);
+    expect(out.build.cooling).toBe(true);
   });
 
   it('returns diagnostics, not just null, when there is nothing to draw', async () => {

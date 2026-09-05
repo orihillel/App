@@ -913,6 +913,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
                     {'Fetched ' + (waveMeta.build.batchesDone ?? 0) + ' of ' + (waveMeta.build.batchesTotal ?? 0) + ' batches'}
                     {waveMeta.build.lastStatus ? ' · HTTP ' + waveMeta.build.lastStatus : ''}
                     {waveMeta.build.lastError ? ' · ' + String(waveMeta.build.lastError).slice(0, 120) : ''}
+                    {/* A cooldown is a wait, not a fault, and saying so stops it reading as a
+                        dead feature — and stops the retrying that caused it. */}
+                    {waveMeta.build.cooling && (
+                      <div style={{ marginTop: 2 }}>
+                        {'Not retrying for another '
+                          + Math.max(1, Math.ceil((waveMeta.build.retryInSeconds || 0) / 60))
+                          + ' min — retrying now would only spend more of the same limit.'}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
