@@ -143,8 +143,16 @@ export default function App() {
   const goToIdRef = useRef(goToId);
   activeIdRef.current = activeId;
   goToIdRef.current = goToId;
-  const dataRef = useRef({ spots, order, forecast, hourIdx });
-  useEffect(() => { dataRef.current = { spots, order, forecast, hourIdx }; });
+  const dataRef = useRef({ spots, order, forecast, clockHour: null });
+  useEffect(() => {
+    // The globe colours every marker for one moment in time, so it needs the clock hour, not the
+    // index. `hourIdx` only indexes the *active* spot's daylight window, and since PR #22 those
+    // windows differ per spot: the same index is a different time of day elsewhere, and off the
+    // end entirely at a spot with a shorter day.
+    const own = (forecast[activeId] && forecast[activeId].hours) || PLACEHOLDER_HOURS;
+    const sel = own[Math.min(hourIdx, own.length - 1)];
+    dataRef.current = { spots, order, forecast, clockHour: sel ? sel.hour : null };
+  });
 
   const loadSpotData = useCallback(async (id, spotObj) => {
     setLoadingIds((prev) => new Set(prev).add(id));
