@@ -7,7 +7,7 @@ import { verifyFacebookAccessToken } from './facebookAuth.js';
 import { createSessionToken, verifySessionToken } from './session.js';
 import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
-import { loadGrid, advanceBuild, buildStatus } from './waveGrid.js';
+import { loadGrid } from './waveGrid.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -52,30 +52,19 @@ async function handleBuoy(request, env) {
 }
 
 // The global wave-height grid for the globe's ocean overlay. See waveGrid.js.
-async function handleWaveGrid(request, env, ctx) {
+//
+// Built inline rather than in the background. Background builds were tried three ways and none
+// could be observed failing; this one either answers with a map or says why it could not.
+async function handleWaveGrid(request, env) {
   try {
-    // Never build *inside* the request: a build is paced over minutes and would hang the
-    // fetch. But a cold cache used to mean waiting up to half an hour for the next cron, so
-    // opening the overlay now kicks a build off in the background and answers immediately.
-    // The work continues after this response is sent; the grid appears on a later load.
-    const grid = await loadGrid(env, { mayBuild: false });
-    if (!grid && ctx && typeof ctx.waitUntil === 'function') {
-      ctx.waitUntil(advanceBuild(env).catch(() => {}));
-    }
-    // Nothing cached and the first build failed: say so plainly. The app draws no overlay
-    // rather than an empty ocean, which would read as "flat everywhere" — the one wrong
-    // answer worse than no answer.
-    // Report where the build has got to even when there is nothing to draw yet, so "not
-    // working" can be told apart from "still fetching batch 3 of 5" from a single URL.
-    if (!grid) return json({ grid: null, build: await buildStatus(env) }, env);
+    const { grid, build } = await loadGrid(env);
+    if (!grid) return json({ grid: null, build }, env);
     return json({
-      generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data, stale: !!grid.stale,
-      // Reported so a whole ocean can be told from half of one without decoding the bytes —
-      // the exact question that went unanswerable when the first build came back half-empty.
-      coverage: typeof grid.coverage === 'number' ? grid.coverage : null,
+      generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data,
+      stale: !!grid.stale, coverage: grid.coverage ?? null, build,
     }, env);
-  } catch {
-    return json({ grid: null }, env);
+  } catch (e) {
+    return json({ grid: null, build: { lastError: String((e && e.message) || e) } }, env);
   }
 }
 
@@ -196,8 +185,7 @@ export async function checkSubscription(env, endpoint, record) {
 }
 
 export default {
-  // ctx is needed so a cold /wavegrid can start a build with waitUntil and still answer now.
-  async fetch(request, env, ctx) {
+  async fetch(request, env) {
     const url = new URL(request.url);
     if (request.method === 'OPTIONS') return new Response(null, { headers: corsHeaders(env) });
     if (request.method === 'POST' && url.pathname === '/subscribe') return handleSubscribe(request, env);
@@ -207,7 +195,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/me') return handleGetMe(request, env);
     if (request.method === 'PUT' && url.pathname === '/me/data') return handlePutMeData(request, env);
     if (request.method === 'GET' && url.pathname === '/buoy') return handleBuoy(request, env);
-    if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env, ctx);
+    if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
   },
@@ -220,8 +208,9 @@ export default {
     // work when the cache is older than the model's own update cadence, so this is a no-op on
     // most of the half-hourly runs — but it means the first person to open the globe after a
     // model run gets a warm cache instead of waiting on a thousand upstream points.
-    // One slice of the wave-grid build per run. advanceBuild saves after every batch, so a
-    // run that gets cut short costs a slice rather than the whole build.
+    // Keep the cache warm so the first person to open the overlay after a model run does not
+    // pay for the build. It is only a warm-up: /wavegrid builds for itself if this never runs,
+    // which is the difference from the version that depended on this firing.
     ctx.waitUntil(loadGrid(env).catch(() => {}));
     for await (const { endpoint, record } of listSubscriptions(env)) {
       ctx.waitUntil(checkSubscription(env, endpoint, record));
