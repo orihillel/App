@@ -6,7 +6,8 @@ import { createFakeKv } from './fakeKv.js';
 const NOW = Date.parse('2026-09-05T14:20:00Z');
 const HOUR = '2026-09-05T14:00';
 
-// One location's worth of an Open-Meteo marine response.
+// One location's worth of an Open-Meteo marine response, in each shape.
+const cur = (h) => ({ current: { time: HOUR, wave_height: h } });
 const loc = (h) => ({ hourly: { time: [HOUR, '2026-09-05T15:00'], wave_height: [h, h + 1] } });
 const okRes = (body) => ({ ok: true, status: 200, json: async () => body });
 
@@ -18,12 +19,51 @@ const cells = [{ lat: 0, lon: 0 }, { lat: 10, lon: 20 }];
 describe('fetchBatch', () => {
   it('asks for every cell in one request and reads the answers positionally', async () => {
     let seen = '';
-    const fetchImpl = async (url) => { seen = url; return okRes([loc(1.5), loc(3.2)]); };
+    const fetchImpl = async (url) => { seen = url; return okRes([cur(1.5), cur(3.2)]); };
     const out = await fetchBatch(cells, { fetchImpl, now: NOW });
     expect(out.values).toEqual([1.5, 3.2]);
     expect(out.ok).toBe(true);
     expect(seen).toContain('latitude=0.00,10.00');
     expect(seen).toContain('longitude=0.00,20.00');
+  });
+
+  it('asks only for the current reading, not a day of hourly values', async () => {
+    // The bug that produced "Fetched 2 of 5 batches · HTTP 429". The overlay needs one number
+    // per cell; requesting an hourly series returned 24 and discarded 23, costing 24x the
+    // allowance and exhausting the per-minute budget two batches into a five-batch grid.
+    let seen = '';
+    const fetchImpl = async (url) => { seen = url; return okRes([cur(1), cur(1)]); };
+    await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(seen).toContain('current=wave_height');
+    expect(seen).not.toContain('hourly=');
+    expect(seen).not.toContain('forecast_days');
+  });
+
+  it('falls back to the hourly series if current is refused', async () => {
+    // Only on a non-rate-limit 4xx: if this deployment's marine endpoint has no `current`, a
+    // costlier working overlay beats a cheap empty one.
+    const seen = [];
+    const fetchImpl = async (url) => {
+      seen.push(url);
+      if (url.includes('current=')) return { ok: false, status: 400, json: async () => ({ reason: 'no current' }) };
+      return okRes([loc(2), loc(3)]);
+    };
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(out.values).toEqual([2, 3]);
+    expect(seen).toHaveLength(2);
+  });
+
+  it('does not burn a second request when the first was rate-limited', async () => {
+    // Retrying a 429 with an even more expensive request is the worst possible response to it.
+    let calls = 0;
+    const fetchImpl = async () => {
+      calls++;
+      return { ok: false, status: 429, json: async () => ({ reason: 'Minutely API request limit exceeded' }) };
+    };
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(calls).toBe(1);
+    expect(out.status).toBe(429);
+    expect(out.error).toContain('Minutely');
   });
 
   it('picks the row for the current hour, not just the first one', async () => {
@@ -39,19 +79,19 @@ describe('fetchBatch', () => {
   });
 
   it('accepts a bare object as well as an array', async () => {
-    const fetchImpl = async () => okRes(loc(2.2));
+    const fetchImpl = async () => okRes(cur(2.2));
     expect((await fetchBatch([cells[0]], { fetchImpl, now: NOW })).values).toEqual([2.2]);
   });
 
   it('reads a land point as null, not as calm water', async () => {
-    const fetchImpl = async () => okRes([{ hourly: { time: [HOUR], wave_height: [null] } }, loc(2)]);
+    const fetchImpl = async () => okRes([{ current: { time: HOUR, wave_height: null } }, cur(2)]);
     expect((await fetchBatch(cells, { fetchImpl, now: NOW })).values).toEqual([null, 2]);
   });
 
   it('counts an all-land batch as answered, not as failed', async () => {
     // A batch sitting entirely over Antarctica legitimately returns nothing but nulls. Judging
     // success by non-null values would mark it failed and retry it forever.
-    const fetchImpl = async () => okRes(cells.map(() => ({ hourly: { time: [HOUR], wave_height: [null] } })));
+    const fetchImpl = async () => okRes(cells.map(() => ({ current: { time: HOUR, wave_height: null } })));
     const out = await fetchBatch(cells, { fetchImpl, now: NOW });
     expect(out.values).toEqual([null, null]);
     expect(out.ok).toBe(true);
@@ -99,7 +139,7 @@ describe('fetchBatch', () => {
 describe('buildGrid', () => {
   const allOk = async (url) => {
     const lats = new URL(url).searchParams.get('latitude').split(',');
-    return okRes(lats.map((l) => loc(Math.abs(Number(l)) / 10)));
+    return okRes(lats.map((l) => cur(Math.abs(Number(l)) / 10)));
   };
 
   it('covers every cell in one pass', async () => {

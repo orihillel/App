@@ -876,6 +876,28 @@ there's intentionally one source of truth, not separate logic per view.
     That is the remaining unknown, and the next `/wavegrid` response will state it outright
     instead of leaving it to inference.
 
+- **Swell overlay, the actual bug: asking for 24 values per cell and using one.**
+  - *What the on-screen diagnostic reported:* **"Fetched 2 of 5 batches · HTTP 429 · Minutely
+    API request limit exceeded"**. Two facts at once — the multi-coordinate request shape is
+    **fine** (two batches came back), and the limit is real but was being hit absurdly early, at
+    ~200 points rather than the ~600 assumed.
+  - *The cause.* The overlay needs exactly one number per cell — wave height right now — but the
+    request was `hourly=wave_height&forecast_days=1`, which is **24 values per location**, 23 of
+    them discarded. Open-Meteo bills by values returned, so a 100-cell batch cost 2,400 units
+    instead of 100, and the grid blew the per-minute allowance two batches into five.
+  - *The fix:* `current=wave_height`. The whole grid is now **406 units instead of 9,744 — 24x
+    cheaper**. A test asserts the URL asks for `current` and contains no `hourly=` or
+    `forecast_days`, because that is the entire bug and it is invisible in a diff otherwise.
+  - *With a fallback, and a deliberate non-fallback.* A non-rate-limit 4xx retries the batch with
+    the hourly series, in case a deployment's marine endpoint lacks `current` — a costlier
+    working overlay beats a cheap empty one. A **429 never retries**: answering a rate limit with
+    a more expensive request is the worst possible response to it.
+  - **The lesson worth keeping.** Five rounds were spent tuning schedulers, pacing, slices and
+    retries — none of which touched the cause — because the failure was invisible. The fix
+    followed within minutes of the app printing what upstream actually said. The diagnostic
+    should have been in the first version, not the sixth.
+  - *Verified:* lint (app + worker), **331 app + 113 worker tests**, build.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

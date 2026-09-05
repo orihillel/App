@@ -47,22 +47,42 @@ function currentHourIso(now) {
 
 // One batch of cells -> their wave heights, positionally aligned with `cells`.
 //
-// Never throws. It reports what happened instead — status code and error text — because the one
-// thing four blind fixes lacked was any way to tell a rate limit from a rejected request shape
+// Asks for `current` rather than an hourly series, and that is the whole fix. The overlay needs
+// exactly one number per cell — the wave height right now — but this was requesting
+// `hourly=wave_height&forecast_days=1`, which is **24 values per location**, and discarding 23
+// of them. Open-Meteo bills by values returned, so each 100-cell batch cost 2,400 units instead
+// of 100. The grid blew the per-minute allowance two batches in, which is exactly what the app
+// reported: "Fetched 2 of 5 batches · HTTP 429 · Minutely API request limit exceeded".
+//
+// One value per location instead of 24 makes the whole grid 406 units rather than 9,744.
+//
+// Never throws. It reports what happened instead — status code and the upstream's own reason —
+// because for five rounds there was no way to tell a rate limit from a rejected request shape
 // from an unreachable host.
-export async function fetchBatch(cells, { fetchImpl = fetch, now = Date.now() } = {}) {
+export async function fetchBatch(cells, opts = {}) {
+  const first = await requestBatch(cells, 'current', opts);
+  if (first.ok || first.status === 429 || first.status == null) return first;
+  // A 4xx that is not a rate limit may mean this deployment's Open-Meteo does not offer
+  // `current` on the marine endpoint. Falling back to the hourly series costs more, but a
+  // working overlay beats a correct-but-empty one, and it only happens when `current` is
+  // refused outright.
+  const fallback = await requestBatch(cells, 'hourly', opts);
+  return fallback.ok ? fallback : first;
+}
+
+async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() } = {}) {
   const url = MARINE_URL
     + '?latitude=' + cells.map((c) => c.lat.toFixed(2)).join(',')
     + '&longitude=' + cells.map((c) => c.lon.toFixed(2)).join(',')
-    + '&hourly=wave_height&forecast_days=1';
+    + (mode === 'current' ? '&current=wave_height' : '&hourly=wave_height&forecast_days=1');
   let payload;
   let status = null;
   try {
     const res = await fetchImpl(url);
     status = typeof res.status === 'number' ? res.status : null;
     if (!res.ok) {
-      // Open-Meteo puts the reason in the body on a 4xx — "latitude must be a number", say —
-      // which is exactly the sentence that would have ended this days earlier.
+      // Open-Meteo puts the cause in the body on a 4xx, and that sentence is what finally
+      // ended five rounds of guessing. It is always worth carrying back.
       let reason = null;
       try {
         const body = await res.json();
@@ -78,13 +98,21 @@ export async function fetchBatch(cells, { fetchImpl = fetch, now = Date.now() } 
   // object. Accepting both means a one-cell batch cannot silently produce a grid of nulls.
   const list = Array.isArray(payload) ? payload : [payload];
   const wanted = currentHourIso(now);
-  // "Answered" counts locations that came back with a readable series, whatever it held. A
+  // "Answered" counts locations that came back with a readable reading, whatever it held. A
   // batch sitting entirely over Antarctica legitimately returns nothing but nulls, and judging
   // success by non-null values would mark it failed and retry it forever.
   let answered = 0;
   const values = cells.map((_, i) => {
     const loc = list[i];
-    const hourly = loc && loc.hourly;
+    if (!loc) return null;
+    // Either shape is read, whichever the request asked for, so the fallback needs no separate
+    // parser and a server that answers with both cannot confuse it.
+    if (loc.current && 'wave_height' in loc.current) {
+      answered++;
+      const v = loc.current.wave_height;
+      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+    }
+    const hourly = loc.hourly;
     if (!hourly || !Array.isArray(hourly.time) || !Array.isArray(hourly.wave_height)) return null;
     answered++;
     let idx = hourly.time.findIndex((t) => typeof t === 'string' && t.startsWith(wanted));
@@ -96,7 +124,7 @@ export async function fetchBatch(cells, { fetchImpl = fetch, now = Date.now() } 
     values,
     ok: answered > 0,
     status,
-    error: answered > 0 ? null : 'response carried no readable hourly series',
+    error: answered > 0 ? null : 'response carried no readable wave height',
   };
 }
 
