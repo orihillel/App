@@ -61,6 +61,17 @@ jobs:
               exit 1
               ;;
           esac
+          # Same reasoning for the token. Wrangler rejects one containing a character that
+          # cannot go in an HTTP Authorization header, which in practice means it was copied
+          # out of rendered prose rather than the token box: an arrow, an ellipsis, a curly
+          # quote, a non-breaking space. Its error names the codepoint but not the secret it
+          # came from, so catch it here alongside the account id.
+          if LC_ALL=C; case "$token" in *[![:print:]]*) false;; *) true;; esac; then
+            :
+          else
+            echo "::error::CLOUDFLARE_API_TOKEN contains a non-ASCII character, which cannot go in an HTTP Authorization header. This usually means it was copied from formatted text rather than from Cloudflare's token box — look for an arrow, ellipsis, curly quote or non-breaking space, and re-copy the token itself."
+            exit 1
+          fi
           echo "configured=true" >> "$GITHUB_OUTPUT"
 
       - name: Deploy to Cloudflare Workers
