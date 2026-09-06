@@ -97,5 +97,20 @@ export function waveLegendCaption(meta, units, now = Date.now()) {
   parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
   if (meta && meta.stale) parts.push('last good data');
   if (meta && meta.coarse) parts.push('coarse edge — coastline unavailable');
+  // Which way the arrows read. "Direction" is ambiguous for waves — the number in every marine
+  // feed is where they come *from* — so the legend says which one is drawn rather than leaving
+  // a surfer to work it out from a map they have never seen before.
+  if (meta && meta.arrows) parts.push('arrows show where the swell is heading');
   return parts.join(' · ');
+}
+
+// Where a swell drawn on the globe is heading.
+//
+// Open-Meteo reports `wave_direction` the way every marine source does: the compass bearing the
+// waves are coming *from*. An arrow on a map reads as travel, though — Windy's wave arrows point
+// downwave and so does everyone's intuition — so the arrows are drawn at the opposite bearing,
+// and the legend says which it is rather than leaving it to be guessed.
+export function swellTravelBearing(fromDeg) {
+  if (fromDeg == null || !Number.isFinite(fromDeg)) return null;
+  return ((fromDeg % 360) + 540) % 360;
 }

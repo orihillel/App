@@ -1,14 +1,18 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS } from '../src/waveGrid.js';
-import { gridCells, gridCellCount, base64ToBytes, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
+import { gridCells, gridCellCount, base64ToBytes, decodeDirections, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
 const NOW = Date.parse('2026-09-05T14:20:00Z');
 const HOUR = '2026-09-05T14:00';
 
 // One location's worth of an Open-Meteo marine response, in each shape.
-const cur = (h) => ({ current: { time: HOUR, wave_height: h } });
-const loc = (h) => ({ hourly: { time: [HOUR, '2026-09-05T15:00'], wave_height: [h, h + 1] } });
+const cur = (h, dir = 225) => ({ current: { time: HOUR, wave_height: h, wave_direction: dir } });
+const loc = (h, dir = 225) => ({
+  hourly: {
+    time: [HOUR, '2026-09-05T15:00'], wave_height: [h, h + 1], wave_direction: [dir, dir],
+  },
+});
 const okRes = (body) => ({ ok: true, status: 200, json: async () => body });
 
 const env = () => ({ SUBSCRIPTIONS: createFakeKv() });
@@ -345,5 +349,56 @@ describe('loadGrid', () => {
     expect(out.build).toEqual({
       batchesDone: 0, batchesTotal: 5, coverage: 0, lastStatus: 400, lastError: 'bad request',
     });
+  });
+});
+
+describe('wave direction', () => {
+  it('asks for direction in the same request as height, not a second pass', () => {
+    // One more value a cell against a second trip over the whole grid — and the grid's whole
+    // design is that it fits in one pass of the rate limit.
+    let seen = '';
+    const fetchImpl = async (url) => { seen = url; return okRes([cur(1), cur(1)]); };
+    return fetchBatch(cells, { fetchImpl, now: NOW }).then(() => {
+      expect(seen).toContain('current=wave_height,wave_direction');
+    });
+  });
+
+  it('reads directions positionally, like the heights beside them', async () => {
+    const fetchImpl = async () => okRes([cur(1.5, 300), cur(3.2, 45)]);
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(out.directions).toEqual([300, 45]);
+  });
+
+  it('reads them from the hourly fallback too', async () => {
+    const fetchImpl = async () => okRes([loc(2, 190), loc(3, 20)]);
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(out.directions).toEqual([190, 20]);
+  });
+
+  it('gives a direction of null where the model has none, rather than north', async () => {
+    const fetchImpl = async () => okRes([{ current: { time: HOUR, wave_height: 1.5 } }, cur(2, 100)]);
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(out.directions[0]).toBeNull();
+    expect(out.values[0]).toBe(1.5); // the height is still good
+    expect(out.directions[1]).toBe(100);
+  });
+
+  it('carries a direction for every cell a failed batch would have covered', async () => {
+    const fetchImpl = async () => ({ ok: false, status: 429, json: async () => ({ reason: 'no' }) });
+    const out = await fetchBatch(cells, { fetchImpl, now: NOW });
+    expect(out.directions).toHaveLength(cells.length);
+    expect(out.directions.every((d) => d === null)).toBe(true);
+  });
+
+  it('stores them in the built grid, alongside the heights', async () => {
+    const fetchImpl = async (url) => {
+      const n = new URL(url).searchParams.get('latitude').split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(2, 270)));
+    };
+    const grid = await buildGrid({ ...INSTANT, fetchImpl, now: NOW });
+    expect(typeof grid.dirs).toBe('string');
+    const back = decodeDirections(base64ToBytes(grid.dirs));
+    expect(back).toHaveLength(gridCellCount());
+    for (const d of back) expect(Math.abs(d - 270)).toBeLessThan(1.5);
   });
 });

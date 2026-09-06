@@ -81,6 +81,9 @@ export async function fetchWaveGrid() {
     if (!data || typeof data.data !== 'string') return { data: null, build: data && data.build };
     return {
       data: data.data, cells: data.cells, generatedAt: data.generatedAt,
+      // Optional on purpose: a grid cached before directions were fetched has no `dirs`, and
+      // the overlay draws its colours without arrows rather than not drawing at all.
+      dirs: typeof data.dirs === 'string' ? data.dirs : null,
       stale: !!data.stale, build: data.build || null,
     };
   } catch {

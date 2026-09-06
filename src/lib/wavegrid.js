@@ -219,3 +219,76 @@ export function fillGridGaps(heights, rounds = 2) {
   }
   return current;
 }
+
+// Wave direction, one byte a cell, alongside the heights.
+//
+// 255 is reserved for "no reading", leaving 0-254 for the compass — about 1.4 degrees a step,
+// which is finer than a global wave model resolves direction to.
+export const NO_DIR = 255;
+
+export function encodeDirections(degrees) {
+  const bytes = new Uint8Array(degrees.length);
+  for (let i = 0; i < degrees.length; i++) {
+    const d = degrees[i];
+    if (d == null || !Number.isFinite(d)) { bytes[i] = NO_DIR; continue; }
+    const wrapped = ((d % 360) + 360) % 360;
+    // 360 and 0 are the same bearing, so the top of the range folds back to the bottom rather
+    // than rounding up into the reserved byte.
+    bytes[i] = Math.round((wrapped / 360) * 254) % 255;
+  }
+  return bytes;
+}
+
+export function decodeDirections(bytes) {
+  const out = new Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) {
+    out[i] = bytes[i] === NO_DIR ? null : (bytes[i] / 254) * 360;
+  }
+  return out;
+}
+
+// Bilinear sample of a direction field — as vectors, not as numbers.
+//
+// Averaging bearings arithmetically is the classic way to get this wrong: 350 and 10 degrees
+// are twenty degrees apart and average to due south. Summing unit vectors and taking the angle
+// of the result is the circular mean, which gives due north, as it must.
+//
+// Null-aware in the same way as sampleGridSmooth: only cells that have a reading contribute, so
+// a coastal cell with no data does not drag the arrow toward zero.
+export function sampleDirectionSmooth(directions, lat, lon) {
+  if (!directions || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  const rows = gridRows();
+  const fr = (lat + GRID_MAX_LAT) / GRID_LAT_STEP;
+  const r0 = Math.floor(fr);
+  const tLat = fr - r0;
+  const offsets = [];
+  let acc = 0;
+  for (const row of rows) { offsets.push(acc); acc += row.count; }
+
+  let x = 0;
+  let y = 0;
+  let weight = 0;
+  for (const [ri, wLat] of [[r0, 1 - tLat], [r0 + 1, tLat]]) {
+    if (ri < 0 || ri >= rows.length || wLat <= 0) continue;
+    const row = rows[ri];
+    const fx = (((lon + 180) % 360 + 360) % 360) / row.step - 0.5;
+    const i0 = Math.floor(fx);
+    const tLon = fx - i0;
+    for (const [ii, wLon] of [[i0, 1 - tLon], [i0 + 1, tLon]]) {
+      if (wLon <= 0) continue;
+      const wrapped = ((ii % row.count) + row.count) % row.count;
+      const deg = directions[offsets[ri] + wrapped];
+      if (deg == null || !Number.isFinite(deg)) continue;
+      const w = wLat * wLon;
+      const rad = (deg * Math.PI) / 180;
+      x += Math.sin(rad) * w;
+      y += Math.cos(rad) * w;
+      weight += w;
+    }
+  }
+  if (weight <= 0) return null;
+  // Opposing directions that cancel leave no meaningful mean; better to draw nothing than an
+  // arrow pointing at the numerical residue of two contradictory swells.
+  if (Math.sqrt(x * x + y * y) < weight * 0.15) return null;
+  return (((Math.atan2(x, y) * 180) / Math.PI) + 360) % 360;
+}

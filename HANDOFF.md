@@ -1109,6 +1109,41 @@ there's intentionally one source of truth, not separate logic per view.
     browser run confirming 20 requests, every one of the 403 spots covered, the spot page
     rendering a real rating, and every globe marker coloured.
 
+- **Wave direction on the globe: arrows over the swell overlay.**
+  - *Asked for:* "add to the live swell on the globe the wave direction, not only the heights, by
+    small arrows that points to the wave direction."
+  - *End to end.* The Worker now asks Open-Meteo for `wave_direction` in the same request as
+    `wave_height` — one more value a cell rather than a second pass over the grid, which matters
+    because the grid's whole design is that it fits inside one minute of the rate limit. It comes
+    back as a second byte a cell (`dirs`, 1.4 degrees a step), kept beside `data` rather than
+    interleaved so an older app build reading only heights is unaffected, and treated as optional
+    on the way in so a grid cached before this still draws its colours.
+  - *Interpolated as vectors, not as numbers.* `sampleDirectionSmooth` takes the circular mean:
+    averaging 350 and 10 degrees arithmetically gives due south, which is the classic way to get
+    a direction field wrong. Where contributing cells cancel outright it returns nothing rather
+    than an arrow pointing at the residue of two contradictory swells.
+  - *Drawn as instanced geometry*, not painted into the texture — an arrow in a 2048-wide
+    equirectangular map is a smear a few texels across, while geometry stays sharp at every zoom.
+    Arrows sit only on water, tested against the same coverage mask the overlay is cut with.
+  - **Two things the tests caught before the screen did.**
+    - The golden-spiral point field walks pole to pole in index order, so the "first N points"
+      level of detail would have put the first fifty arrows in the Arctic and emptied a
+      hemisphere on zooming out. Reordered by reversed index bits (van der Corput), every prefix
+      now covers the globe.
+    - The first density model scaled by the *visible hemisphere*, which is right only while the
+      whole globe is in frame. Zoomed to 1.4 it claims 14% of the sphere is on screen when the
+      truth is 0.7% — and the arrows came out twenty times too sparse, which the rendered
+      screenshot confirmed. It now solves the actual screen patch from the camera's own FOV.
+  - *And a limit kept deliberately:* the count stops growing at 6,000. The field behind these
+    arrows is a 10-degree grid, so at maximum zoom the screen sits inside two cells; a denser
+    lattice of near-identical arrows would look like fine-grained data and would not be. The
+    legend says which way they read — "arrows show where the swell is heading" — because every
+    marine feed reports the direction waves come *from* and an arrow on a map means travel.
+  - *Verified:* lint and tests both packages (**425 app + 126 worker**, 31 new), `check:spots`,
+    `check:classnames`, build, and rendered at three zooms against a synthetic field radiating
+    from two storm centres, confirming the arrows fan outward from them, none appear on land,
+    and the density holds from the whole globe down to a 2,000km view.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
