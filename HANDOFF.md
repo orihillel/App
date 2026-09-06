@@ -1170,6 +1170,28 @@ there's intentionally one source of truth, not separate logic per view.
     `check:classnames`, build. The `isUsable` change was confirmed to fail against the old
     version once the fixture was fixed.
 
+- **The arrows were dropped on the wire. `handleWaveGrid` builds its reply from a field list.**
+  - *Reported, after everything else was working:* "everything is working apart from the arrows."
+  - *The bug, and it was entirely mine.* The Worker fetched wave directions, encoded them, and
+    stored them in KV — and then `GET /wavegrid` did this:
+    ```js
+    return json({ generatedAt, cells, data, stale, coverage, build });  // no dirs
+    ```
+    An explicit field list. Adding a field to the grid does not add it to the response. The
+    globe received a grid with no directions, drew no arrows, and looked exactly like every
+    other reason for no arrows — which is why it took three rounds to find. I changed the
+    builder and I changed the reader, and never once looked at the wire between them.
+  - *Both halves of that trip are now tested*, because both were written the same way and only
+    one had failed yet:
+    - `GET /wavegrid` must send every field the app reads — named individually rather than
+      snapshotted, so a field going missing fails loudly instead of updating a blob.
+    - `fetchWaveGrid` had **no test at all**. It now has six, including that a grid without
+      directions yields `null` rather than `undefined` (the globe branches on that) and that a
+      non-string `dirs` is refused.
+    Both were confirmed to fail against the real bug before being kept.
+  - *Verified:* lint and tests both packages (**436 app + 130 worker**, 10 new), `check:spots`,
+    `check:classnames`, build.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

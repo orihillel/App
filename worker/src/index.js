@@ -61,6 +61,11 @@ async function handleWaveGrid(request, env) {
     if (!grid) return json({ grid: null, build }, env);
     return json({
       generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data,
+      // The directions the arrows are drawn from. They were fetched, encoded and stored, and
+      // then dropped right here: this response is an explicit field list, and adding a field to
+      // the grid does not add it to the wire. The globe saw a grid with no directions and drew
+      // no arrows, which looked like every other reason for no arrows.
+      dirs: grid.dirs ?? null,
       stale: !!grid.stale, coverage: grid.coverage ?? null, build,
     }, env);
   } catch (e) {

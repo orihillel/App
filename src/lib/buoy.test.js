@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchBuoyObservation, formatAge, compareToForecast, compareLabel } from './buoy.js';
+import { fetchBuoyObservation, fetchWaveGrid, formatAge, compareToForecast, compareLabel } from './buoy.js';
 
 describe('formatAge', () => {
   it('reads naturally across the range', () => {
@@ -81,5 +81,67 @@ describe('fetchBuoyObservation', () => {
     vi.stubEnv('VITE_PUSH_API_URL', '');
     await expect(fetchBuoyObservation({ lat: 33, lon: -117 })).resolves.toBeNull();
     expect(fetch).not.toHaveBeenCalled();
+  });
+});
+
+// fetchWaveGrid copies fields out of the Worker's answer one by one, which is the same shape of
+// code that lost the wave directions on the Worker's side of the wire: they were fetched,
+// stored and then dropped by a response builder that nobody had added the new field to. This is
+// the other half of that trip, and it had no test at all.
+describe('fetchWaveGrid', () => {
+  const GRID = {
+    generatedAt: 1757160000000, cells: 406, data: 'aGVpZ2h0cw==', dirs: 'ZGlyZWN0aW9ucw==',
+    stale: false, coverage: 1, build: { batchesDone: 5, batchesTotal: 5 },
+  };
+  const respond = (body, ok = true) => vi.fn(async () => ({ ok, json: async () => body }));
+
+  beforeEach(() => vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.test'));
+  afterEach(() => vi.unstubAllEnvs());
+
+  it('carries every field the globe reads, directions included', async () => {
+    vi.stubGlobal('fetch', respond(GRID));
+    const out = await fetchWaveGrid();
+    expect(out.data).toBe(GRID.data);
+    expect(out.dirs).toBe(GRID.dirs);
+    expect(out.cells).toBe(GRID.cells);
+    expect(out.generatedAt).toBe(GRID.generatedAt);
+    expect(out.stale).toBe(false);
+    expect(out.build).toEqual(GRID.build);
+  });
+
+  it('gives null directions for a grid that has none, rather than undefined', async () => {
+    // The globe branches on this to decide whether to build the arrow field at all, and to say
+    // "no wave directions in this grid yet" in the legend. Undefined would work by accident;
+    // null is the answer it is actually checking for.
+    const { dirs, ...withoutDirs } = GRID; // eslint-disable-line no-unused-vars
+    vi.stubGlobal('fetch', respond(withoutDirs));
+    expect((await fetchWaveGrid()).dirs).toBeNull();
+  });
+
+  it('ignores a dirs field that is not a string', async () => {
+    vi.stubGlobal('fetch', respond({ ...GRID, dirs: { nope: true } }));
+    expect((await fetchWaveGrid()).dirs).toBeNull();
+  });
+
+  it('keeps the build diagnostics when there is no grid to draw', async () => {
+    vi.stubGlobal('fetch', respond({ grid: null, build: { lastError: 'rate limited' } }));
+    const out = await fetchWaveGrid();
+    expect(out.data).toBeNull();
+    expect(out.build.lastError).toBe('rate limited');
+  });
+
+  it('returns nothing at all rather than throwing when the Worker is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new Error('offline'); }));
+    expect(await fetchWaveGrid()).toBeNull();
+    vi.stubGlobal('fetch', respond({}, false));
+    expect(await fetchWaveGrid()).toBeNull();
+  });
+
+  it('does not call out at all when no Worker is configured', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', '');
+    const fetchImpl = respond(GRID);
+    vi.stubGlobal('fetch', fetchImpl);
+    expect(await fetchWaveGrid()).toBeNull();
+    expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

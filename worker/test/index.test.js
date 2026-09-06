@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createFakeKv } from './fakeKv.js';
 import { putSubscription, getSubscription } from '../src/store.js';
+import { GRID_KEY } from '../src/waveGrid.js';
+import { gridCellCount, encodeHeights, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
 
 vi.mock('../src/push.js', () => ({
   sendPushNotification: vi.fn(),
@@ -50,6 +52,50 @@ describe('HTTP routes', () => {
     const res = await worker.fetch(req, env);
     expect(res.status).toBe(200);
     expect(await getSubscription(env, SUBSCRIPTION_JSON.endpoint)).toEqual({ subscription: SUBSCRIPTION_JSON, alerts: [ALERT], lastNotified: {} });
+  });
+
+  // GET /wavegrid builds its response from an explicit field list, which is exactly how the
+  // wave directions went missing: they were fetched, encoded and stored in KV, and then dropped
+  // on the way out because nobody added them here. The globe received a grid with no directions
+  // and drew no arrows — indistinguishable from every other reason for no arrows.
+  //
+  // So this asserts the *whole* shape the app reads, not just the field that broke. Adding a
+  // field to the stored grid without adding it to the wire now fails here.
+  describe('GET /wavegrid', () => {
+    const stored = () => ({
+      generatedAt: Date.now(), cells: gridCellCount(), coverage: 1,
+      data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+      dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(225))),
+    });
+
+    it('sends every field the app reads, directions included', async () => {
+      const env = makeEnv();
+      const grid = stored();
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(grid));
+      const res = await worker.fetch(new Request('https://worker.example/wavegrid'), env);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      // Named individually rather than as a snapshot: the point is that each one survives the
+      // trip, and a snapshot would be updated without anyone noticing which field moved.
+      expect(body.data).toBe(grid.data);
+      expect(body.dirs).toBe(grid.dirs);
+      expect(body.cells).toBe(grid.cells);
+      expect(body.generatedAt).toBe(grid.generatedAt);
+      expect(body.stale).toBe(false);
+      expect(body.coverage).toBe(1);
+    });
+
+    it('sends dirs as null rather than omitting it when a grid predates them', async () => {
+      // Such a grid is rebuilt rather than served (see waveGrid.js), so this is about the shape
+      // being stable: the app tests `typeof data.dirs === 'string'` and must not see undefined
+      // where it expected a key.
+      const env = makeEnv();
+      const res = await worker.fetch(new Request('https://worker.example/wavegrid'), env);
+      const body = await res.json();
+      // No grid could be built here (no upstream), so the diagnostics come back instead.
+      expect(body.grid).toBeNull();
+      expect(body.build).toBeTruthy();
+    });
   });
 
   it('POST /subscribe without a subscription is a 400, not a stored garbage entry', async () => {
