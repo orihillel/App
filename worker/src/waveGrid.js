@@ -224,6 +224,11 @@ function coverageOf(grid) {
 
 function isUsable(grid) {
   return !!grid && typeof grid.data === 'string'
+    // Directions are part of the grid now, and a cached entry from before they were fetched has
+    // heights only. Without this the app draws no arrows for up to six hours after a deploy,
+    // with nothing to say why — the cache is doing exactly what it was told, and the feature
+    // looks broken. An entry missing them is simply rebuilt.
+    && typeof grid.dirs === 'string'
     && grid.cells === gridCellCount()
     && coverageOf(grid) >= MIN_COVERAGE;
 }

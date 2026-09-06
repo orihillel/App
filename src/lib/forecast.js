@@ -275,23 +275,36 @@ function asList(payload, n) {
 
 export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize = NOW_BATCH_SIZE, now = new Date() } = {}) {
   const out = {};
+  // Every batch failing is a different thing from a few cells having no reading, and the only
+  // way to tell them apart from the outside is to say so. Reported alongside the results rather
+  // than thrown, because a partial answer is still worth drawing.
+  const failures = [];
   const usable = spotList.filter((s) => s && s.spot && Number.isFinite(s.spot.lat) && Number.isFinite(s.spot.lon));
   for (let start = 0; start < usable.length; start += batchSize) {
     const batch = usable.slice(start, start + batchSize);
     const spots = batch.map((b) => b.spot);
+    // No `timezone=auto`. A single-location request takes it happily, but it is not accepted
+    // alongside a list of coordinates — every spot would need its own zone — and one rejected
+    // parameter fails the whole batch, which is every marker on the globe at once. The Worker's
+    // own multi-location request omits it for the same reason. Times come back in UTC and the
+    // local hour is worked out below.
     const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + coords(spots, 'lat')
       + '&longitude=' + coords(spots, 'lon')
-      + '&current=' + MARINE_CURRENT + '&hourly=' + MARINE_HOURLY + '&timezone=auto&forecast_days=1';
+      + '&current=' + MARINE_CURRENT + '&hourly=' + MARINE_HOURLY + '&forecast_days=1';
     const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + coords(spots, 'lat')
       + '&longitude=' + coords(spots, 'lon')
-      + '&current=wind_speed_10m,wind_direction_10m&timezone=auto&forecast_days=1';
+      + '&current=wind_speed_10m,wind_direction_10m&forecast_days=1';
     let marine;
     let wind;
     try {
       const [mRes, wRes] = await Promise.all([fetchImpl(marineUrl), fetchImpl(windUrl)]);
-      if (!mRes.ok || !wRes.ok) continue; // a failed batch leaves those markers grey, not wrong
+      if (!mRes.ok || !wRes.ok) {
+        failures.push((mRes.ok ? wRes : mRes).status || 0);
+        continue; // a failed batch leaves those markers grey, not wrong
+      }
       [marine, wind] = await Promise.all([mRes.json(), wRes.json()]);
     } catch {
+      failures.push(0);
       continue;
     }
     const marineList = asList(marine, batch.length);
@@ -301,6 +314,7 @@ export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize 
       if (row) out[batch[i].id] = { hours: [row], now: true };
     }
   }
+  Object.defineProperty(out, 'failedBatches', { value: failures, enumerable: false });
   return out;
 }
 
@@ -338,7 +352,7 @@ function nowRow(spot, marine, wind, now) {
     dominant && dominant.deg != null ? dominant.deg : swellDeg,
     spot.offshoreDeg, tidePositionNow(marine, mc.time), spot,
   );
-  const hour = localHour(mc.time, now);
+  const hour = localHour(mc.time, spot.lon, now);
   return {
     t: hourLabel12(hour), hour, wave: Math.max(1, Math.round(waveFt) - 1) + '-' + (Math.round(waveFt) + 1),
     period, swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
@@ -364,12 +378,16 @@ function tidePositionNow(marine, currentTime) {
   return at == null ? null : (at - min) / (max - min);
 }
 
-// The spot's own local hour, from the timestamp Open-Meteo returns for it — the globe matches
-// rows by clock hour, and every spot is in a different timezone.
-function localHour(time, now) {
-  if (typeof time === 'string') {
-    const h = Number(time.slice(11, 13));
-    if (Number.isFinite(h)) return h;
-  }
-  return now.getHours();
+// The spot's own local hour.
+//
+// The batched request cannot ask for per-location timezones (see above), so the timestamps come
+// back in UTC and local time is the UTC hour offset by the spot's longitude — fifteen degrees to
+// the hour. That is the solar hour rather than the civil one, so it can be an hour off where a
+// country's legal timezone is skewed or on daylight saving. It is only used to label the row and
+// to match it against a clock hour on the globe; nothing is scored from it.
+function localHour(time, lon, now) {
+  const utc = typeof time === 'string' ? Number(time.slice(11, 13)) : NaN;
+  const base = Number.isFinite(utc) ? utc : now.getUTCHours();
+  const shift = Number.isFinite(lon) ? Math.round(lon / 15) : 0;
+  return ((base + shift) % 24 + 24) % 24;
 }

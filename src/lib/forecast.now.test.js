@@ -111,13 +111,40 @@ describe('fetchNowForSpots', () => {
     expect(out.spot0.weekly).toBeUndefined();
   });
 
-  it("takes each spot's own local hour from its own timestamp", async () => {
-    // Every spot is in a different timezone; matching rows by clock hour is how the globe
-    // reads them, so a single browser-local hour for all of them would be wrong nearly
-    // everywhere.
-    const { impl } = stubFetch((i) => location({ time: '2026-09-06T0' + i + ':00' }));
-    const out = await fetchNowForSpots(spotsNamed(4), { fetchImpl: impl });
-    expect([0, 1, 2, 3].map((i) => out['spot' + i].hours[0].hour)).toEqual([0, 1, 2, 3]);
+  it('never sends timezone=auto, which a multi-location request will not take', async () => {
+    // One rejected parameter fails the whole batch, and a batch is a hundred spots — every
+    // marker on the globe at once. The Worker's own multi-location request omits it too.
+    const { impl, urls } = stubFetch(() => location());
+    await fetchNowForSpots(spotsNamed(3), { fetchImpl: impl });
+    for (const url of urls) expect(url, url).not.toContain('timezone=');
+  });
+
+  it("puts each spot's row at its own local hour, from UTC and its longitude", async () => {
+    // Times come back in UTC because the batch cannot ask for per-location zones, so local time
+    // is the UTC hour shifted by longitude — the globe matches rows by clock hour, and a single
+    // browser-local hour for all of them would be wrong nearly everywhere.
+    const at = async (lon) => {
+      const { impl } = stubFetch(() => location({ time: '2026-09-06T12:00' }));
+      const out = await fetchNowForSpots([{ id: 's', spot: { ...SPOT, lon } }], { fetchImpl: impl });
+      return out.s.hours[0].hour;
+    };
+    expect(await at(0)).toBe(12);      // Greenwich
+    expect(await at(-120)).toBe(4);    // eight hours behind
+    expect(await at(150)).toBe(22);    // ten ahead
+    expect(await at(-180)).toBe(0);    // wraps rather than going negative
+  });
+
+  it('reports how many batches were refused, so a total outage is not read as calm seas', async () => {
+    const { impl } = stubFetch(() => location(), { fail: () => true });
+    const out = await fetchNowForSpots(spotsNamed(NOW_BATCH_SIZE + 5), { fetchImpl: impl });
+    expect(Object.keys(out)).toHaveLength(0);
+    expect(out.failedBatches.length).toBeGreaterThan(0);
+  });
+
+  it('reports nothing failed when nothing did', async () => {
+    const { impl } = stubFetch(() => location());
+    const out = await fetchNowForSpots(spotsNamed(3), { fetchImpl: impl });
+    expect(out.failedBatches).toEqual([]);
   });
 
   it('scores with the tide, from the day of sea levels it asks for alongside', async () => {

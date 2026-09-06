@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS } from '../src/waveGrid.js';
-import { gridCells, gridCellCount, base64ToBytes, decodeDirections, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
+import { gridCells, gridCellCount, base64ToBytes, decodeDirections, encodeHeights, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
 const NOW = Date.parse('2026-09-05T14:20:00Z');
@@ -211,9 +211,12 @@ describe('buildGrid', () => {
 });
 
 describe('loadGrid', () => {
+  // A complete grid carries directions as well as heights — see isUsable: an entry without them
+  // predates the arrows and is rebuilt rather than served.
   const good = {
     generatedAt: NOW, cells: gridCellCount(), coverage: 1,
     data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+    dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(225))),
   };
 
   it('builds and caches when there is nothing stored', async () => {
@@ -257,7 +260,7 @@ describe('loadGrid', () => {
   it('refuses a half-fetched grid, keeping the complete older one', async () => {
     const e = env();
     await e.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(good));
-    const half = { generatedAt: NOW, cells: gridCellCount(), coverage: 0.52, data: good.data };
+    const half = { generatedAt: NOW, cells: gridCellCount(), coverage: 0.52, data: good.data, dirs: good.dirs };
     const out = await loadGrid(e, { build: async () => half, now: NOW + REFRESH_MS + 1 });
     expect(out.grid.data).toBe(good.data);
     expect(out.grid.stale).toBe(true);
@@ -279,6 +282,7 @@ describe('loadGrid', () => {
     const mostlyLand = {
       generatedAt: NOW, cells: gridCellCount(), coverage: 1, oceanCells: 40,
       data: bytesToBase64(encodeHeights(gridCells().map((_, i) => (i % 10 === 0 ? 2 : null)))),
+      dirs: bytesToBase64(encodeDirections(gridCells().map((_, i) => (i % 10 === 0 ? 200 : null)))),
     };
     const out = await loadGrid(e, { build: async () => mostlyLand, now: NOW });
     expect(out.grid).not.toBeNull();
@@ -400,5 +404,44 @@ describe('wave direction', () => {
     const back = decodeDirections(base64ToBytes(grid.dirs));
     expect(back).toHaveLength(gridCellCount());
     for (const d of back) expect(Math.abs(d - 270)).toBeLessThan(1.5);
+  });
+});
+
+describe('a cached grid from before directions existed', () => {
+  it('is rebuilt rather than served, so the arrows are not missing for six hours', async () => {
+    // The cache is a six-hour one. An entry stored by the previous Worker has heights and no
+    // directions, and serving it means the app draws no arrows for six hours after a deploy
+    // with nothing to say why — the feature looks broken while the cache does its job.
+    const e = env();
+    await e.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify({
+      generatedAt: NOW - 60000, cells: gridCellCount(), coverage: 1,
+      data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+      // No `dirs` — that is the whole point of this fixture.
+    }));
+    let calls = 0;
+    const fetchImpl = async (url) => {
+      calls++;
+      const n = new URL(url).searchParams.get('latitude').split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(2, 180)));
+    };
+    const { grid } = await loadGrid(e, { ...INSTANT, fetchImpl, now: NOW });
+    expect(calls).toBeGreaterThan(0); // i.e. it went and fetched rather than serving the cache
+    expect(typeof grid.dirs).toBe('string');
+  });
+
+  it('still serves a complete grid that has them', async () => {
+    const e = env();
+    const fetchImpl = async (url) => {
+      const n = new URL(url).searchParams.get('latitude').split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(2, 180)));
+    };
+    const first = await loadGrid(e, { ...INSTANT, fetchImpl, now: NOW });
+    expect(first.build).not.toBeNull();
+    let calls = 0;
+    const second = await loadGrid(e, {
+      ...INSTANT, now: NOW + 1000, fetchImpl: async (...a) => { calls++; return fetchImpl(...a); },
+    });
+    expect(calls).toBe(0); // answered from the cache
+    expect(second.grid.dirs).toBe(first.grid.dirs);
   });
 });
