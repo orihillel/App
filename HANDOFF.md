@@ -1144,6 +1144,32 @@ there's intentionally one source of truth, not separate logic per view.
     from two storm centres, confirming the arrows fan outward from them, none appear on land,
     and the density holds from the whole globe down to a 2,000km view.
 
+- **Two faults behind "something's not right" after the arrows shipped.**
+  - **A six-hour cache serving a grid with no directions.** `isUsable` accepted a cached entry on
+    heights alone, so an entry written by the *previous* Worker was served for up to six hours
+    after the deploy — the app drew no arrows and had nothing to say about why, because the cache
+    was doing exactly what it was told. It now requires `dirs` too, and rebuilds without them.
+    (The test for this initially passed against a deliberately broken version: an earlier bulk
+    edit had added `dirs` into the very fixture that is supposed to lack it. Counting the fetches
+    made it real.)
+  - **`timezone=auto` on a multi-location request.** A single-location request takes it happily;
+    a list of coordinates does not, since each one would need its own zone — and one rejected
+    parameter fails the *whole batch*, which is a hundred spots, which is every marker on the
+    globe at once. The Worker's own multi-location request has always omitted it. Removed, and
+    the local hour is now the UTC hour offset by longitude (solar rather than civil, which is
+    only used to label a row and match it to a clock hour — nothing is scored from it).
+  - *And the silence around it:* `fetchNowForSpots` now reports which batches were refused, and
+    the app says so once — not on every refresh — when a whole pass comes back with nothing. Grey
+    markers alone do not distinguish an outage from a calm sea.
+  - *And the legend now separates the two causes of a chart with no arrows on it*, which look
+    identical on screen: a grid cached before directions were fetched at all ("no wave
+    directions in this grid yet") against one that carries them and produced none. The first
+    ages out on its own; the second is a fault. Saying which turns a round of guessing into a
+    glance — the same move that ended the swell overlay's seven-round saga.
+  - *Verified:* lint and tests both packages (**430 app + 128 worker**, 10 new), `check:spots`,
+    `check:classnames`, build. The `isUsable` change was confirmed to fail against the old
+    version once the fixture was fixed.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

@@ -101,6 +101,11 @@ export function waveLegendCaption(meta, units, now = Date.now()) {
   // feed is where they come *from* — so the legend says which one is drawn rather than leaving
   // a surfer to work it out from a map they have never seen before.
   if (meta && meta.arrows) parts.push('arrows show where the swell is heading');
+  // A chart with no arrows has two possible causes that look the same on screen: this grid was
+  // built before directions were fetched at all, or it has them and none came through. The
+  // first is a cache that will age out; the second is a fault. Saying which is a glance rather
+  // than a round of guessing.
+  else if (meta && meta.noDirections) parts.push('no wave directions in this grid yet');
   return parts.join(' · ');
 }
 

@@ -192,9 +192,17 @@ export default function App() {
   // open** against a free tier allowing 600 a minute and 10,000 a day. It was already over
   // budget at 348 spots; at 403 the app simply stopped being able to fetch, which is what a
   // rate limit looks like from the inside. See fetchNowForSpots for the arithmetic.
+  const backfillWarned = useRef(false);
   const loadBackfill = useCallback(async () => {
     const rest = ORDER.filter((id) => SPOTS[id] && id !== activeIdRef.current && id !== goToIdRef.current);
     const results = await fetchNowForSpots(rest.map((id) => ({ id, spot: SPOTS[id] })));
+    // Every batch refused and nothing to show for it is a different thing from a calm sea, and
+    // grey markers alone do not say which. Said once, not on every refresh — a rate limit that
+    // lasts an hour should not produce four toasts an hour.
+    if (!Object.keys(results).length && results.failedBatches.length && !backfillWarned.current) {
+      backfillWarned.current = true;
+      setToast('Could not load conditions for the other spots');
+    }
     setForecast((prev) => {
       const next = { ...prev };
       for (const [id, value] of Object.entries(results)) {
