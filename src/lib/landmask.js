@@ -13,6 +13,12 @@
 // The arcs alone cannot do this — an arc is a boundary, and filling needs to know which side is
 // land. That is what TopoJSON's `objects` carries, and why the published coastline now includes
 // it: a list of arc indices assembled into rings, 10KB gzipped against the arcs' 743KB.
+//
+// What comes out of here is coverage, not a picture: the fraction of each texel that is land.
+// The overlay's shader thresholds it, which is what makes the chart's edge as hard as the line
+// drawn beside it however far you zoom in — a mask baked into the chart's own alpha could only
+// ever be as sharp as its texels, and at the closest zoom one texel is a couple of hundred
+// screen pixels.
 import { decodeArc } from './coastline.js';
 
 // Rings, as [lat, lon], from a TopoJSON topology.
@@ -165,19 +171,17 @@ function reverse(pts) {
   return out;
 }
 
-// Cut the land out of whatever is already on the canvas.
+// Fill the land rings into whatever context is given.
 //
-// `destination-out` erases rather than paints, so the swell chart underneath survives only over
-// water — and it erases with the fill's own antialiasing, which is what gives the chart a soft
-// true-to-the-coast edge instead of a stepped one.
+// The caller owns the paint: the mask canvas fills them solid white, so the canvas's alpha
+// channel comes back as coverage — 0 at sea, 255 on land, and everything between along a
+// coastline, which is where the sharpness comes from. That fractional coverage says *where
+// inside the texel* the shore runs, and the shader recovers a hard edge from it.
 //
 // Each polygon is drawn up to three times, a map-width apart, so rings unwrapped past the edge
 // of the canvas still cover the pixels they wrapped around to. Only the copies that can reach
 // the canvas are built; for all but a handful of rings that is one of the three.
-export function punchLandMask(ctx, pixelPolygons, width) {
-  ctx.save();
-  ctx.globalCompositeOperation = 'destination-out';
-  ctx.fillStyle = '#000';
+export function fillLandRings(ctx, pixelPolygons, width) {
   for (const shift of [-width, 0, width]) {
     ctx.beginPath();
     let any = false;
@@ -193,5 +197,4 @@ export function punchLandMask(ctx, pixelPolygons, width) {
     }
     if (any) ctx.fill();
   }
-  ctx.restore();
 }

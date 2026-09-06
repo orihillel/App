@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { topologyToPolygons, polygonsToPixelRings, punchLandMask } from './landmask.js';
+import { topologyToPolygons, polygonsToPixelRings, fillLandRings } from './landmask.js';
 
 // An identity transform, so an arc's integer coordinates are read straight off as degrees:
 // decodeArc yields [lat, lon] from [x, y], so [3, 7] is longitude 3, latitude 7.
@@ -146,42 +146,28 @@ describe('polygonsToPixelRings', () => {
   });
 });
 
-// A context that records instead of painting: the drawing is a handful of calls whose order and
-// composite mode are the whole behaviour, and jsdom has no canvas to paint on anyway.
+// A context that records instead of painting: the drawing is a handful of calls whose order is
+// the whole behaviour, and jsdom has no canvas to paint on anyway.
 function fakeCtx() {
   const calls = [];
   return {
     calls,
-    globalCompositeOperation: 'source-over',
-    fillStyle: '',
-    save() { calls.push(['save', this.globalCompositeOperation]); },
-    restore() { calls.push(['restore']); },
     beginPath() { calls.push(['beginPath']); },
     moveTo(x, y) { calls.push(['moveTo', x, y]); },
     lineTo(x, y) { calls.push(['lineTo', x, y]); },
     closePath() { calls.push(['closePath']); },
-    fill() { calls.push(['fill', this.globalCompositeOperation]); },
+    fill() { calls.push(['fill']); },
   };
 }
 
-describe('punchLandMask', () => {
+describe('fillLandRings', () => {
   const rings = polygonsToPixelRings(
     topologyToPolygons(topo([SQUARE], [{ type: 'Polygon', arcs: [[0]] }])), 360, 180,
   );
 
-  it('erases rather than paints, and hands the canvas back as it found it', () => {
-    // The chart is already on the canvas; land has to be taken out of it. Painting over in the
-    // background colour would also cover the globe underneath.
-    const ctx = fakeCtx();
-    punchLandMask(ctx, rings, 360);
-    expect(ctx.calls.filter((c) => c[0] === 'fill').every((c) => c[1] === 'destination-out')).toBe(true);
-    expect(ctx.calls[0][0]).toBe('save');
-    expect(ctx.calls[ctx.calls.length - 1][0]).toBe('restore');
-  });
-
   it('draws a ring once when one copy covers it', () => {
     const ctx = fakeCtx();
-    punchLandMask(ctx, rings, 360);
+    fillLandRings(ctx, rings, 360);
     expect(ctx.calls.filter((c) => c[0] === 'moveTo')).toHaveLength(1);
     expect(ctx.calls.filter((c) => c[0] === 'fill')).toHaveLength(1);
   });
@@ -193,7 +179,7 @@ describe('punchLandMask', () => {
       topologyToPolygons(topo([CROSSING], [{ type: 'Polygon', arcs: [[0]] }])), 360, 180,
     );
     const ctx = fakeCtx();
-    punchLandMask(ctx, wrapped, 360);
+    fillLandRings(ctx, wrapped, 360);
     expect(ctx.calls.filter((c) => c[0] === 'moveTo')).toHaveLength(2);
     const xs = ctx.calls.filter((c) => c[0] === 'lineTo').map((c) => c[1]);
     expect(Math.min(...xs)).toBeLessThan(0); // the copy that reaches back onto the canvas
@@ -201,13 +187,25 @@ describe('punchLandMask', () => {
 
   it('closes every ring it starts', () => {
     const ctx = fakeCtx();
-    punchLandMask(ctx, rings, 360);
+    fillLandRings(ctx, rings, 360);
     expect(ctx.calls.filter((c) => c[0] === 'closePath')).toHaveLength(1);
   });
 
-  it('does nothing at all when there is no land to cut out', () => {
+  it('fills a polygon and its holes in one path, so the holes stay holes', () => {
+    // Two fills would paint the hole back in as land.
+    const hole = [[2, 2], [4, 0], [0, 4], [-4, 0], [0, -4]];
+    const withHole = polygonsToPixelRings(
+      topologyToPolygons(topo([SQUARE, hole], [{ type: 'Polygon', arcs: [[0], [1]] }])), 360, 180,
+    );
     const ctx = fakeCtx();
-    punchLandMask(ctx, [], 360);
+    fillLandRings(ctx, withHole, 360);
+    expect(ctx.calls.filter((c) => c[0] === 'moveTo')).toHaveLength(2);
+    expect(ctx.calls.filter((c) => c[0] === 'fill')).toHaveLength(1);
+  });
+
+  it('does nothing at all when there is no land to draw', () => {
+    const ctx = fakeCtx();
+    fillLandRings(ctx, [], 360);
     expect(ctx.calls.filter((c) => c[0] === 'fill')).toHaveLength(0);
   });
 });

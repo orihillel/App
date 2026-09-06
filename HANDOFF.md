@@ -949,23 +949,35 @@ there's intentionally one source of truth, not separate logic per view.
     `lib/landmask.js` assembles them, and the overlay erases land out of the chart with
     `destination-out`. Same file, same arcs, same vertices as the lines: the two cannot drift
     apart, because there is only one piece of geometry. Both layers share one fetch.
-  - *Two resolutions, because the chart is two things:* the swell field is interpolated from a
-    10-degree grid and has nothing finer to say than half a degree, so it is still painted at
-    720x360 and scaled up; its *edge* is a coastline, so the land is cut at 2048x1024.
+  - *Three concerns, three answers.* The swell field is interpolated from a 10-degree grid and
+    has nothing finer to say than half a degree, so it stays a 720x360 canvas. Where land *is*
+    comes from the coastline at 4096x2048, about 10km a texel. How **hard** the boundary looks
+    is not a resolution at all: the mask stores the *fraction* of each texel that is land, and
+    the overlay's fragment shader thresholds it at a half with a `fwidth` falloff, so the chart
+    ends within about one screen pixel at every zoom.
+  - **The first version cut the land out of the chart's canvas, and that was wrong.** It put the
+    right shape in the right place but made the edge exactly as soft as a texel is wide — at the
+    closest zoom, a couple of hundred device pixels of blur under a hairline coastline.
+    Reported as "the outline of the chart is the same... I wanted it to be sharp as the outline
+    of the coastline." Thresholding a coverage mask in the shader instead is what makes the edge
+    independent of the texture's resolution: the texture size now sets how *accurate* the
+    shoreline is, not how *sharp* it is. As a side effect the overlay costs 8MB of mask plus a
+    1MB chart rather than an 8MB baked RGBA one, at four times the linear resolution.
   - *`fillGridGaps`:* with the shore deciding where the chart stops, cells the model had no
     reading for have to be filled or the chart stops short of the coast in ragged patches — the
     same complaint in a new place. Two rounds, which is about two cells: enough to reach a coast,
     not enough to carry a Pacific swell height across a continent onto an inland sea. Gaps are
     filled **only** when there is a mask to stop them, since without one "no reading" is the only
     thing marking out land at all.
-  - *What it still cannot do:* a global texture at 2048 is ~20km a texel, which at the deepest
-    zoom is a soft edge a couple of hundred device pixels wide under a crisp line. No global
-    texture can beat that (`lib/coastline.js` makes the same argument about imagery), and soft
-    and in the right place beats hard and 1,100km wrong.
+  - *What it still cannot do:* the edge is sharp everywhere, but its *position* is a texel's
+    worth of accuracy — ~10km, which the antialiased coverage refines to under half that where
+    the coast is smooth. A bay narrower than that is not resolved. No global texture can hold
+    the 401m the lines are drawn to (`lib/coastline.js` makes the same argument about imagery).
   - *Verified:* lint, `check:classnames`, **356 app tests** (25 new), build; and rendered in a
     headless browser at the wide view and at three zooms on three coasts — Californian, Cape,
     Red Sea — with the chart traced around the Channel Islands, Hudson Bay, the Aegean and the
-    Gulf of Aqaba. Every new test was confirmed to fail against a deliberately broken version
+    Gulf of Aqaba, and, after the shader change, San Francisco Bay and False Bay cut to a hard
+    edge sitting on the drawn coastline at the closest zoom. Every new test was confirmed to fail against a deliberately broken version
     first; three that passed anyway (a wrap read past the end of a row, an antimeridian ring
     built from out-of-range longitudes) were rewritten until they caught it.
 
