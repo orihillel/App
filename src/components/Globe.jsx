@@ -5,9 +5,12 @@ import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
-import { base64ToBytes, decodeHeights, fillGridGaps, sampleGridSmooth } from '../lib/wavegrid.js';
+import {
+  base64ToBytes, decodeHeights, decodeDirections, fillGridGaps, sampleGridSmooth, sampleDirectionSmooth,
+} from '../lib/wavegrid.js';
+import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
-import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption } from '../lib/wavescale.js';
+import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
@@ -377,6 +380,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     let waveMaskTexture = null;
     let waveRequested = false;
 
+    // The arrows over the colour: which way each patch of swell is travelling.
+    //
+    // Instanced flat arrows lying tangent to the sphere, not marks painted into the texture —
+    // geometry stays sharp at every zoom, where a painted arrow would be a smear a few texels
+    // across. How many are drawn depends on the camera distance (see lib/swellarrows.js), so
+    // the on-screen density holds roughly steady instead of thinning to nothing as you close in.
+    const ARROW_SHELL = R * 1.0009; // above the overlay and the coastline, so it is never buried
+    const ARROW_FIELD = 6000;      // the cap; how many of them are drawn is a function of zoom
+    let arrowMesh = null;
+    let arrowPoints = null;
+    let arrowScaleAt = 0;
+
     function buildWaveTexture(heights) {
       const cv = document.createElement('canvas');
       cv.width = WAVE_TEX_W;
@@ -439,7 +454,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
       tex.needsUpdate = true;
-      return tex;
+      // The coverage array comes back too: the arrow field asks it whether a point is at sea,
+      // which is both exact and free, where a point-in-polygon test against four thousand rings
+      // would be neither.
+      return { texture: tex, mask, width, height };
     }
 
     // The chart's alpha, cut by the mask in the fragment shader instead of in the canvas.
@@ -464,6 +482,89 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       material.customProgramCacheKey = () => 'wave-overlay-land-mask';
     }
 
+    // A flat arrow in its own XY plane, pointing along +Y: a shaft and a head, six triangles.
+    function arrowGeometry() {
+      const geo = new THREE.BufferGeometry();
+      const v = new Float32Array([
+        -0.13, -0.85, 0, 0.13, -0.85, 0, 0.13, 0.12, 0, -0.13, 0.12, 0, // shaft
+        -0.46, 0.05, 0, 0.46, 0.05, 0, 0, 0.9, 0,                        // head
+      ]);
+      geo.setAttribute('position', new THREE.BufferAttribute(v, 3));
+      geo.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6]);
+      return geo;
+    }
+
+    // Is this point at sea, according to the same coverage mask the overlay is cut with?
+    function isWater(mask, width, height, lat, lon) {
+      if (!mask) return true;
+      const x = Math.min(width - 1, Math.max(0, Math.floor(((lon + 180) / 360) * width)));
+      const y = Math.min(height - 1, Math.max(0, Math.floor(((90 - lat) / 180) * height)));
+      return mask[y * width + x] < 128;
+    }
+
+    // The arrow field, built once: every point that is at sea and has a direction to show.
+    //
+    // Order is preserved from lib/swellarrows.js, whose sequence is arranged so that any prefix
+    // still covers the whole globe — that is what lets the draw count follow the zoom without
+    // rebuilding anything.
+    function buildArrowField(directions, land) {
+      const points = [];
+      for (const p of fibonacciSphere(ARROW_FIELD)) {
+        if (land && !isWater(land.mask, land.width, land.height, p.lat, p.lon)) continue;
+        const from = sampleDirectionSmooth(directions, p.lat, p.lon);
+        const bearing = swellTravelBearing(from);
+        if (bearing == null) continue;
+        points.push({ ...p, bearing });
+      }
+      return points;
+    }
+
+    // One instance matrix per arrow. Rebuilt only when the size changes, not every frame.
+    function layOutArrows(scale) {
+      const m = new THREE.Matrix4();
+      const x = new THREE.Vector3();
+      const y = new THREE.Vector3();
+      const z = new THREE.Vector3();
+      const pos = new THREE.Vector3();
+      for (let i = 0; i < arrowPoints.length; i++) {
+        const p = arrowPoints[i];
+        const { normal, forward, side } = orientationAt(p.lat, p.lon, p.bearing);
+        x.set(side[0], side[1], side[2]).multiplyScalar(scale);
+        y.set(forward[0], forward[1], forward[2]).multiplyScalar(scale);
+        z.set(normal[0], normal[1], normal[2]);
+        m.makeBasis(x, y, z);
+        pos.set(normal[0], normal[1], normal[2]).multiplyScalar(ARROW_SHELL);
+        m.setPosition(pos);
+        arrowMesh.setMatrixAt(i, m);
+      }
+      arrowMesh.instanceMatrix.needsUpdate = true;
+    }
+
+    // Arrows hold a roughly constant size on screen, so they stay legible zoomed out and do not
+    // become billboards zoomed in. Apparent size is world size over depth, so the world size
+    // tracks the depth.
+    function arrowScaleForDistance(distance) {
+      return 0.016 * Math.max(distance - R, 0.02) / (3 - R);
+    }
+
+    function updateArrows() {
+      if (!arrowMesh) return;
+      arrowMesh.visible = wavesOnRef.current;
+      if (!arrowMesh.visible) return;
+      // The camera's own half-FOV, so the count follows what is actually on screen rather than
+      // a hard-coded guess at it.
+      arrowMesh.count = Math.min(arrowPoints.length, arrowCountForDistance(state.distance, {
+        halfFovRad: (camera.fov * Math.PI) / 360,
+      }));
+      const scale = arrowScaleForDistance(state.distance);
+      // Only re-laid-out when the size has moved enough to see, rather than on every frame of
+      // an easing zoom: this is three thousand matrix builds.
+      if (Math.abs(scale - arrowScaleAt) > arrowScaleAt * 0.04) {
+        arrowScaleAt = scale;
+        layOutArrows(scale);
+      }
+    }
+
     function ensureWaveOverlay() {
       if (waveRequested || !wavesOnRef.current) return;
       waveRequested = true;
@@ -472,17 +573,19 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           if (cancelled) return;
           if (!grid || !grid.data) { setWaveMeta({ ok: false, build: grid && grid.build }); return; }
           const polygons = topo ? topologyToPolygons(topo) : [];
+          let land = null;
           if (polygons.length) {
             try {
-              waveMaskTexture = buildLandMaskTexture(polygons, LAND_MASK_W, LAND_MASK_H);
+              land = buildLandMaskTexture(polygons, LAND_MASK_W, LAND_MASK_H);
             } catch {
               // A device that cannot spare 34MB of canvas for a moment. Half the resolution is
               // a quarter of the memory and still a coastline.
               try {
-                waveMaskTexture = buildLandMaskTexture(polygons, LAND_MASK_W / 2, LAND_MASK_H / 2);
+                land = buildLandMaskTexture(polygons, LAND_MASK_W / 2, LAND_MASK_H / 2);
               } catch { /* no mask; the grid's own coarse edge is used below */ }
             }
           }
+          waveMaskTexture = land ? land.texture : null;
           const raw = decodeHeights(base64ToBytes(grid.data));
           // Gaps are only filled when there is a mask to stop the fill at the shore. Without
           // one, "no reading" is the only thing marking out land at all, and filling it would
@@ -501,8 +604,33 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
             material,
           );
           globeGroup.add(waveMesh);
+
+          // Directions are optional: a grid cached before the Worker started fetching them has
+          // heights and nothing else, and the colours are worth drawing on their own.
+          const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
+          arrowPoints = directions ? buildArrowField(directions, land) : [];
+          if (arrowPoints.length) {
+            arrowMesh = new THREE.InstancedMesh(
+              arrowGeometry(),
+              // Light, not dark. The colour ramp starts at a very dark navy — flat water is
+              // (26,35,68) — and a dark arrow is invisible on exactly the calm ocean that
+              // covers most of the map. A pale arrow reads against everything up to the top of
+              // the scale, where the ramp turns pale itself and 10m+ seas are vanishingly rare.
+              new THREE.MeshBasicMaterial({
+                color: 0xf4f7f6, transparent: true, opacity: 0.72, depthWrite: false,
+                side: THREE.DoubleSide,
+              }),
+              arrowPoints.length,
+            );
+            arrowMesh.renderOrder = 2; // over the overlay and the coastline, never under them
+            arrowMesh.frustumCulled = false;
+            arrowScaleAt = 0;
+            globeGroup.add(arrowMesh);
+          }
+
           setWaveMeta({
             ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
+            arrows: !!(arrowPoints && arrowPoints.length),
           });
           state.dataDirty = true;
         })
@@ -945,6 +1073,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       ensureCoastline();
       ensureWaveOverlay();
       if (waveMesh) waveMesh.visible = wavesOnRef.current;
+      updateArrows();
       if (coastlineMesh) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
         coastlineMat.opacity = o;
@@ -978,6 +1107,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       if (coastlineMesh) coastlineMesh.geometry.dispose();
       coastlineMat.dispose();
       if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
+      if (arrowMesh) { arrowMesh.geometry.dispose(); arrowMesh.material.dispose(); arrowMesh.dispose(); }
       if (waveTexture) waveTexture.dispose();
       if (waveMaskTexture) waveMaskTexture.dispose();
       renderer.dispose();

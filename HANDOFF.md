@@ -1068,6 +1068,82 @@ there's intentionally one source of truth, not separate logic per view.
     a headless run that opens the menu from the home header, reads `Build 139f71b · 2026-09-06`
     in its footer, and navigates to the globe through it.
 
+- **The app could not fetch: 809 requests on a single open, against a 600-a-minute limit.**
+  - *Reported:* "the app has trouble fetching the data", right after the catalog went to 403.
+  - **Measured, not guessed.** Counted in a real browser: **809 Open-Meteo requests on one app
+    open**, finishing in about twenty seconds. The free tier allows roughly 600 calls a minute,
+    5,000 an hour and 10,000 a day. The tail of the catalog was simply being answered with 429s.
+  - *The cause.* `fetchSpotForecast` was called for **every spot in the catalog** — two requests
+    each, seven days of hourly data, eleven marine variables — on open and again every ten
+    minutes. That is 806 requests a cycle, ~116,000 a day, and roughly three quarters of a
+    million values per pass. It was already over budget at 348 spots; 403 pushed the opening
+    burst past the per-minute limit on its own.
+  - *Almost all of it was thrown away.* Everything except the spot on screen exists to colour a
+    marker on the globe, and a marker needs one number: the score right now. Seven days of
+    hourly detail is 168 times more than that — the same shape of mistake as the wave grid
+    asking for 24 values a cell and using one.
+  - *The fix:* `fetchNowForSpots` — `current=` instead of `hourly=`, and Open-Meteo's
+    comma-separated multi-location form (the one `worker/src/waveGrid.js` already uses). The
+    whole catalog becomes **ten requests** rather than 806. The spot on screen still gets a full
+    forecast; the refresh is now the active spot plus one batched pass, every fifteen minutes
+    rather than ten (the model behind it runs four times a day). **809 -> 20 on open, ~116,000
+    -> ~1,200 a day.**
+  - *The tide term is kept*, by asking for one day of `sea_level_height_msl` alongside the
+    current reading — dropping it would have scored the globe by a different rule than the spot
+    page, which the app deliberately keeps as one.
+  - **Two bugs found on the way, one of them mine.**
+    - `loadingIds` was seeded with `new Set(ORDER)` — every spot marked "fetching" up front,
+      correct only while every spot got its own `loadSpotData` to clear it. With a batched
+      backfill nothing cleared them, so every spot but the first sat on FETCHING forever *and*
+      the on-screen guard then refused to fetch it. Caught by driving the real app, not by tests.
+    - Behind it, a pre-existing **infinite retry loop**: the on-screen effect depends on
+      `forecast` and `loadingIds`, both of which change when a fetch *fails*, so a spot that
+      could not load was refetched the instant the last attempt gave up — a request storm aimed
+      at an API that had just said no. It had been masked all along by that stuck flag. The
+      guard now includes `errorIds`, and the retry button is how it gets asked again.
+  - **A note for the next person measuring this:** the service worker caches
+    `marine-api.open-meteo.com` and `api.open-meteo.com`, and a request *it* makes does not pass
+    through Playwright's `page.route`. Half the stubs went missing and the app reported a
+    network failure that did not exist. Measure with `serviceWorkers: 'block'`.
+  - *Verified:* lint, `check:classnames`, `check:spots`, **390 app tests** (12 new), build, and a
+    browser run confirming 20 requests, every one of the 403 spots covered, the spot page
+    rendering a real rating, and every globe marker coloured.
+
+- **Wave direction on the globe: arrows over the swell overlay.**
+  - *Asked for:* "add to the live swell on the globe the wave direction, not only the heights, by
+    small arrows that points to the wave direction."
+  - *End to end.* The Worker now asks Open-Meteo for `wave_direction` in the same request as
+    `wave_height` — one more value a cell rather than a second pass over the grid, which matters
+    because the grid's whole design is that it fits inside one minute of the rate limit. It comes
+    back as a second byte a cell (`dirs`, 1.4 degrees a step), kept beside `data` rather than
+    interleaved so an older app build reading only heights is unaffected, and treated as optional
+    on the way in so a grid cached before this still draws its colours.
+  - *Interpolated as vectors, not as numbers.* `sampleDirectionSmooth` takes the circular mean:
+    averaging 350 and 10 degrees arithmetically gives due south, which is the classic way to get
+    a direction field wrong. Where contributing cells cancel outright it returns nothing rather
+    than an arrow pointing at the residue of two contradictory swells.
+  - *Drawn as instanced geometry*, not painted into the texture — an arrow in a 2048-wide
+    equirectangular map is a smear a few texels across, while geometry stays sharp at every zoom.
+    Arrows sit only on water, tested against the same coverage mask the overlay is cut with.
+  - **Two things the tests caught before the screen did.**
+    - The golden-spiral point field walks pole to pole in index order, so the "first N points"
+      level of detail would have put the first fifty arrows in the Arctic and emptied a
+      hemisphere on zooming out. Reordered by reversed index bits (van der Corput), every prefix
+      now covers the globe.
+    - The first density model scaled by the *visible hemisphere*, which is right only while the
+      whole globe is in frame. Zoomed to 1.4 it claims 14% of the sphere is on screen when the
+      truth is 0.7% — and the arrows came out twenty times too sparse, which the rendered
+      screenshot confirmed. It now solves the actual screen patch from the camera's own FOV.
+  - *And a limit kept deliberately:* the count stops growing at 6,000. The field behind these
+    arrows is a 10-degree grid, so at maximum zoom the screen sits inside two cells; a denser
+    lattice of near-identical arrows would look like fine-grained data and would not be. The
+    legend says which way they read — "arrows show where the swell is heading" — because every
+    marine feed reports the direction waves come *from* and an arrow on a map means travel.
+  - *Verified:* lint and tests both packages (**425 app + 126 worker**, 31 new), `check:spots`,
+    `check:classnames`, build, and rendered at three zooms against a synthetic field radiating
+    from two storm centres, confirming the arrows fan outward from them, none appear on land,
+    and the density holds from the whole globe down to a 2,000km view.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

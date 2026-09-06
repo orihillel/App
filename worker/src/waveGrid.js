@@ -13,7 +13,7 @@
 // So it is all gone. The grid is 406 points, which is 5 requests, which fits comfortably in one
 // response. It is built when it is asked for, and whatever happens comes back in the reply.
 import {
-  gridCells, gridCellCount, encodeHeights, bytesToBase64,
+  gridCells, gridCellCount, encodeHeights, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
 
 export const GRID_KEY = 'wavegrid:v1';
@@ -89,10 +89,15 @@ export async function fetchBatch(cells, opts = {}) {
 }
 
 async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() } = {}) {
+  // Height and direction together: the overlay draws the sea's colour from one and the arrows
+  // over it from the other, and asking for both in the same request costs one extra value a
+  // cell rather than a second pass over the grid.
   const url = MARINE_URL
     + '?latitude=' + cells.map((c) => c.lat.toFixed(2)).join(',')
     + '&longitude=' + cells.map((c) => c.lon.toFixed(2)).join(',')
-    + (mode === 'current' ? '&current=wave_height' : '&hourly=wave_height&forecast_days=1');
+    + (mode === 'current'
+      ? '&current=wave_height,wave_direction'
+      : '&hourly=wave_height,wave_direction&forecast_days=1');
   let payload;
   let status = null;
   try {
@@ -106,11 +111,11 @@ async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() }
         const body = await res.json();
         reason = (body && (body.reason || body.error)) || null;
       } catch { /* not JSON; the status alone will have to do */ }
-      return { values: cells.map(() => null), ok: false, status, error: reason };
+      return { values: cells.map(() => null), directions: cells.map(() => null), ok: false, status, error: reason };
     }
     payload = await res.json();
   } catch (e) {
-    return { values: cells.map(() => null), ok: false, status, error: String((e && e.message) || e) };
+    return { values: cells.map(() => null), directions: cells.map(() => null), ok: false, status, error: String((e && e.message) || e) };
   }
   // A multi-location request answers with an array; a single-location one answers with a bare
   // object. Accepting both means a one-cell batch cannot silently produce a grid of nulls.
@@ -120,26 +125,33 @@ async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() }
   // batch sitting entirely over Antarctica legitimately returns nothing but nulls, and judging
   // success by non-null values would mark it failed and retry it forever.
   let answered = 0;
-  const values = cells.map((_, i) => {
+  const num = (v) => (typeof v === 'number' && Number.isFinite(v) ? v : null);
+  const values = [];
+  const directions = [];
+  for (let i = 0; i < cells.length; i++) {
     const loc = list[i];
-    if (!loc) return null;
+    if (!loc) { values.push(null); directions.push(null); continue; }
     // Either shape is read, whichever the request asked for, so the fallback needs no separate
     // parser and a server that answers with both cannot confuse it.
     if (loc.current && 'wave_height' in loc.current) {
       answered++;
-      const v = loc.current.wave_height;
-      return typeof v === 'number' && Number.isFinite(v) ? v : null;
+      values.push(num(loc.current.wave_height));
+      directions.push(num(loc.current.wave_direction));
+      continue;
     }
     const hourly = loc.hourly;
-    if (!hourly || !Array.isArray(hourly.time) || !Array.isArray(hourly.wave_height)) return null;
+    if (!hourly || !Array.isArray(hourly.time) || !Array.isArray(hourly.wave_height)) {
+      values.push(null); directions.push(null); continue;
+    }
     answered++;
     let idx = hourly.time.findIndex((t) => typeof t === 'string' && t.startsWith(wanted));
     if (idx < 0) idx = 0; // clock skew, or a model run that starts later today
-    const v = hourly.wave_height[idx];
-    return typeof v === 'number' && Number.isFinite(v) ? v : null;
-  });
+    values.push(num(hourly.wave_height[idx]));
+    directions.push(Array.isArray(hourly.wave_direction) ? num(hourly.wave_direction[idx]) : null);
+  }
   return {
     values,
+    directions,
     ok: answered > 0,
     status,
     error: answered > 0 ? null : 'response carried no readable wave height',
@@ -151,6 +163,7 @@ export async function buildGrid(opts = {}) {
   const wait = opts.sleep || sleep;
   const cells = gridCells();
   const heights = new Array(cells.length).fill(null);
+  const directions = new Array(cells.length).fill(null);
   let batchesDone = 0;
   let batchesTotal = 0;
   let cellsQueried = 0;
@@ -161,7 +174,7 @@ export async function buildGrid(opts = {}) {
     batchesTotal++;
     if (batchesTotal > 1) await wait(opts.gapMs ?? BUILD_GAP_MS);
     const batch = cells.slice(start, start + BATCH_SIZE);
-    const { values, ok, status, error } = await fetchBatch(batch, opts);
+    const { values, directions: dirs, ok, status, error } = await fetchBatch(batch, opts);
     if (!ok) {
       // Only failures are recorded. Keeping the *last* status of any kind meant a later
       // successful batch overwrote the 429 that explained the gap — the diagnostic erasing
@@ -172,7 +185,10 @@ export async function buildGrid(opts = {}) {
     }
     batchesDone++;
     cellsQueried += batch.length;
-    for (let i = 0; i < batch.length; i++) heights[start + i] = values[i];
+    for (let i = 0; i < batch.length; i++) {
+      heights[start + i] = values[i];
+      directions[start + i] = dirs ? dirs[i] : null;
+    }
   }
 
   // Queried, not watery: a batch that answered covers its cells whatever those cells contained.
@@ -183,6 +199,9 @@ export async function buildGrid(opts = {}) {
     generatedAt: opts.now || Date.now(),
     cells: cells.length,
     data: bytesToBase64(encodeHeights(heights)),
+    // A second byte a cell, for the arrows drawn over the colour. Kept separate from `data`
+    // rather than interleaved so an older app build reading only `data` is unaffected.
+    dirs: bytesToBase64(encodeDirections(directions)),
     coverage: Math.round(queried * 1000) / 1000,
     // Kept for information only. It is never a gate, because land legitimately has no wave
     // height and treating that as missing data is the bug this replaced.

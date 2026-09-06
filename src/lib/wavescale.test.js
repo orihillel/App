@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   waveColor, waveScaleTicks, waveScaleUnitLabel, waveScaleGradient, gridAgeLabel,
-  waveLegendCaption, WAVE_SCALE_MAX,
+  waveLegendCaption, swellTravelBearing, WAVE_SCALE_MAX,
 } from './wavescale.js';
 
 describe('waveColor', () => {
@@ -134,5 +134,40 @@ describe('waveLegendCaption', () => {
   it('still reads as a sentence when the age is unknown or the meta is missing', () => {
     expect(waveLegendCaption({}, 'metric', now)).toBe('Open-ocean wave height (m) · age unknown');
     expect(waveLegendCaption(null, 'metric', now)).toBe('Open-ocean wave height (m) · age unknown');
+  });
+});
+
+describe('swellTravelBearing', () => {
+  it('turns "coming from" into "heading toward", which is how an arrow reads', () => {
+    // Every marine feed reports the bearing waves come *from*; an arrow on a map means travel.
+    expect(swellTravelBearing(0)).toBe(180);
+    expect(swellTravelBearing(270)).toBe(90);   // a westerly swell runs east
+    expect(swellTravelBearing(225)).toBe(45);   // a south-westerly runs north-east
+  });
+
+  it('stays on the compass rather than running past it', () => {
+    for (const d of [0, 90, 180, 270, 359.9, 360, 720, -90]) {
+      const got = swellTravelBearing(d);
+      expect(got, String(d)).toBeGreaterThanOrEqual(0);
+      expect(got, String(d)).toBeLessThan(360);
+    }
+  });
+
+  it('has nothing to say about a missing direction', () => {
+    for (const d of [null, undefined, NaN, 'south']) expect(swellTravelBearing(d)).toBeNull();
+  });
+});
+
+describe('waveLegendCaption with arrows', () => {
+  const now = Date.parse('2026-09-06T12:00:00Z');
+  const fresh = { generatedAt: now - 3600000 };
+
+  it('says which way the arrows read, because "direction" is ambiguous for waves', () => {
+    expect(waveLegendCaption({ ...fresh, arrows: true }, 'metric', now))
+      .toContain('arrows show where the swell is heading');
+  });
+
+  it('says nothing about arrows when there are none to explain', () => {
+    expect(waveLegendCaption(fresh, 'metric', now)).not.toContain('arrows');
   });
 });

@@ -234,3 +234,142 @@ export async function findOffshoreDirection(lat, lon) {
   const seaward = (alongBearing + 90) % 360;
   return Math.round((seaward + 180) % 360);
 }
+
+// One "right now" reading for many spots at once, in a handful of requests.
+//
+// This exists because of an arithmetic mistake with a very clear signature. The app used to
+// call fetchSpotForecast for *every spot in the catalog* — two requests each, seven days of
+// hourly data, eleven marine variables — on open and again every ten minutes. Measured in a
+// browser: **809 requests on a single app open**, against a free tier that allows 600 calls a
+// minute and 10,000 a day. It was over budget at 348 spots and hopeless at 403; the symptom is
+// the app failing to fetch anything, because the tail of the catalog is answered with 429s.
+//
+// Almost all of that data was thrown away. Everything except the spot on screen exists to
+// colour a marker on the globe, and a marker needs one number: the score right now. Seven days
+// of hourly detail per spot is 168 times more than that.
+//
+// So: `current=` instead of `hourly=`, and Open-Meteo's comma-separated multi-location form
+// (the same one worker/src/waveGrid.js uses) instead of one request per spot. 403 spots become
+// ten requests rather than 806, and a few thousand values rather than three quarters of a
+// million.
+export const NOW_BATCH_SIZE = 100;
+
+const MARINE_CURRENT = 'wave_height,wave_period,wave_direction,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature';
+
+// The tide *position* — where the sea sits between today's own low and high — cannot be read
+// from a single instant, so today's curve comes along for the ride. One extra variable at
+// daily resolution keeps the globe's colours scored by the same rule as the spot page, rather
+// than quietly dropping a term from one of them.
+const MARINE_HOURLY = 'sea_level_height_msl';
+
+function coords(list, key) {
+  return list.map((s) => s[key]).join(',');
+}
+
+// Open-Meteo answers a multi-location request with an array, and a single-location one with a
+// bare object. Accepting both means a one-spot batch cannot silently produce nothing.
+function asList(payload, n) {
+  const list = Array.isArray(payload) ? payload : [payload];
+  return list.length >= n ? list : new Array(n).fill(null);
+}
+
+export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize = NOW_BATCH_SIZE, now = new Date() } = {}) {
+  const out = {};
+  const usable = spotList.filter((s) => s && s.spot && Number.isFinite(s.spot.lat) && Number.isFinite(s.spot.lon));
+  for (let start = 0; start < usable.length; start += batchSize) {
+    const batch = usable.slice(start, start + batchSize);
+    const spots = batch.map((b) => b.spot);
+    const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + coords(spots, 'lat')
+      + '&longitude=' + coords(spots, 'lon')
+      + '&current=' + MARINE_CURRENT + '&hourly=' + MARINE_HOURLY + '&timezone=auto&forecast_days=1';
+    const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + coords(spots, 'lat')
+      + '&longitude=' + coords(spots, 'lon')
+      + '&current=wind_speed_10m,wind_direction_10m&timezone=auto&forecast_days=1';
+    let marine;
+    let wind;
+    try {
+      const [mRes, wRes] = await Promise.all([fetchImpl(marineUrl), fetchImpl(windUrl)]);
+      if (!mRes.ok || !wRes.ok) continue; // a failed batch leaves those markers grey, not wrong
+      [marine, wind] = await Promise.all([mRes.json(), wRes.json()]);
+    } catch {
+      continue;
+    }
+    const marineList = asList(marine, batch.length);
+    const windList = asList(wind, batch.length);
+    for (let i = 0; i < batch.length; i++) {
+      const row = nowRow(batch[i].spot, marineList[i], windList[i], now);
+      if (row) out[batch[i].id] = { hours: [row], now: true };
+    }
+  }
+  return out;
+}
+
+// One hour-shaped row, so the globe reads it with exactly the same code it reads a full
+// forecast with. Anything the spot page needs and this cannot supply is simply absent, and the
+// entry is marked `now` so the app knows not to let it stand in for a real forecast.
+function nowRow(spot, marine, wind, now) {
+  const mc = marine && marine.current;
+  const wc = wind && wind.current;
+  if (!mc || !wc) return null;
+  const waveM = mc.wave_height;
+  const windMs = wc.wind_speed_10m;
+  const windDeg = wc.wind_direction_10m;
+  if (waveM == null || windMs == null || windDeg == null) return null;
+
+  const waveFt = waveM * 3.28084;
+  const windMph = windMs * 0.621371;
+  const period = mc.swell_wave_period != null ? Math.round(mc.swell_wave_period)
+    : (mc.wave_period != null ? Math.round(mc.wave_period) : 0);
+  const swellDeg = mc.swell_wave_direction != null ? mc.swell_wave_direction
+    : (mc.wave_direction != null ? mc.wave_direction : 0);
+  const trains = swellTrains({
+    swellHeightFt: mc.swell_wave_height != null ? mc.swell_wave_height * 3.28084 : null,
+    swellPeriod: mc.swell_wave_period,
+    swellDeg: mc.swell_wave_direction,
+    windWaveHeightFt: mc.wind_wave_height != null ? mc.wind_wave_height * 3.28084 : null,
+    windWavePeriod: mc.wind_wave_period,
+    windWaveDeg: mc.wind_wave_direction,
+  });
+  const dominant = trains[0] || null;
+  const type = windType(windDeg, spot.offshoreDeg);
+  const score = conditionsScore(
+    waveFt, windMph, type,
+    dominant && dominant.period != null ? dominant.period : period,
+    dominant && dominant.deg != null ? dominant.deg : swellDeg,
+    spot.offshoreDeg, tidePositionNow(marine, mc.time), spot,
+  );
+  const hour = localHour(mc.time, now);
+  return {
+    t: hourLabel12(hour), hour, wave: Math.max(1, Math.round(waveFt) - 1) + '-' + (Math.round(waveFt) + 1),
+    period, swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
+    windDir: degToCompass(windDeg), windDeg, type, score, rating: scoreToRating(score), trains,
+  };
+}
+
+// Where the sea sits between today's own low and high, from the day of sea levels fetched
+// alongside — the same measure the spot page scores with.
+function tidePositionNow(marine, currentTime) {
+  const hourly = marine && marine.hourly;
+  const series = (hourly && hourly.sea_level_height_msl) || null;
+  if (!Array.isArray(series)) return null;
+  const values = series.filter((v) => v != null);
+  if (values.length < 2) return null;
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  if (!(max > min)) return null;
+  const times = (hourly.time || []);
+  let idx = typeof currentTime === 'string' ? times.findIndex((t) => t.slice(0, 13) === currentTime.slice(0, 13)) : -1;
+  if (idx < 0) idx = 0;
+  const at = series[idx];
+  return at == null ? null : (at - min) / (max - min);
+}
+
+// The spot's own local hour, from the timestamp Open-Meteo returns for it — the globe matches
+// rows by clock hour, and every spot is in a different timezone.
+function localHour(time, now) {
+  if (typeof time === 'string') {
+    const h = Number(time.slice(11, 13));
+    if (Number.isFinite(h)) return h;
+  }
+  return now.getHours();
+}

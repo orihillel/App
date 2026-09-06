@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
   gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps,
   encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth,
-  GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA,
+  encodeDirections, decodeDirections, sampleDirectionSmooth,
+  GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR,
 } from './wavegrid.js';
 
 describe('the grid itself', () => {
@@ -272,5 +273,92 @@ describe('fillGridGaps', () => {
   it('survives junk rather than throwing before the overlay is built', () => {
     for (const junk of [null, undefined, 'grid']) expect(() => fillGridGaps(junk)).not.toThrow();
     expect(fillGridGaps([])).toEqual([]);
+  });
+});
+
+describe('direction encoding', () => {
+  it('round-trips a bearing to within the step it stores', () => {
+    const degrees = [0, 45, 90, 180, 270, 359];
+    const back = decodeDirections(encodeDirections(degrees));
+    for (let i = 0; i < degrees.length; i++) {
+      expect(Math.abs(back[i] - degrees[i]), String(degrees[i])).toBeLessThan(1.5);
+    }
+  });
+
+  it('keeps "no reading" distinct from due north', () => {
+    // Both would be zero in a naive encoding, and a grid of land would come back pointing north.
+    const bytes = encodeDirections([null, 0, undefined, NaN]);
+    expect(Array.from(bytes)).toEqual([NO_DIR, 0, NO_DIR, NO_DIR]);
+    expect(decodeDirections(bytes)[0]).toBeNull();
+    expect(decodeDirections(bytes)[1]).toBe(0);
+  });
+
+  it('folds 360 back to 0 rather than into the reserved byte', () => {
+    expect(encodeDirections([360])[0]).toBe(0);
+    expect(encodeDirections([720])[0]).toBe(0);
+    expect(encodeDirections([-90])[0]).toBe(encodeDirections([270])[0]);
+  });
+
+  it('never emits the no-data byte for a real bearing', () => {
+    for (let d = 0; d < 360; d += 0.25) expect(encodeDirections([d])[0], String(d)).not.toBe(NO_DIR);
+  });
+});
+
+describe('sampleDirectionSmooth', () => {
+  const flat = (deg) => decodeDirections(encodeDirections(gridCells().map(() => deg)));
+
+  it('reproduces a uniform field', () => {
+    for (const deg of [0, 90, 200, 315]) {
+      const got = sampleDirectionSmooth(flat(deg), 20, -30);
+      expect(Math.abs(got - deg), String(deg)).toBeLessThan(1.5);
+    }
+  });
+
+  it('averages around the compass instead of straight through it', () => {
+    // The classic bug: 350 and 10 degrees are twenty degrees apart, and averaging the numbers
+    // gives due south. Two cells either side of north must interpolate to about north.
+    const cells = gridCells();
+    const rows = gridRows();
+    const wide = rows.reduce((a, b, i) => (b.count > rows[a].count ? i : a), 0);
+    const offset = rows.slice(0, wide).reduce((n, r) => n + r.count, 0);
+    const degrees = cells.map(() => null);
+    degrees[offset + 10] = 350;
+    degrees[offset + 11] = 10;
+    const row = rows[wide];
+    const lonBetween = -180 + (10 + 1) * row.step; // the boundary between the two cells
+    const got = sampleDirectionSmooth(decodeDirections(encodeDirections(degrees)), row.lat, lonBetween);
+    expect(got > 350 || got < 10, 'got ' + got).toBe(true);
+  });
+
+  it('does not let a land cell pull the arrow toward north', () => {
+    const cells = gridCells();
+    const degrees = cells.map((c, i) => (i % 2 === 0 ? null : 225));
+    const got = sampleDirectionSmooth(decodeDirections(encodeDirections(degrees)), 0, 0);
+    if (got !== null) expect(Math.abs(got - 225)).toBeLessThan(1.5);
+  });
+
+  it('returns nothing where two swells cancel, rather than an arrow made of the residue', () => {
+    const cells = gridCells();
+    const rows = gridRows();
+    const wide = rows.reduce((a, b, i) => (b.count > rows[a].count ? i : a), 0);
+    const offset = rows.slice(0, wide).reduce((n, r) => n + r.count, 0);
+    const degrees = cells.map(() => null);
+    degrees[offset + 10] = 0;
+    degrees[offset + 11] = 180;
+    const row = rows[wide];
+    const between = -180 + (10 + 1) * row.step;
+    expect(sampleDirectionSmooth(decodeDirections(encodeDirections(degrees)), row.lat, between)).toBeNull();
+  });
+
+  it('returns nothing where every contributing cell is land', () => {
+    expect(sampleDirectionSmooth(flat(null), 0, 0)).toBeNull();
+  });
+
+  it('survives junk rather than throwing mid-frame', () => {
+    for (const junk of [null, undefined, []]) {
+      expect(() => sampleDirectionSmooth(junk, 0, 0)).not.toThrow();
+      expect(sampleDirectionSmooth(junk, 0, 0)).toBeNull();
+    }
+    expect(sampleDirectionSmooth(flat(90), NaN, 0)).toBeNull();
   });
 });
