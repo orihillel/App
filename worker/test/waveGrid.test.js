@@ -429,6 +429,44 @@ describe('a cached grid from before directions existed', () => {
     expect(typeof grid.dirs).toBe('string');
   });
 
+  it('is still served when the rebuild fails, because heights beat a blank globe', async () => {
+    // Requiring directions everywhere was the first version of this, and it turned "no arrows"
+    // into "no map": with the rebuild unable to run — an unreachable upstream, or a rate-limit
+    // cooldown — the fallback rejected the perfectly good heights too and answered with
+    // nothing at all. The app has a legend line for a grid with no directions; it does not
+    // have one for a globe that went blank.
+    const e = env();
+    const noDirs = {
+      generatedAt: NOW - 60000, cells: gridCellCount(), coverage: 1,
+      data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+    };
+    await e.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(noDirs));
+    const fetchImpl = async () => { throw new Error('upstream unreachable'); };
+    const { grid, build } = await loadGrid(e, { ...INSTANT, fetchImpl, now: NOW });
+    expect(grid).not.toBeNull();
+    expect(grid.data).toBe(noDirs.data);
+    expect(grid.dirs).toBeUndefined();
+    expect(grid.stale).toBe(true);
+    expect(build.lastError).toContain('unreachable');
+  });
+
+  it('is still served during a cooldown, for the same reason', async () => {
+    const e = env();
+    await e.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify({
+      generatedAt: NOW - 60000, cells: gridCellCount(), coverage: 1,
+      data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+    }));
+    await e.SUBSCRIPTIONS.put(FAIL_KEY, JSON.stringify({ at: NOW - 1000, build: {} }));
+    let calls = 0;
+    const { grid, build } = await loadGrid(e, {
+      ...INSTANT, now: NOW, fetchImpl: async () => { calls++; throw new Error('should not be asked'); },
+    });
+    expect(calls).toBe(0);
+    expect(build.cooling).toBe(true);
+    expect(grid).not.toBeNull();
+    expect(grid.stale).toBe(true);
+  });
+
   it('still serves a complete grid that has them', async () => {
     const e = env();
     const fetchImpl = async (url) => {
