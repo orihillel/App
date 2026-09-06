@@ -916,6 +916,26 @@ there's intentionally one source of truth, not separate logic per view.
     fixed instant. The sibling cases step by whole hours and were never at risk.
   - *Verified:* lint (app + worker), **331 app + 117 worker tests** (5 new), build.
 
+- **Swell overlay: the gate could never pass. "Fetched 5 of 5 batches" and still no map.**
+  - *The fetch was fixed; the check was not.* With every batch succeeding and no error reported,
+    the grid was still rejected by `MIN_COVERAGE`. Coverage was measured as **non-null values**,
+    so every land cell counted as a failure. About an eighth of the grid is land even by the
+    coarse 110m coastline — measured at **54 of 406 cells** — and Open-Meteo's own mask is finer
+    still, returning nothing for enclosed seas, lakes and shallow coastal cells. A flawless build
+    scored ~0.85 against a 0.85 threshold. **The gate was unpassable however well the fetch
+    worked.**
+  - *Coverage now means what it always should have:* how much of the grid was successfully
+    **queried**, from batches answered. Land is data, not absence. A separate `oceanCells` keeps
+    the watery count for information and is never a gate.
+  - *`coverageOf` no longer infers from the bytes* for an entry lacking the field — the bytes
+    cannot tell land from a batch that never answered, and guessing at that distinction is the
+    whole bug. Such an entry is simply rebuilt once.
+  - **The tests passed before the fix, which is why this shipped.** Two new ones close that: a
+    build where two thirds of the world is land must still report full coverage and be stored,
+    and coverage must fall *only* when a batch genuinely fails. Both were confirmed to fail
+    against the old measure before being kept.
+  - *Verified:* lint (app + worker), **331 app + 120 worker tests** (3 new), build.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

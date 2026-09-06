@@ -13,7 +13,7 @@
 // So it is all gone. The grid is 406 points, which is 5 requests, which fits comfortably in one
 // response. It is built when it is asked for, and whatever happens comes back in the reply.
 import {
-  gridCells, gridCellCount, encodeHeights, bytesToBase64, base64ToBytes, NO_DATA,
+  gridCells, gridCellCount, encodeHeights, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
 
 export const GRID_KEY = 'wavegrid:v1';
@@ -30,8 +30,16 @@ export const BATCH_SIZE = 100;
 // same instant.
 export const BUILD_GAP_MS = 300;
 
-// A build that reached less than this much of the grid is not a map. Half a world of data reads
+// A build that queried less than this much of the grid is not a map. Half a world of data reads
 // as "the rest of the ocean is flat", which is worse than showing no overlay at all.
+//
+// Coverage means *how much of the grid was successfully queried*, which is not the same as how
+// many cells held water. Measuring non-null values instead — the first version — counted every
+// land cell as a failure, and roughly an eighth of the grid is land even by a coarse coastline
+// (finer than that, Open-Meteo also returns nothing for enclosed seas, lakes and shallow
+// coastal cells). A flawless build scored about 0.85 against a threshold of 0.85, so the gate
+// was unpassable however well the fetch worked. The app said so exactly: "Fetched 5 of 5
+// batches" with no error, and no map.
 export const MIN_COVERAGE = 0.85;
 
 // After a failed build, stop trying for a while.
@@ -145,6 +153,7 @@ export async function buildGrid(opts = {}) {
   const heights = new Array(cells.length).fill(null);
   let batchesDone = 0;
   let batchesTotal = 0;
+  let cellsQueried = 0;
   let lastStatus = null;
   let lastError = null;
 
@@ -162,16 +171,22 @@ export async function buildGrid(opts = {}) {
       continue;
     }
     batchesDone++;
+    cellsQueried += batch.length;
     for (let i = 0; i < batch.length; i++) heights[start + i] = values[i];
   }
 
-  let got = 0;
-  for (const v of heights) if (v != null) got++;
+  // Queried, not watery: a batch that answered covers its cells whatever those cells contained.
+  const queried = batchesTotal > 0 ? cellsQueried / cells.length : 0;
+  let withData = 0;
+  for (const v of heights) if (v != null) withData++;
   return {
     generatedAt: opts.now || Date.now(),
     cells: cells.length,
     data: bytesToBase64(encodeHeights(heights)),
-    coverage: Math.round((got / cells.length) * 1000) / 1000,
+    coverage: Math.round(queried * 1000) / 1000,
+    // Kept for information only. It is never a gate, because land legitimately has no wave
+    // height and treating that as missing data is the bug this replaced.
+    oceanCells: withData,
     batchesDone,
     batchesTotal,
     lastStatus,
@@ -179,20 +194,13 @@ export async function buildGrid(opts = {}) {
   };
 }
 
-// Coverage as recorded by the build, or measured from the bytes for a grid stored before that
-// field existed — so an older cache entry is judged on the same terms as a new one.
+// Coverage as recorded by the build.
+//
+// It is deliberately not inferred from the bytes for an entry that lacks the field: the bytes
+// cannot tell land from a batch that never answered, and guessing at that distinction is what
+// made the gate unpassable. An entry without a recorded coverage is simply rebuilt once.
 function coverageOf(grid) {
-  if (!grid || typeof grid.data !== 'string') return 0;
-  if (typeof grid.coverage === 'number') return grid.coverage;
-  try {
-    const bytes = base64ToBytes(grid.data);
-    if (!bytes.length) return 0;
-    let got = 0;
-    for (let i = 0; i < bytes.length; i++) if (bytes[i] !== NO_DATA) got++;
-    return got / bytes.length;
-  } catch {
-    return 0;
-  }
+  return grid && typeof grid.coverage === 'number' ? grid.coverage : 0;
 }
 
 function isUsable(grid) {
