@@ -1,0 +1,118 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+  <style>
+    body { margin: 0; background: #070F18; color: #F4F7F6; font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #39E6C4; } a:hover { color: #2FA98C; }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .grot { font-family: 'Space Grotesk', system-ui, sans-serif; }
+    .tap { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; background: none; border: none; padding: 0; color: inherit; }
+  </style>
+</helmet>
+
+<div style="width: 390px; height: 844px; display: flex; flex-direction: column; overflow: hidden; background: #070F18;">
+  <div style="height: 44px; flex-shrink: 0;"></div>
+
+  <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 10px 4px 20px;">
+    <span class="grot" style="font-size: 24px; font-weight: 700;">All spots</span>
+    <div class="tap"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg></div>
+  </div>
+
+  <!-- search, so you don't have to find a coastline by eye -->
+  <div style="margin: 6px 20px 0; display: flex; align-items: center; gap: 10px; min-height: 44px; background: #0F2136; border: 1px solid rgba(244,247,246,0.14); border-radius: 10px; padding: 0 13px;">
+    <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg>
+    <span style="font-size: 14.5px; color: rgba(244,247,246,0.58);">Find a spot or a coast…</span>
+  </div>
+
+  <div style="font-size: 13px; color: rgba(244,247,246,0.58); padding: 10px 20px 0; line-height: 1.4;">Drag to rotate · pinch to zoom · tap a cluster to open it up</div>
+
+  <!-- globe -->
+  <div style="flex: 1; display: flex; align-items: center; justify-content: center; overflow: hidden;">
+    <svg width="360" height="360" viewBox="0 0 360 360">
+      <defs>
+        <radialGradient id="ocean" cx="38%" cy="30%" r="78%">
+          <stop offset="0%" stop-color="#2E6F86"/>
+          <stop offset="62%" stop-color="#1E4F66"/>
+          <stop offset="100%" stop-color="#0C2233"/>
+        </radialGradient>
+        <radialGradient id="halo" cx="50%" cy="50%" r="50%">
+          <stop offset="72%" stop-color="rgba(57,230,196,0)"/>
+          <stop offset="100%" stop-color="rgba(57,230,196,0.14)"/>
+        </radialGradient>
+      </defs>
+      <circle cx="180" cy="180" r="164" fill="url(#halo)"/>
+      <circle cx="180" cy="180" r="150" fill="url(#ocean)"/>
+      <!-- graticule -->
+      <g stroke="rgba(244,247,246,0.10)" stroke-width="1" fill="none">
+        <ellipse cx="180" cy="180" rx="150" ry="52"/>
+        <ellipse cx="180" cy="180" rx="150" ry="108"/>
+        <ellipse cx="180" cy="180" rx="52" ry="150"/>
+        <ellipse cx="180" cy="180" rx="108" ry="150"/>
+      </g>
+      <!-- simplified americas landmass -->
+      <g fill="#8FA98A" opacity="0.9">
+        <path d="M96 62 C124 52 168 56 196 72 C214 84 208 104 190 112 C176 118 168 132 176 146 C186 162 174 178 156 182 C142 186 138 200 146 214 C154 230 144 246 130 250 C118 254 112 268 116 282 C104 268 92 246 86 220 C78 186 78 140 86 106 C90 88 90 72 96 62 Z"/>
+        <path d="M244 148 C266 142 288 152 296 170 C304 190 294 214 280 226 C266 238 258 258 262 276 C250 266 238 246 234 224 C228 196 232 166 244 148 Z"/>
+      </g>
+      <!-- clusters: one bubble per dense coastal group, with a count -->
+      <g class="mono">
+        <circle cx="102" cy="120" r="17" fill="#0F2136" stroke="#2FA98C" stroke-width="2"/>
+        <text x="102" y="125" text-anchor="middle" font-size="12" font-weight="700" fill="#F4F7F6">24</text>
+
+        <circle cx="128" cy="196" r="20" fill="#0F2136" stroke="#39E6C4" stroke-width="2"/>
+        <text x="128" y="201" text-anchor="middle" font-size="13" font-weight="700" fill="#F4F7F6">61</text>
+
+        <circle cx="150" cy="262" r="15" fill="#0F2136" stroke="#FFC24B" stroke-width="2"/>
+        <text x="150" y="267" text-anchor="middle" font-size="11" font-weight="700" fill="#F4F7F6">12</text>
+
+        <circle cx="268" cy="214" r="16" fill="#0F2136" stroke="#2FA98C" stroke-width="2"/>
+        <text x="268" y="219" text-anchor="middle" font-size="11" font-weight="700" fill="#F4F7F6">18</text>
+
+        <circle cx="292" cy="128" r="14" fill="#0F2136" stroke="#E1573F" stroke-width="2"/>
+        <text x="292" y="133" text-anchor="middle" font-size="11" font-weight="700" fill="#F4F7F6">9</text>
+      </g>
+      <!-- sparse areas keep individual markers, coloured by conditions -->
+      <g>
+        <circle cx="66" cy="176" r="6.5" fill="#39E6C4" stroke="#070F18" stroke-width="1.5"/>
+        <circle cx="212" cy="286" r="6.5" fill="#FFC24B" stroke="#070F18" stroke-width="1.5"/>
+        <circle cx="248" cy="88" r="6.5" fill="#2FA98C" stroke="#070F18" stroke-width="1.5"/>
+        <circle cx="88" cy="252" r="6.5" fill="#E1573F" stroke="#070F18" stroke-width="1.5"/>
+      </g>
+    </svg>
+  </div>
+
+  <!-- legend: says what the colour means AND when it means nothing -->
+  <div style="padding: 0 20px 4px;">
+    <div style="display: flex; align-items: center; justify-content: center; min-height: 44px; background: #0F2136; border: 1px solid rgba(244,247,246,0.14); border-radius: 10px; font-size: 14.5px; font-weight: 500;">Show live swell</div>
+    <div style="display: flex; height: 5px; border-radius: 3px; overflow: hidden; margin-top: 12px;">
+      <div style="flex: 1; background: #E1573F;"></div>
+      <div style="flex: 1; background: #FFC24B;"></div>
+      <div style="flex: 1; background: #2FA98C;"></div>
+      <div style="flex: 1; background: #39E6C4;"></div>
+    </div>
+    <div style="display: flex; justify-content: space-between; margin-top: 6px;">
+      <span class="mono" style="font-size: 11.5px; color: rgba(244,247,246,0.58);">POOR</span>
+      <span class="mono" style="font-size: 11.5px; color: rgba(244,247,246,0.58);">FAIR</span>
+      <span class="mono" style="font-size: 11.5px; color: rgba(244,247,246,0.58);">GOOD</span>
+      <span class="mono" style="font-size: 11.5px; color: rgba(244,247,246,0.58);">FIRING</span>
+    </div>
+    <div style="font-size: 12.5px; color: rgba(244,247,246,0.58); text-align: center; margin-top: 8px; line-height: 1.4;">Colour = conditions now, for 124 of 403 spots. Grey markers have no reading yet.</div>
+  </div>
+
+  <div style="flex-shrink: 0; display: flex; justify-content: space-around; align-items: center; padding: 8px 16px 18px; border-top: 1px solid rgba(244,247,246,0.14); margin-top: 10px;">
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/></svg></div>
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FF6A47" stroke-width="2" stroke-linejoin="round"><path d="M9 4L3 6.5v13L9 17l6 3 6-2.5v-13L15 7z"/><path d="M9 4v13M15 7v13"/></svg></div>
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 6-3 7-3 7h18s-3-1-3-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg></div>
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg></div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

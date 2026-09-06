@@ -8,3 +8,8 @@ dist-ssr
 .wrangler
 .dev.vars
 .dev.vars.*
+
+# Seeded design-canvas output: ~2.5MB of generated editor payload, rebuilt by the
+# design skill from the .dc.html sources beside it. The sources are the thing worth keeping.
+.design/*.html
+!.design/*.dc.html

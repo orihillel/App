@@ -1,0 +1,19 @@
+{
+  "artboards": [
+    { "file": "Before.dc.html",    "x": 0,    "y": 0,    "w": 390, "h": 844, "title": "Today — for comparison" },
+    { "file": "Main.dc.html",      "x": 470,  "y": 0,    "w": 390, "h": 844, "title": "Home — fixed" },
+    { "file": "Loading.dc.html",   "x": 940,  "y": 0,    "w": 390, "h": 844, "title": "Loading — honest" },
+    { "file": "Failed.dc.html",    "x": 1410, "y": 0,    "w": 390, "h": 844, "title": "No forecast — honest" },
+    { "file": "Profile.dc.html",   "x": 0,    "y": 1120, "w": 390, "h": 844, "title": "Profile — fixed" },
+    { "file": "GlobeView.dc.html", "x": 470,  "y": 1120, "w": 390, "h": 844, "title": "Globe — fixed" }
+  ],
+  "annotations": [
+    { "id": "n-before", "x": 0, "y": -168, "w": 390, "text": "TODAY\nThe app draws a picture of a phone inside the phone: beige margin, bezel, and a painted 9:41 status bar above the device's real one. 28% of a desktop window.\n\nAnd it shows 3-5ft / 12s SW / 5mph E while saying the data didn't load. Those numbers are PLACEHOLDER_HOURS[1] from placeholders.js." },
+    { "id": "n-main", "x": 470, "y": -168, "w": 390, "text": "HOME — FIXED\nFull bleed: no frame, no bezel, no painted status bar. That space belongs to the real one.\n\nType scale up: body 12.5 to 15px, labels 10 to 12px, hour labels 9 to 12px, spot name 22 to 26px.\n\nEvery target at least 44x44 — the icons stay the same size, the hit area grows around them. Hour chips 48x64. Bottom nav pinned so it can't scroll away." },
+    { "id": "n-loading", "x": 940, "y": -168, "w": 390, "text": "LOADING — HONEST\nNo invented numbers anywhere. Skeleton bars where values will land, so the layout doesn't jump when they arrive.\n\nCHECKING rather than LOADING, and the badge is the only state on screen — never a loading badge and a failure message at once.\n\nThe spot blurb stays: it's real, and it's true whether or not the forecast loaded." },
+    { "id": "n-failed", "x": 1410, "y": -168, "w": 390, "text": "NO FORECAST — HONEST\nThe most important screen in the set. One coherent state, and not one fabricated figure.\n\nThe last real reading is kept, but quarantined: dashed border, dimmed, LAST KNOWN in amber, and an unmissable age — '4h 20m ago', not a bare timestamp. Charts say 'no data yet' instead of drawing a sine wave.\n\nA surfer can act on this. They cannot act safely on invented numbers that look identical to real ones." },
+    { "id": "n-profile", "x": 0, "y": 940, "w": 390, "text": "PROFILE — FIXED\nThe go-to picker was a horizontal strip of all 403 catalog spots with no search. Now: a search field, then your own spots as rows.\n\nEvery section heading shares one left edge. YOUR SESSIONS sat 24px further right than the rest because its container added its own padding inside an already-padded parent." },
+    { "id": "n-globe", "x": 470, "y": 940, "w": 390, "text": "GLOBE — FIXED\nDense coastlines collapse into one tappable cluster with a count; sparse areas keep individual markers. No more overlapping blobs you can't hit.\n\nThe legend now says how much it actually knows — 'colour = conditions now, for 124 of 403 spots; grey markers have no reading yet' — instead of promising a colour coding that isn't there.\n\nPlus search, so finding a spot doesn't mean recognising a coastline by eye." }
+  ],
+  "launch": { "view": "canvas" }
+}
