@@ -165,3 +165,57 @@ export function sampleGridSmooth(heights, lat, lon) {
   // Every contributing cell was land: nothing to draw here.
   return weight > 0 ? total / weight : null;
 }
+
+// Every cell that has no reading, filled from the cells around it.
+//
+// This exists because of where the overlay's edge comes from. It used to come from this grid:
+// no reading meant land, and land meant draw nothing. Now the edge is cut from the real
+// coastline, which sits wherever it sits — often a long way inside the cell that answered for
+// it, since a cell here is about 1,100km across. Without filling, a bay or a whole coastal
+// strip that the model has no cell centre in would be inside the coastline and still have
+// nothing to paint, and the chart would stop short of the shore in ragged patches — the same
+// complaint in a new place.
+//
+// Two rounds, deliberately. Land is hidden by the mask, so the only cells that need a value are
+// the ones a coastal *texel* interpolates from, and those are at most a cell or two from open
+// water. Spreading further would carry a swell height across a continent and paint it on an
+// inland sea, which is a claim about the world rather than a way of reaching the coast.
+export function fillGridGaps(heights, rounds = 2) {
+  if (!Array.isArray(heights)) return heights;
+  const rows = gridRows();
+  const offsets = [];
+  let acc = 0;
+  for (const row of rows) { offsets.push(acc); acc += row.count; }
+  let current = heights.slice();
+
+  for (let pass = 0; pass < rounds; pass++) {
+    const next = current.slice();
+    let filled = 0;
+    for (let ri = 0; ri < rows.length; ri++) {
+      const row = rows[ri];
+      for (let i = 0; i < row.count; i++) {
+        const index = offsets[ri] + i;
+        if (current[index] != null) continue;
+        let total = 0;
+        let n = 0;
+        const take = (v) => { if (v != null && Number.isFinite(v)) { total += v; n++; } };
+        // East and west, wrapping: a row is a circle, not a line.
+        take(current[offsets[ri] + ((i - 1 + row.count) % row.count)]);
+        take(current[offsets[ri] + ((i + 1) % row.count)]);
+        // North and south. Rows hold different numbers of cells, so the neighbour is whichever
+        // cell of the next row this longitude falls in rather than the one at the same index.
+        const lon = -180 + (i + 0.5) * row.step;
+        for (const rj of [ri - 1, ri + 1]) {
+          if (rj < 0 || rj >= rows.length) continue;
+          const other = rows[rj];
+          const wrapped = ((lon + 180) % 360 + 360) % 360;
+          take(current[offsets[rj] + Math.min(other.count - 1, Math.floor(wrapped / other.step))]);
+        }
+        if (n > 0) { next[index] = total / n; filled++; }
+      }
+    }
+    current = next;
+    if (!filled) break; // nothing left that borders a reading
+  }
+  return current;
+}

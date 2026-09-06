@@ -12,18 +12,28 @@
 //     read when zoomed in, where 110m's ~10km precision would be tens of pixels of error, so
 //     here detail is what matters and 80x more points is the point.
 //
-// Output shape is TopoJSON's own `{transform, arcs}` and nothing else. TopoJSON stores every
-// boundary exactly once as an "arc" and assembles polygons by reference; since the globe draws
-// lines rather than filling land, the arcs *are* the drawing. Taking them directly skips the
-// polygon assembly and avoids the duplicated shared edges assembly would produce, and keeps
-// the file in its native delta-encoded integer form, which is what makes it compress well.
+// Output shape is TopoJSON's own `{transform, arcs, objects}`. TopoJSON stores every boundary
+// exactly once as an "arc" and assembles polygons by reference; since the globe draws lines
+// rather than filling land, the arcs *are* the drawing, and taking them directly avoids the
+// duplicated shared edges that polygon assembly would produce. The file stays in its native
+// delta-encoded integer form, which is what makes it compress well.
+//
+// `objects` is carried too, and costs almost nothing: it is a list of arc *indices*, 35KB raw
+// and under 10KB gzipped against the arcs' 743KB. It is what lets the wave overlay fill land
+// rather than only trace it — the mask that hides the swell chart under the continents is
+// rasterized from these same rings, so its edge is the same geometry as the drawn coastline
+// rather than an independent approximation that would disagree with it.
 import { writeFileSync, statSync } from 'node:fs';
 import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import landTopo from 'world-atlas/land-10m.json' with { type: 'json' };
 
 const outPath = fileURLToPath(new URL('../public/coastline-10m.json', import.meta.url));
-const json = JSON.stringify({ transform: landTopo.transform, arcs: landTopo.arcs });
+const json = JSON.stringify({
+  transform: landTopo.transform,
+  arcs: landTopo.arcs,
+  objects: landTopo.objects,
+});
 writeFileSync(outPath, json);
 
 let points = 0;

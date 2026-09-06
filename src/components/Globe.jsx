@@ -5,7 +5,8 @@ import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
-import { base64ToBytes, decodeHeights, sampleGridSmooth } from '../lib/wavegrid.js';
+import { base64ToBytes, decodeHeights, fillGridGaps, sampleGridSmooth } from '../lib/wavegrid.js';
+import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveScaleUnitLabel, gridAgeLabel } from '../lib/wavescale.js';
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
@@ -322,17 +323,50 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     let coastlineMesh = null;
     let coastlineRequested = false;
 
+    // The coastline file, fetched at most once however many layers want it.
+    //
+    // Two do now: the lines, and the mask that cuts the wave overlay to the shore. Sharing one
+    // promise means turning the overlay on while zoomed in costs 753KB rather than twice that,
+    // and — the part that matters — the chart's edge and the drawn coastline can never be
+    // assembled from different data.
+    let coastlinePromise = null;
+    function loadCoastlineTopology() {
+      if (!coastlinePromise) {
+        const base = (import.meta.env && import.meta.env.BASE_URL) || '/';
+        coastlinePromise = fetch(base.replace(/\/$/, '') + '/coastline-10m.json')
+          .then((r) => (r.ok ? r.json() : null))
+          // Offline, or the asset missing: every layer that wants it degrades rather than
+          // fails, so there is nothing to report and nothing to retry.
+          .catch(() => null);
+      }
+      return coastlinePromise;
+    }
+
     // Live wave-height overlay: the ocean painted by how big the sea is right now.
     //
     // Built as an equirectangular canvas and wrapped on a sphere just above the surface, rather
     // than blended into the ocean material, so it can be toggled without rebuilding anything
-    // and so land stays untouched -- cells with no data are left fully transparent, which is
-    // also exactly what makes the continents show through.
+    // and so land stays untouched.
+    //
+    // Three separate concerns, and they want three different resolutions:
+    //
+    //   - the swell field is interpolated from a 10-degree grid and has nothing finer to say
+    //     than half a degree, so it is painted at 720x360 and left to filter smoothly;
+    //   - where land *is* comes from the coastline, at 4096x2048 — about 10km a texel;
+    //   - how hard the boundary between them looks is not a resolution at all. The mask holds
+    //     the *fraction* of each texel that is land, and the shader thresholds it at a half
+    //     with a screen-space-width falloff, so the chart ends in about one screen pixel at
+    //     every zoom. Baking the mask into the chart's alpha instead — the obvious way, and the
+    //     first way this was written — makes the edge exactly as soft as a texel is wide, which
+    //     at the closest zoom is a couple of hundred device pixels of blur.
     const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
-    const WAVE_TEX_W = 720;        // half a degree per texel: smooth against a 5-degree grid
+    const WAVE_TEX_W = 720;
     const WAVE_TEX_H = 360;
+    const LAND_MASK_W = 4096;
+    const LAND_MASK_H = 2048;
     let waveMesh = null;
     let waveTexture = null;
+    let waveMaskTexture = null;
     let waveRequested = false;
 
     function buildWaveTexture(heights) {
@@ -349,13 +383,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
           const o = (y * WAVE_TEX_W + x) * 4;
           const c = waveColor(sampleGridSmooth(heights, lat, lon));
-          if (!c) { px[o + 3] = 0; continue; } // land, ice, or off the grid: draw nothing
+          if (!c) { px[o + 3] = 0; continue; } // nothing to say here: draw nothing
           px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
         }
       }
       ctx.putImageData(img, 0, 0);
       const tex = new THREE.CanvasTexture(cv);
       if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+      tex.wrapS = THREE.RepeatWrapping; // the map joins itself at the antimeridian
       tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
@@ -363,24 +398,99 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       return tex;
     }
 
+    // How much of each texel is land, as one byte a texel.
+    //
+    // A single channel rather than a canvas texture: at this size the difference is 8MB against
+    // 34MB of texture memory, on a device that is usually a phone. The canvas is read back in
+    // bands for the same reason — one getImageData over eight million pixels would ask for
+    // another 34MB in one go, at the moment the page can least afford it.
+    function buildLandMaskTexture(polygons, width, height) {
+      const cv = document.createElement('canvas');
+      cv.width = width;
+      cv.height = height;
+      const ctx = cv.getContext('2d', { willReadFrequently: true });
+      ctx.fillStyle = '#fff';
+      fillLandRings(ctx, polygonsToPixelRings(polygons, width, height), width);
+
+      const mask = new Uint8Array(width * height);
+      const band = Math.max(1, Math.floor(2 ** 21 / width)); // ~2M pixels a read
+      for (let y0 = 0; y0 < height; y0 += band) {
+        const rows = Math.min(band, height - y0);
+        const px = ctx.getImageData(0, y0, width, rows).data;
+        // Alpha, not red: getImageData is unpremultiplied, so a half-covered edge pixel comes
+        // back opaque white at half alpha. Alpha is the coverage; red is just white.
+        for (let i = 0, o = y0 * width; i < rows * width; i++, o++) mask[o] = px[i * 4 + 3];
+      }
+      // Let the canvas go before the texture is uploaded rather than after.
+      cv.width = cv.height = 1;
+
+      const tex = new THREE.DataTexture(mask, width, height, THREE.RedFormat);
+      tex.flipY = true; // match the canvas textures: image row 0 is the north pole
+      tex.wrapS = THREE.RepeatWrapping;
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      tex.needsUpdate = true;
+      return tex;
+    }
+
+    // The chart's alpha, cut by the mask in the fragment shader instead of in the canvas.
+    //
+    // `fwidth` is how far the coverage value moves between neighbouring *screen* pixels, so the
+    // falloff is one pixel wide whether a texel covers ten kilometres or a tenth of the screen.
+    // That is the whole difference between an edge that stays as crisp as the coastline drawn
+    // over it and one that dissolves as you zoom in.
+    function cutToCoastline(material, maskTexture) {
+      material.onBeforeCompile = (shader) => {
+        shader.uniforms.landMask = { value: maskTexture };
+        shader.fragmentShader = 'uniform sampler2D landMask;\n' + shader.fragmentShader.replace(
+          '#include <alphamap_fragment>',
+          [
+            '#include <alphamap_fragment>',
+            'float landCoverage = texture2D( landMask, vMapUv ).r - 0.5;',
+            'float landEdge = max( fwidth( landCoverage ), 1e-5 );',
+            'diffuseColor.a *= 1.0 - smoothstep( -landEdge, landEdge, landCoverage );',
+          ].join('\n'),
+        );
+      };
+      material.customProgramCacheKey = () => 'wave-overlay-land-mask';
+    }
+
     function ensureWaveOverlay() {
       if (waveRequested || !wavesOnRef.current) return;
       waveRequested = true;
-      fetchWaveGrid()
-        .then((grid) => {
+      Promise.all([fetchWaveGrid(), loadCoastlineTopology()])
+        .then(([grid, topo]) => {
           if (cancelled) return;
           if (!grid || !grid.data) { setWaveMeta({ ok: false, build: grid && grid.build }); return; }
-          const heights = decodeHeights(base64ToBytes(grid.data));
-          waveTexture = buildWaveTexture(heights);
+          const polygons = topo ? topologyToPolygons(topo) : [];
+          if (polygons.length) {
+            try {
+              waveMaskTexture = buildLandMaskTexture(polygons, LAND_MASK_W, LAND_MASK_H);
+            } catch {
+              // A device that cannot spare 34MB of canvas for a moment. Half the resolution is
+              // a quarter of the memory and still a coastline.
+              try {
+                waveMaskTexture = buildLandMaskTexture(polygons, LAND_MASK_W / 2, LAND_MASK_H / 2);
+              } catch { /* no mask; the grid's own coarse edge is used below */ }
+            }
+          }
+          const raw = decodeHeights(base64ToBytes(grid.data));
+          // Gaps are only filled when there is a mask to stop the fill at the shore. Without
+          // one, "no reading" is the only thing marking out land at all, and filling it would
+          // paint swell across every continent.
+          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw);
+          const material = new THREE.MeshBasicMaterial({
+            map: waveTexture, transparent: true, opacity: 0.62, depthWrite: false,
+          });
+          if (waveMaskTexture) cutToCoastline(material, waveMaskTexture);
           waveMesh = new THREE.Mesh(
             // Must match the ocean sphere's tessellation, not the old 128x96. A coarser
             // overlay sags further at each quad's centre than its own 3e-4 offset clears
             // (0.999865 against the ocean's vertices at 1.0), so the globe pokes through it in
             // a regular diamond stipple that reads as a rendering artifact — because it is one.
             new THREE.SphereGeometry(WAVE_SHELL, 256, 192),
-            new THREE.MeshBasicMaterial({
-              map: waveTexture, transparent: true, opacity: 0.62, depthWrite: false,
-            }),
+            material,
           );
           globeGroup.add(waveMesh);
           setWaveMeta({ ok: true, generatedAt: grid.generatedAt, stale: grid.stale });
@@ -392,9 +502,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
       coastlineRequested = true;
-      const base = (import.meta.env && import.meta.env.BASE_URL) || '/';
-      fetch(base.replace(/\/$/, '') + '/coastline-10m.json')
-        .then((r) => (r.ok ? r.json() : null))
+      loadCoastlineTopology()
         .then((topo) => {
           if (cancelled || !topo) return;
           const positions = arcsToLineVertices(topo, COASTLINE_SHELL, latLonToVector3);
@@ -408,7 +516,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           globeGroup.add(coastlineMesh);
           state.dataDirty = true;
         })
-        // Offline, or the asset missing: the globe is fully usable without it, so there is
+        // The fetch already swallows its own failures; this catches anything that goes wrong
+        // building the geometry. The globe is fully usable without the lines, so there is
         // nothing to report and nothing to retry.
         .catch(() => {});
     }
@@ -860,6 +969,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       coastlineMat.dispose();
       if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
       if (waveTexture) waveTexture.dispose();
+      if (waveMaskTexture) waveMaskTexture.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };

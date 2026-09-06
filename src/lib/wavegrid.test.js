@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  gridRows, gridCells, gridCellCount, sampleGrid,
+  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps,
   encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth,
   GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA,
 } from './wavegrid.js';
@@ -195,5 +195,82 @@ describe('sampleGridSmooth', () => {
       expect(sampleGridSmooth(junk, 0, 0)).toBeNull();
     }
     expect(sampleGridSmooth(flat(1), NaN, 0)).toBeNull();
+  });
+});
+
+describe('fillGridGaps', () => {
+  const rows = gridRows();
+  const offsetOf = (rowIndex) => rows.slice(0, rowIndex).reduce((n, r) => n + r.count, 0);
+  // The widest row, where a step east is a step east and not most of the way round the world.
+  const wide = rows.reduce((a, b, i) => (b.count > rows[a].count ? i : a), 0);
+  const empty = () => new Array(gridCellCount()).fill(null);
+
+  it('carries a reading into the cells beside it', () => {
+    // Which is the whole job: the coastline decides where the chart stops now, and the chart
+    // has to have something to paint right up to it, including in the cells the model had
+    // nothing to say about.
+    const h = empty();
+    const seed = offsetOf(wide) + 10;
+    h[seed] = 4;
+    const filled = fillGridGaps(h);
+    expect(filled[seed - 1]).toBe(4);
+    expect(filled[seed + 1]).toBe(4);
+  });
+
+  it('leaves a cell that already has a reading exactly as it was', () => {
+    const h = gridCells().map((_, i) => (i % 3 === 0 ? null : 2.5));
+    const filled = fillGridGaps(h);
+    for (let i = 0; i < h.length; i++) if (h[i] != null) expect(filled[i]).toBe(h[i]);
+  });
+
+  it('fills across a row boundary, not only along a row', () => {
+    // Rows hold different numbers of cells, so "the cell above" is not the one at the same
+    // index — getting that wrong would drag a value sideways across an ocean.
+    const h = empty();
+    const row = rows[wide];
+    const seed = offsetOf(wide) + 3;
+    h[seed] = 6;
+    const filled = fillGridGaps(h);
+    const lon = -180 + (3 + 0.5) * row.step;
+    const above = rows[wide + 1];
+    const j = Math.min(above.count - 1, Math.floor((((lon + 180) % 360) + 360) % 360 / above.step));
+    expect(filled[offsetOf(wide + 1) + j]).toBe(6);
+  });
+
+  it('wraps around the world rather than stopping at the edge of the array', () => {
+    // A row is a circle. Both ends of it have a neighbour on the far side of the antimeridian,
+    // and reading past the end of the array instead would pick up a cell from another row.
+    const start = offsetOf(wide);
+    const last = start + rows[wide].count - 1;
+    // A single round, so each direction is tested on its own: over two rounds a value can
+    // reach the same cell the long way round through the row below, and a broken wrap would
+    // pass unnoticed.
+    const west = empty();
+    west[start] = 3;
+    expect(fillGridGaps(west, 1)[last]).toBe(3);
+    const east = empty();
+    east[last] = 5;
+    expect(fillGridGaps(east, 1)[start]).toBe(5);
+  });
+
+  it('spreads far enough to reach a coast and no further', () => {
+    // Two rounds is about two cells, and a cell is 1,100km. Spreading without limit would
+    // carry a Pacific swell height across a continent and paint it on an inland sea, which is
+    // a claim about the world rather than a way of reaching the shore.
+    const h = empty();
+    const seed = offsetOf(wide) + 10;
+    h[seed] = 4;
+    const filled = fillGridGaps(h);
+    expect(filled[seed + 2]).not.toBeNull();
+    expect(filled[seed + 3]).toBeNull();
+  });
+
+  it('invents nothing when there is nothing to spread', () => {
+    expect(fillGridGaps(empty()).every((v) => v === null)).toBe(true);
+  });
+
+  it('survives junk rather than throwing before the overlay is built', () => {
+    for (const junk of [null, undefined, 'grid']) expect(() => fillGridGaps(junk)).not.toThrow();
+    expect(fillGridGaps([])).toEqual([]);
   });
 });
