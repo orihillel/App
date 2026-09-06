@@ -170,4 +170,17 @@ describe('waveLegendCaption with arrows', () => {
   it('says nothing about arrows when there are none to explain', () => {
     expect(waveLegendCaption(fresh, 'metric', now)).not.toContain('arrows');
   });
+
+  it('says when the grid itself carries no directions, which looks the same on screen', () => {
+    // Two causes, one appearance: a grid cached before directions were fetched, or one that has
+    // them and produced none. The first ages out on its own; the second is a fault.
+    expect(waveLegendCaption({ ...fresh, noDirections: true }, 'metric', now))
+      .toContain('no wave directions in this grid yet');
+  });
+
+  it('does not say that when the arrows are there', () => {
+    const caption = waveLegendCaption({ ...fresh, arrows: true, noDirections: false }, 'metric', now);
+    expect(caption).toContain('heading');
+    expect(caption).not.toContain('no wave directions');
+  });
 });

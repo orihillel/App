@@ -631,6 +631,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           setWaveMeta({
             ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
             arrows: !!(arrowPoints && arrowPoints.length),
+            // Two different reasons for a chart with no arrows on it, and they look identical:
+            // the grid was cached before directions were fetched at all, or it carries them and
+            // none survived. Saying which one turns a guess into a glance.
+            noDirections: !grid.dirs,
           });
           state.dataDirty = true;
         })

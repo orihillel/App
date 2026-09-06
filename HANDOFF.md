@@ -1161,7 +1161,12 @@ there's intentionally one source of truth, not separate logic per view.
   - *And the silence around it:* `fetchNowForSpots` now reports which batches were refused, and
     the app says so once — not on every refresh — when a whole pass comes back with nothing. Grey
     markers alone do not distinguish an outage from a calm sea.
-  - *Verified:* lint and tests both packages (**428 app + 128 worker**, 8 new), `check:spots`,
+  - *And the legend now separates the two causes of a chart with no arrows on it*, which look
+    identical on screen: a grid cached before directions were fetched at all ("no wave
+    directions in this grid yet") against one that carries them and produced none. The first
+    ages out on its own; the second is a fault. Saying which turns a round of guessing into a
+    glance — the same move that ended the swell overlay's seven-round saga.
+  - *Verified:* lint and tests both packages (**430 app + 128 worker**, 10 new), `check:spots`,
     `check:classnames`, build. The `isUsable` change was confirmed to fail against the old
     version once the fixture was fixed.
 
