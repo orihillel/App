@@ -1038,6 +1038,29 @@ there's intentionally one source of truth, not separate logic per view.
   - *Verified:* lint, `check:classnames`, `check:spots`, **364 app tests** (8 new), build, and a
     headless render of the globe with all 403 markers.
 
+- **The hamburger menu does something now.**
+  - *Reported:* "in the home page on the top left, there is three bars that are supposed to be
+    the navigation menu. But it's not working." It was a leftover from the original chat mockup:
+    the button raised a toast reading "Menu — not in this preview" and nothing else.
+  - *Asked to look at what Surfline, Magic Seaweed and Windy put in theirs.* Those sites are not
+    reachable from this environment (the egress proxy refuses them), so this is from knowledge of
+    the apps rather than a fresh read, and the design is the intersection all three share:
+    **saved spots first** (Surfline's Favorites and Windy's Favourites are both the top entry),
+    then search, a map, units, an account/settings door, and — Windy's touch — a credits line.
+  - *What is deliberately absent:* cams, premium tiers, photo feeds, editorial and travel
+    booking. Those exist in those menus because those apps sell something. A menu entry that
+    opens a "not in this preview" toast is worse than no entry, which is the bug being fixed, so
+    there is a test asserting every button in the drawer reaches a real handler.
+  - **"Your spots" needed a decision.** `order` is not a favourites list — it starts as the whole
+    built-in catalog, so listing it would be four hundred rows of spots nobody chose, burying the
+    one they actually surf. The drawer shows the go-to spot and anything searched for and added,
+    the same distinction `ProfileView` already draws.
+  - *Also:* Escape and the scrim close it, focus moves into the panel, it is a labelled
+    `role="dialog"`, and the units control is a segmented pair rather than a toggle that can be
+    tapped into the wrong unit.
+  - *Verified:* lint, `check:classnames`, `check:spots`, **377 app tests** (13 new), build, and
+    a headless run that opens the menu from the home header and navigates to the globe with it.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

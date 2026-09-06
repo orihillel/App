@@ -26,7 +26,7 @@ const HOUR_ROW = {
 function renderHome(props = {}) {
   return render(
     <HomeView
-      setToast={() => {}} units="imperial" toggleUnits={() => {}} openSearch={() => {}}
+      units="imperial" toggleUnits={() => {}} openSearch={() => {}}
       spot={{ name: 'Maravi', region: 'Tel Aviv, Israel', blurb: 'A spot.' }}
       isGoTo={false} makeGoTo={() => {}} showSpotNav={false}
       onPrevSpot={() => {}} onNextSpot={() => {}}

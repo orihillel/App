@@ -19,6 +19,7 @@ import { ProfileView } from './components/ProfileView.jsx';
 import { SearchSheet } from './components/SearchSheet.jsx';
 import { AlertSheet } from './components/AlertSheet.jsx';
 import { BottomNav } from './components/BottomNav.jsx';
+import { NavDrawer } from './components/NavDrawer.jsx';
 
 const GLOBAL_CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap');
@@ -117,6 +118,7 @@ export default function App() {
   // done visually (tap a marker) instead of only by typing into search. Separate from `view`
   // since onboarding has its own gate (`!onboarded`) ahead of the normal view switch below.
   const [onboardingGlobeOpen, setOnboardingGlobeOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchStep, setSearchStep] = useState('query');
   const [searchError, setSearchError] = useState('');
@@ -649,7 +651,7 @@ export default function App() {
             sessions={sessions} deleteSession={deleteSession} />
         ) : (
           <HomeView
-            setToast={setToast} units={units} toggleUnits={toggleUnits} openSearch={openSearch}
+            units={units} toggleUnits={toggleUnits} openSearch={openSearch} openMenu={() => setMenuOpen(true)}
             spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1} onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
             h={h} isLoading={isLoading} hasError={hasError} retry={() => loadSpotData(activeId, spot)}
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
@@ -673,6 +675,15 @@ export default function App() {
         </div>
 
         {onboarded && <BottomNav view={view} handleNav={handleNav} />}
+
+        {menuOpen && (
+          <NavDrawer
+            spots={spots} order={order} goToId={goToId} activeId={activeId}
+            onSelectSpot={viewSpot} openSearch={openSearch} onNavigate={handleNav}
+            units={units} toggleUnits={toggleUnits} alertCount={alerts.length}
+            onClose={() => setMenuOpen(false)}
+          />
+        )}
 
         {searchOpen && (
           <SearchSheet

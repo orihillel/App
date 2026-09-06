@@ -19,7 +19,7 @@ function directionsUrl(spot) {
 }
 
 export function HomeView({
-  setToast, units, toggleUnits, openSearch,
+  units, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
   h, isLoading, hasError, retry,
   waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration,
@@ -37,7 +37,7 @@ export function HomeView({
   return (
     <>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
-        <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6 }} onClick={() => setToast('Menu — not in this preview')} aria-label="Menu"><Menu size={18} color={COLORS.foamDim} /></button>
+        <button className="tl-btn" style={{ background: 'none', border: 'none', padding: 6 }} onClick={openMenu} aria-label="Menu"><Menu size={18} color={COLORS.foamDim} /></button>
         <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 13, letterSpacing: '0.14em', color: COLORS.foam, opacity: 0.9 }}>SURFCAST</span>
         <div className="flex items-center" style={{ gap: 8 }}>
           <button className="tl-btn" onClick={toggleUnits} aria-label="Toggle units" style={{ background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 4, padding: '3px 7px' }}>
