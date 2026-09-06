@@ -222,15 +222,29 @@ function coverageOf(grid) {
   return grid && typeof grid.coverage === 'number' ? grid.coverage : 0;
 }
 
-function isUsable(grid) {
+// Two questions, deliberately separated, because the answer differs.
+//
+// `isServable` is whether this grid can be drawn at all: heights for the right cells, from a
+// build that reached enough of the world.
+//
+// `isUsable` adds the directions, and governs only whether an entry is good enough to serve
+// *instead of rebuilding*. A cached entry from before directions were fetched has heights only,
+// and serving it would mean up to six hours of no arrows after a deploy with nothing to say
+// why — so it is rebuilt.
+//
+// Rebuilt, but not thrown away. Requiring directions everywhere is what the first version did,
+// and it turned "no arrows" into "no map": when the rebuild could not run — a rate-limit
+// cooldown, a failed upstream — the last-resort fallbacks below rejected the perfectly good
+// heights too and answered with nothing. A map without arrows beats a blank globe, and the
+// legend already has a line for exactly this case.
+function isServable(grid) {
   return !!grid && typeof grid.data === 'string'
-    // Directions are part of the grid now, and a cached entry from before they were fetched has
-    // heights only. Without this the app draws no arrows for up to six hours after a deploy,
-    // with nothing to say why — the cache is doing exactly what it was told, and the feature
-    // looks broken. An entry missing them is simply rebuilt.
-    && typeof grid.dirs === 'string'
     && grid.cells === gridCellCount()
     && coverageOf(grid) >= MIN_COVERAGE;
+}
+
+function isUsable(grid) {
+  return isServable(grid) && typeof grid.dirs === 'string';
 }
 
 // The cached grid, rebuilt when stale or missing.
@@ -257,7 +271,7 @@ export async function loadGrid(env, opts = {}) {
   } catch { /* no cooldown record readable; proceed to build */ }
   if (failure && failure.at && now - failure.at < FAIL_COOLDOWN_MS && !opts.ignoreCooldown) {
     return {
-      grid: isUsable(cached) ? { ...cached, stale: true } : null,
+      grid: isServable(cached) ? { ...cached, stale: true } : null,
       build: { ...failure.build, cooling: true, retryInSeconds: Math.round((FAIL_COOLDOWN_MS - (now - failure.at)) / 1000) },
     };
   }
@@ -290,6 +304,6 @@ export async function loadGrid(env, opts = {}) {
     await env.SUBSCRIPTIONS.put(FAIL_KEY, JSON.stringify({ at: now, build }));
   } catch { /* the cooldown is an optimisation, not a correctness requirement */ }
   // An old complete grid is a better answer than a fresh partial one.
-  if (isUsable(cached)) return { grid: { ...cached, stale: true }, build };
+  if (isServable(cached)) return { grid: { ...cached, stale: true }, build };
   return { grid: null, build };
 }

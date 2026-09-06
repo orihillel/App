@@ -62,10 +62,24 @@ describe('HTTP routes', () => {
   // So this asserts the *whole* shape the app reads, not just the field that broke. Adding a
   // field to the stored grid without adding it to the wire now fails here.
   describe('GET /wavegrid', () => {
-    const stored = () => ({
+    // Nothing in here may reach the real Open-Meteo, and the first version of these tests did.
+    // It passed on a machine with no egress — the route could not build, so it answered with
+    // diagnostics, which is what the test asserted — and failed on CI, where the fetch
+    // succeeded and the route answered with a real grid instead. A test whose result depends
+    // on the runner's network is not a test; this one also failed the deploy of the very fix
+    // it was written to protect, so the arrows stayed missing after the merge.
+    let realFetch;
+    beforeEach(() => {
+      realFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn(async () => { throw new Error('no upstream in tests'); });
+    });
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    const stored = (extra = {}) => ({
       generatedAt: Date.now(), cells: gridCellCount(), coverage: 1,
       data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
       dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(225))),
+      ...extra,
     });
 
     it('sends every field the app reads, directions included', async () => {
@@ -83,18 +97,35 @@ describe('HTTP routes', () => {
       expect(body.generatedAt).toBe(grid.generatedAt);
       expect(body.stale).toBe(false);
       expect(body.coverage).toBe(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled(); // answered from KV, as a fresh grid should be
     });
 
     it('sends dirs as null rather than omitting it when a grid predates them', async () => {
-      // Such a grid is rebuilt rather than served (see waveGrid.js), so this is about the shape
-      // being stable: the app tests `typeof data.dirs === 'string'` and must not see undefined
-      // where it expected a key.
+      // Such a grid is rebuilt rather than served fresh, but when the rebuild cannot run it is
+      // still the best answer there is — heights with no arrows beats a blank globe. The app
+      // tests `typeof data.dirs === 'string'`, so the key has to be there and be null, not
+      // absent, and the legend then says the grid carries no directions.
+      const env = makeEnv();
+      const { dirs, ...noDirs } = stored({ generatedAt: Date.now() - 60 * 60 * 1000 }); // eslint-disable-line no-unused-vars
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(noDirs));
+      const res = await worker.fetch(new Request('https://worker.example/wavegrid'), env);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(globalThis.fetch).toHaveBeenCalled(); // it did try to replace it
+      expect(body.data).toBe(noDirs.data); // and fell back to the heights it had
+      expect('dirs' in body).toBe(true);
+      expect(body.dirs).toBeNull();
+      expect(body.stale).toBe(true);
+    });
+
+    it('answers with the build diagnostics, not a bare error, when there is nothing to serve', async () => {
       const env = makeEnv();
       const res = await worker.fetch(new Request('https://worker.example/wavegrid'), env);
+      expect(res.status).toBe(200);
       const body = await res.json();
-      // No grid could be built here (no upstream), so the diagnostics come back instead.
       expect(body.grid).toBeNull();
       expect(body.build).toBeTruthy();
+      expect(body.build.lastError).toBeTruthy(); // says what went wrong, not just that it did
     });
   });
 
