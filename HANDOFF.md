@@ -936,6 +936,39 @@ there's intentionally one source of truth, not separate logic per view.
     against the old measure before being kept.
   - *Verified:* lint (app + worker), **331 app + 120 worker tests** (3 new), build.
 
+- **The swell chart's edge is the coastline now, not the wave grid.**
+  - *Reported:* "the borders of the charts are very jagged. Can you make the border of the chart
+    the same as the border of the coastline?"
+  - *Where the edge came from:* the wave grid. A cell with no reading was assumed to be land and
+    left transparent. That grid is 10 degrees — about 1,100km — so the chart stopped at a coarse
+    staircase that matched no coastline on Earth, sometimes a hundred kilometres out to sea and
+    sometimes well inland, right beside a vector coastline drawn to ~401m.
+  - *The fix:* cut the mask from the coastline itself. `build-coastline.mjs` now also publishes
+    TopoJSON's `objects` — a list of arc *indices*, 35KB raw and under 10KB gzipped against the
+    arcs' 743KB — which is what turns the shipped boundaries into fillable rings.
+    `lib/landmask.js` assembles them, and the overlay erases land out of the chart with
+    `destination-out`. Same file, same arcs, same vertices as the lines: the two cannot drift
+    apart, because there is only one piece of geometry. Both layers share one fetch.
+  - *Two resolutions, because the chart is two things:* the swell field is interpolated from a
+    10-degree grid and has nothing finer to say than half a degree, so it is still painted at
+    720x360 and scaled up; its *edge* is a coastline, so the land is cut at 2048x1024.
+  - *`fillGridGaps`:* with the shore deciding where the chart stops, cells the model had no
+    reading for have to be filled or the chart stops short of the coast in ragged patches — the
+    same complaint in a new place. Two rounds, which is about two cells: enough to reach a coast,
+    not enough to carry a Pacific swell height across a continent onto an inland sea. Gaps are
+    filled **only** when there is a mask to stop them, since without one "no reading" is the only
+    thing marking out land at all.
+  - *What it still cannot do:* a global texture at 2048 is ~20km a texel, which at the deepest
+    zoom is a soft edge a couple of hundred device pixels wide under a crisp line. No global
+    texture can beat that (`lib/coastline.js` makes the same argument about imagery), and soft
+    and in the right place beats hard and 1,100km wrong.
+  - *Verified:* lint, `check:classnames`, **356 app tests** (25 new), build; and rendered in a
+    headless browser at the wide view and at three zooms on three coasts — Californian, Cape,
+    Red Sea — with the chart traced around the Channel Islands, Hudson Bay, the Aegean and the
+    Gulf of Aqaba. Every new test was confirmed to fail against a deliberately broken version
+    first; three that passed anyway (a wrap read past the end of a row, an antimeridian ring
+    built from out-of-range longitudes) were rewritten until they caught it.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

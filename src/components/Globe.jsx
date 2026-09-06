@@ -5,7 +5,8 @@ import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
-import { base64ToBytes, decodeHeights, sampleGridSmooth } from '../lib/wavegrid.js';
+import { base64ToBytes, decodeHeights, fillGridGaps, sampleGridSmooth } from '../lib/wavegrid.js';
+import { polygonsToPixelRings, punchLandMask, topologyToPolygons } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveScaleUnitLabel, gridAgeLabel } from '../lib/wavescale.js';
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
@@ -322,38 +323,80 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     let coastlineMesh = null;
     let coastlineRequested = false;
 
+    // The coastline file, fetched at most once however many layers want it.
+    //
+    // Two do now: the lines, and the mask that cuts the wave overlay to the shore. Sharing one
+    // promise means turning the overlay on while zoomed in costs 753KB rather than twice that,
+    // and — the part that matters — the chart's edge and the drawn coastline can never be
+    // assembled from different data.
+    let coastlinePromise = null;
+    function loadCoastlineTopology() {
+      if (!coastlinePromise) {
+        const base = (import.meta.env && import.meta.env.BASE_URL) || '/';
+        coastlinePromise = fetch(base.replace(/\/$/, '') + '/coastline-10m.json')
+          .then((r) => (r.ok ? r.json() : null))
+          // Offline, or the asset missing: every layer that wants it degrades rather than
+          // fails, so there is nothing to report and nothing to retry.
+          .catch(() => null);
+      }
+      return coastlinePromise;
+    }
+
     // Live wave-height overlay: the ocean painted by how big the sea is right now.
     //
     // Built as an equirectangular canvas and wrapped on a sphere just above the surface, rather
     // than blended into the ocean material, so it can be toggled without rebuilding anything
-    // and so land stays untouched -- cells with no data are left fully transparent, which is
-    // also exactly what makes the continents show through.
+    // and so land stays untouched.
+    //
+    // Two resolutions, because the chart is two different things at once. The swell field is
+    // interpolated from a 10-degree grid and has nothing finer to say than half a degree; its
+    // *edge* is a coastline, and a coastline at half a degree is a 55km staircase that visibly
+    // disagrees with the vector coastline drawn beside it. So the field is painted small and
+    // scaled up — the smoothing is free and the field is smooth anyway — and the land is then
+    // cut out of it at 2048, from the coastline's own rings.
     const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
-    const WAVE_TEX_W = 720;        // half a degree per texel: smooth against a 5-degree grid
-    const WAVE_TEX_H = 360;
+    const WAVE_FIELD_W = 720;
+    const WAVE_FIELD_H = 360;
+    const WAVE_TEX_W = 2048;       // ~20km a texel: what the shoreline is drawn to
+    const WAVE_TEX_H = 1024;
     let waveMesh = null;
     let waveTexture = null;
     let waveRequested = false;
 
-    function buildWaveTexture(heights) {
+    function buildWaveField(heights) {
       const cv = document.createElement('canvas');
-      cv.width = WAVE_TEX_W;
-      cv.height = WAVE_TEX_H;
+      cv.width = WAVE_FIELD_W;
+      cv.height = WAVE_FIELD_H;
       const ctx = cv.getContext('2d');
-      const img = ctx.createImageData(WAVE_TEX_W, WAVE_TEX_H);
+      const img = ctx.createImageData(WAVE_FIELD_W, WAVE_FIELD_H);
       const px = img.data;
-      for (let y = 0; y < WAVE_TEX_H; y++) {
+      for (let y = 0; y < WAVE_FIELD_H; y++) {
         // Texel centres, and latitude runs north-to-south down an equirectangular image.
-        const lat = 90 - ((y + 0.5) / WAVE_TEX_H) * 180;
-        for (let x = 0; x < WAVE_TEX_W; x++) {
-          const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
-          const o = (y * WAVE_TEX_W + x) * 4;
+        const lat = 90 - ((y + 0.5) / WAVE_FIELD_H) * 180;
+        for (let x = 0; x < WAVE_FIELD_W; x++) {
+          const lon = -180 + ((x + 0.5) / WAVE_FIELD_W) * 360;
+          const o = (y * WAVE_FIELD_W + x) * 4;
           const c = waveColor(sampleGridSmooth(heights, lat, lon));
-          if (!c) { px[o + 3] = 0; continue; } // land, ice, or off the grid: draw nothing
+          if (!c) { px[o + 3] = 0; continue; } // nothing to say here: draw nothing
           px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
         }
       }
       ctx.putImageData(img, 0, 0);
+      return cv;
+    }
+
+    function buildWaveTexture(heights, landPolygons) {
+      const cv = document.createElement('canvas');
+      cv.width = WAVE_TEX_W;
+      cv.height = WAVE_TEX_H;
+      const ctx = cv.getContext('2d');
+      ctx.imageSmoothingEnabled = true;
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(buildWaveField(heights), 0, 0, WAVE_TEX_W, WAVE_TEX_H);
+      // The continents, erased out of the chart. Without the rings the chart keeps the wave
+      // grid's own coarse idea of where land is, which is the edge this replaced — worse, but
+      // still a map.
+      if (landPolygons) punchLandMask(ctx, landPolygons, WAVE_TEX_W);
       const tex = new THREE.CanvasTexture(cv);
       if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
@@ -366,12 +409,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     function ensureWaveOverlay() {
       if (waveRequested || !wavesOnRef.current) return;
       waveRequested = true;
-      fetchWaveGrid()
-        .then((grid) => {
+      Promise.all([fetchWaveGrid(), loadCoastlineTopology()])
+        .then(([grid, topo]) => {
           if (cancelled) return;
           if (!grid || !grid.data) { setWaveMeta({ ok: false, build: grid && grid.build }); return; }
-          const heights = decodeHeights(base64ToBytes(grid.data));
-          waveTexture = buildWaveTexture(heights);
+          const land = topo
+            ? polygonsToPixelRings(topologyToPolygons(topo), WAVE_TEX_W, WAVE_TEX_H)
+            : null;
+          const raw = decodeHeights(base64ToBytes(grid.data));
+          // Gaps are only filled when there is a mask to stop the fill at the shore. Without
+          // one, "no reading" is the only thing marking out land at all, and filling it would
+          // paint swell across every continent.
+          waveTexture = buildWaveTexture(land ? fillGridGaps(raw) : raw, land);
           waveMesh = new THREE.Mesh(
             // Must match the ocean sphere's tessellation, not the old 128x96. A coarser
             // overlay sags further at each quad's centre than its own 3e-4 offset clears
@@ -392,9 +441,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
       coastlineRequested = true;
-      const base = (import.meta.env && import.meta.env.BASE_URL) || '/';
-      fetch(base.replace(/\/$/, '') + '/coastline-10m.json')
-        .then((r) => (r.ok ? r.json() : null))
+      loadCoastlineTopology()
         .then((topo) => {
           if (cancelled || !topo) return;
           const positions = arcsToLineVertices(topo, COASTLINE_SHELL, latLonToVector3);
@@ -408,7 +455,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           globeGroup.add(coastlineMesh);
           state.dataDirty = true;
         })
-        // Offline, or the asset missing: the globe is fully usable without it, so there is
+        // The fetch already swallows its own failures; this catches anything that goes wrong
+        // building the geometry. The globe is fully usable without the lines, so there is
         // nothing to report and nothing to retry.
         .catch(() => {});
     }
