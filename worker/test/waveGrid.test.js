@@ -1,6 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
 import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS } from '../src/waveGrid.js';
-import { gridCellCount, base64ToBytes, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
+import { gridCells, gridCellCount, base64ToBytes, encodeHeights, bytesToBase64 } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
 const NOW = Date.parse('2026-09-05T14:20:00Z');
@@ -168,6 +168,35 @@ describe('buildGrid', () => {
     expect(grid.coverage).toBeLessThan(1);
   });
 
+  it('counts a batch of land as covered, because land is not a missing answer', async () => {
+    // The bug that produced "Fetched 5 of 5 batches" and still no map. Coverage was measured as
+    // non-null values, so every land cell read as a failure. Roughly an eighth of the grid is
+    // land even by a coarse coastline — finer than that, Open-Meteo also returns nothing for
+    // enclosed seas and shallow coastal cells — so a flawless build scored about 0.85 against a
+    // 0.85 threshold and the gate could never pass however well the fetch worked.
+    const fetchImpl = async (url) => {
+      const lats = new URL(url).searchParams.get('latitude').split(',');
+      // Two thirds of the world is dry in this fake, far worse than reality.
+      return okRes(lats.map((l, i) => (i % 3 === 0 ? cur(2) : { current: { time: HOUR, wave_height: null } })));
+    };
+    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
+    expect(grid.batchesDone).toBe(grid.batchesTotal);
+    expect(grid.coverage).toBe(1);                 // every cell was successfully queried
+    expect(grid.oceanCells).toBeLessThan(grid.cells / 2); // and most of them were land
+    expect(grid.coverage).toBeGreaterThanOrEqual(MIN_COVERAGE);
+  });
+
+  it('drops coverage only when a batch genuinely fails', async () => {
+    const fetchImpl = async (url) => {
+      const lats = new URL(url).searchParams.get('latitude').split(',');
+      if (Number(lats[0]) === -75) return { ok: false, status: 500, json: async () => ({}) };
+      return allOk(url);
+    };
+    const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
+    expect(grid.coverage).toBeLessThan(1);
+    expect(grid.coverage).toBeGreaterThan(0.7);
+  });
+
   it('reports a total failure without throwing', async () => {
     const fetchImpl = async () => { throw new Error('upstream unreachable'); };
     const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
@@ -238,6 +267,19 @@ describe('loadGrid', () => {
     const out = await loadGrid(e, { build, now: NOW });
     expect(build).toHaveBeenCalledTimes(1);
     expect(out.grid.stale).toBe(false);
+  });
+
+  it('accepts a build where most of the world is land', async () => {
+    // The end-to-end version of the same bug: five good batches must produce a stored map.
+    const e = env();
+    const mostlyLand = {
+      generatedAt: NOW, cells: gridCellCount(), coverage: 1, oceanCells: 40,
+      data: bytesToBase64(encodeHeights(gridCells().map((_, i) => (i % 10 === 0 ? 2 : null)))),
+    };
+    const out = await loadGrid(e, { build: async () => mostlyLand, now: NOW });
+    expect(out.grid).not.toBeNull();
+    expect(out.grid.stale).toBe(false);
+    expect(JSON.parse(await e.SUBSCRIPTIONS.get(GRID_KEY)).coverage).toBe(1);
   });
 
   it('ignores a cached grid whose size no longer matches the current grid', async () => {
