@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  waveColor, waveScaleTicks, waveScaleUnitLabel, waveScaleGradient, gridAgeLabel, WAVE_SCALE_MAX,
+  waveColor, waveScaleTicks, waveScaleUnitLabel, waveScaleGradient, gridAgeLabel,
+  waveLegendCaption, WAVE_SCALE_MAX,
 } from './wavescale.js';
 
 describe('waveColor', () => {
@@ -100,5 +101,38 @@ describe('gridAgeLabel', () => {
   });
   it('returns nothing rather than "NaN min ago" on junk', () => {
     for (const v of [null, undefined, 'yesterday', NaN]) expect(gridAgeLabel(v, now)).toBeNull();
+  });
+});
+
+describe('waveLegendCaption', () => {
+  const now = Date.parse('2026-09-06T12:00:00Z');
+  const fresh = { generatedAt: now - 2 * 3600000 };
+
+  it('names the units and how old the data is', () => {
+    expect(waveLegendCaption(fresh, 'metric', now)).toBe('Open-ocean wave height (m) · 2h ago');
+    expect(waveLegendCaption(fresh, 'imperial', now)).toBe('Open-ocean wave height (ft) · 2h ago');
+  });
+
+  it('says when the map on screen is the last one that worked', () => {
+    expect(waveLegendCaption({ ...fresh, stale: true }, 'metric', now)).toContain('last good data');
+  });
+
+  it('says when the chart is cut to the wave grid rather than to the coastline', () => {
+    // The case this exists for. The overlay still draws when the coastline cannot be fetched,
+    // but with the grid's own 1,100km edge — which looks exactly like a build that predates
+    // the coastline mask entirely. Without this line the two are indistinguishable on screen.
+    expect(waveLegendCaption({ ...fresh, coarse: true }, 'metric', now))
+      .toBe('Open-ocean wave height (m) · 2h ago · coarse edge — coastline unavailable');
+  });
+
+  it('says nothing extra when the map is the map it should be', () => {
+    const caption = waveLegendCaption({ ...fresh, coarse: false, stale: false }, 'metric', now);
+    expect(caption).not.toContain('coarse');
+    expect(caption).not.toContain('last good');
+  });
+
+  it('still reads as a sentence when the age is unknown or the meta is missing', () => {
+    expect(waveLegendCaption({}, 'metric', now)).toBe('Open-ocean wave height (m) · age unknown');
+    expect(waveLegendCaption(null, 'metric', now)).toBe('Open-ocean wave height (m) · age unknown');
   });
 });

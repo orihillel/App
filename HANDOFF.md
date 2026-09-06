@@ -981,6 +981,25 @@ there's intentionally one source of truth, not separate logic per view.
     first; three that passed anyway (a wrap read past the end of a row, an antimeridian ring
     built from out-of-range longitudes) were rewritten until they caught it.
 
+- **Two ways the coastline mask could be there and not be used, and the app said nothing.**
+  - *Reported, after the merge:* "I did the merge, but it's still the same."
+  - **A changed file at an unchanged URL.** `public/` assets are copied to the site verbatim —
+    Vite content-hashes bundled assets, not these — so `coastline-10m.json` gained `objects`
+    while keeping its address. Any browser holding the previous copy gets a file with no rings,
+    `topologyToPolygons` returns nothing, and the overlay silently falls back to the wave grid's
+    own 1,100km edge: **identical on screen to the bug the mask was added to fix.** The file is
+    now `coastline-10m-v2.json`, and the build script says to bump the suffix whenever its shape
+    changes.
+  - **The fallback was silent, which made a stale build and a failed fetch indistinguishable.**
+    The legend now says so: "coarse edge — coastline unavailable". One glance separates "you are
+    running the old bundle" from "you are running the new one and it could not fetch the
+    coastline", which is a question that cost two rounds here.
+  - *Also:* one retry on the coastline fetch. 753KB over a phone connection drops sometimes, and
+    the cost of losing it is a whole zoom range's worth of coastline.
+  - *Verified:* lint, **361 app tests** (5 new), build; and rendered headless twice — once
+    normally, once with the coastline request aborted, confirming the overlay still draws and
+    the caption reads "coarse edge — coastline unavailable" in exactly that case.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /

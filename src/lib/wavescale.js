@@ -83,3 +83,19 @@ export function gridAgeLabel(generatedAt, now = Date.now()) {
   if (hours < 36) return hours + 'h ago';
   return Math.round(hours / 24) + 'd ago';
 }
+
+// The line under the swell legend.
+//
+// It carries the age of the data and, when there is anything to say, why the map is not the map
+// it should be. That last part exists because a silent fallback is indistinguishable from a
+// stale build: the overlay still draws when the coastline it cuts itself to cannot be fetched,
+// but it falls back to the wave grid's own 1,100km idea of where land is — which looks exactly
+// like the bug the coastline was added to fix. If the caption says so, one glance settles which
+// of the two is happening.
+export function waveLegendCaption(meta, units, now = Date.now()) {
+  const parts = ['Open-ocean wave height (' + waveScaleUnitLabel(units) + ')'];
+  parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
+  if (meta && meta.stale) parts.push('last good data');
+  if (meta && meta.coarse) parts.push('coarse edge — coastline unavailable');
+  return parts.join(' · ');
+}
