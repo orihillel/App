@@ -13,7 +13,8 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "lint": "eslint .",
-    "check:classnames": "node scripts/check-classnames.mjs"
+    "check:classnames": "node scripts/check-classnames.mjs",
+    "check:spots": "node scripts/check-spots.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.38.0",

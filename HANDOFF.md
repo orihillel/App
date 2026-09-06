@@ -1000,6 +1000,44 @@ there's intentionally one source of truth, not separate logic per view.
     normally, once with the coastline request aborted, confirming the overlay still draws and
     the caption reads "coarse edge — coastline unavailable" in exactly that case.
 
+- **348 -> 403 spots: 37 countries that had no entry at all.**
+  - *Asked for:* "could you maybe add more surf spots all around the world?"
+  - *Where the gaps actually were.* The catalog was already dense in the surf-media regions —
+    Bells, Kirra, Cloudbreak, the Mentawais, Nias, the Maldives are all here. What it had none
+    of was whole coastlines: the Black Sea, the Baltic, the Gulf of Guinea, the Arabian Sea, the
+    Bay of Bengal, the Gulf of Alaska. So this batch is chosen by *absence* rather than by fame:
+    Colombia, Venezuela, Cuba, the Bahamas, Martinique, Guadeloupe, Greece, Turkey, Poland, the
+    Faroes, Bulgaria, Georgia, Malta, Tunisia, Algeria, Egypt, Oman, Iran, Pakistan, Bangladesh,
+    Myanmar, the UAE, Mauritania, the Gambia, Côte d'Ivoire, Nigeria, Cameroon, São Tomé, Gabon,
+    Congo, Tanzania, Seychelles, Kamchatka, Timor-Leste, the Solomons, the Cooks and Bermuda,
+    plus depth where a big surf nation was thin (Japan 5 -> 8, India 3 -> 5, Mexico 11 -> 13).
+  - **A new check that found six existing errors before it checked anything new.**
+    `npm run check:spots` measures every spot against the same 10m coastline the globe draws.
+    Coordinates are the one part of this data that is hand-written, unverifiable by reading, and
+    silently wrong when wrong — a spot a degree out still renders, still fetches a forecast, and
+    still puts a marker on the globe, just in the wrong place. It found **Playa Colorado 24km
+    inland, Unstad 19km out to sea, Playa Maderas, Barra de la Cruz, Sultans and Bawa** all
+    misplaced; every one is corrected here.
+  - *The check was wrong first.* Measuring to the nearest coastline **vertex** reported eight
+    failures, Lacanau among them: the Landes coast is dead straight for a hundred kilometres, so
+    TopoJSON's simplification leaves its points 15km apart and a spot sitting on the beach scores
+    15km from the nearest one. It measures to the nearest **segment** now. Bawa keeps a named
+    exemption — the Hinako Islands are a few hundred metres across and the 10m dataset does not
+    carry them — rather than being waved through by loosening the tolerance for everyone.
+  - *Nine new timezone anchors* (Rome, Istanbul, Sofia, Lagos, Dakar, Muscat, Kolkata, Seoul,
+    Maldives), each verified to actually return local spots. An anchor with fewer than three
+    spots near it silently falls back to the global list, so one added without the spots to back
+    it is just a lie in a table — there is now a test that says so.
+  - *And one that caught a bug in this very change:* a stray comma left a literal `undefined` in
+    `ORDER`, which every existing check ignored. `ORDER` is now asserted to list every spot
+    exactly once.
+  - *Provenance, honestly:* coordinates are verified against the coastline; swell windows and
+    offshore directions are informed estimates from coastal orientation and known season, not
+    survey data. Several of these coasts have a handful of surfers on them and no published spot
+    guide at all, and the blurbs say what is known rather than dressing it up.
+  - *Verified:* lint, `check:classnames`, `check:spots`, **364 app tests** (8 new), build, and a
+    headless render of the globe with all 403 markers.
+
 ## Suggested next steps
 
 1. ~~Scaffold a real project~~ / ~~port the mockup in~~ / ~~replace `window.storage`~~ /
