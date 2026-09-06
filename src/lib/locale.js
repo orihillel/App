@@ -39,7 +39,7 @@ function regionOf(tag) {
 // Rough centre of the surfing coastline for timezones the catalog actually covers. This exists
 // only to sort the catalog by distance, so a few dozen kilometres of imprecision costs nothing —
 // and an unlisted timezone simply falls back to the global list rather than guessing badly.
-const TIMEZONE_ANCHORS = {
+export const TIMEZONE_ANCHORS = {
   'Asia/Jerusalem': [32.09, 34.77],   // Tel Aviv
   'Asia/Tel_Aviv': [32.09, 34.77],
   'Asia/Gaza': [31.52, 34.44],
@@ -80,6 +80,19 @@ const TIMEZONE_ANCHORS = {
   'America/Sao_Paulo': [-23.79, -45.57],
   'America/Mexico_City': [15.87, -97.08],
   'America/Costa_Rica': [9.95, -85.68],
+  // Added with the third batch of spots. An anchor only earns its place when the catalog has
+  // at least three spots within reach of it — below that nearbyPicks falls back to the global
+  // list anyway, and a timezone listed here that cannot deliver is just a lie in a table.
+  'Europe/Rome': [42.03, 11.83],
+  'Europe/Istanbul': [41.20, 29.30],
+  'Europe/Sofia': [43.19, 27.95],
+  'Africa/Lagos': [6.40, 3.40],
+  'Africa/Dakar': [14.75, -17.50],
+  'Asia/Muscat': [23.60, 58.60],
+  'Asia/Kolkata': [9.93, 76.27],
+  'Asia/Calcutta': [9.93, 76.27],
+  'Asia/Seoul': [37.50, 128.90],
+  'Indian/Maldives': [4.35, 73.55],
 };
 
 export function browserTimeZone() {

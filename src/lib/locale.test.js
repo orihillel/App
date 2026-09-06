@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { defaultUnits, anchorFor, nearbyPicks } from './locale.js';
-import { SPOTS, ONBOARDING_PICKS, searchCatalog } from './spots.js';
+import { defaultUnits, anchorFor, nearbyPicks, TIMEZONE_ANCHORS } from './locale.js';
+import { SPOTS, ORDER, ONBOARDING_PICKS, searchCatalog } from './spots.js';
 
 describe('defaultUnits', () => {
   it('is metric in Israel, and everywhere else that uses it', () => {
@@ -150,7 +150,10 @@ describe('Southern African coverage', () => {
     const cases = [
       ['Africa/Windhoek', /Namibia/],
       ['Africa/Maputo', /Mozambique|South Africa/],
-      ['Africa/Luanda', /Angola/],
+      // The whole Gulf of Guinea seaboard counts here: Pointe-Noire is closer to Luanda than
+      // Luanda is to Benguela, Cabinda sits between them, and Mayumba is inside the same
+      // thousand kilometres. "Local" is a distance, not a passport.
+      ['Africa/Luanda', /Angola|Congo|Gabon/],
       ['Indian/Antananarivo', /Madagascar/],
       ['Indian/Reunion', /Réunion|Mauritius|Madagascar/],
     ];
@@ -168,7 +171,16 @@ describe('global coverage', () => {
 
   it('spans a wide set of countries, not just the surf-media ones', () => {
     const countries = new Set(spots.map(([, s]) => countryOf(s)));
-    expect(countries.size).toBeGreaterThanOrEqual(75);
+    expect(countries.size).toBeGreaterThanOrEqual(110);
+  });
+
+  it('lists every spot exactly once in ORDER, with nothing missing and nothing extra', () => {
+    // ORDER is what the app iterates to render the catalog, so a gap in it is a hole in the
+    // list and a stray entry is a crash. A trailing comma while this was being extended left a
+    // literal `undefined` in the array, which every other check happily ignored.
+    expect(ORDER).toHaveLength(Object.keys(SPOTS).length);
+    expect(new Set(ORDER).size).toBe(ORDER.length);
+    for (const id of ORDER) expect(SPOTS[id], String(id)).toBeTruthy();
   });
 
   it('covers every ocean basin', () => {
@@ -181,6 +193,41 @@ describe('global coverage', () => {
     expect(has((la, lo) => la < 0 && lo > -30 && lo < 60)).toBe(true); // S Africa / Angola
     expect(has((la, lo) => lo > 60 && lo < 180)).toBe(true);  // Indian / Pacific west
     expect(has((la, lo) => lo > 100 && la < 0)).toBe(true);   // Australasia
+  });
+
+  it('has an entry in every sea people actually surf, not only the three big oceans', () => {
+    // Named seas rather than quadrants: the quadrant test above passes with the catalog's
+    // Atlantic and Pacific spots alone, so it cannot notice a whole enclosed sea missing.
+    const inBox = (latLo, latHi, lonLo, lonHi) => spots.some(
+      ([, s]) => s.lat > latLo && s.lat < latHi && s.lon > lonLo && s.lon < lonHi,
+    );
+    expect(inBox(40, 48, 27, 42), 'Black Sea').toBe(true);
+    expect(inBox(53, 62, 10, 24), 'Baltic').toBe(true);
+    expect(inBox(12, 27, 50, 70), 'Arabian Sea').toBe(true);
+    expect(inBox(5, 23, 80, 100), 'Bay of Bengal').toBe(true);
+    expect(inBox(-6, 8, -6, 12), 'Gulf of Guinea').toBe(true);
+    expect(inBox(23, 27, 50, 57), 'Persian Gulf').toBe(true);
+    expect(inBox(28, 36, -70, -60), 'mid-Atlantic').toBe(true);
+    expect(inBox(-25, -5, 38, 58), 'western Indian Ocean').toBe(true);
+  });
+
+  it('offers local spots in each timezone the anchor table claims to cover', () => {
+    // An anchor that cannot find three spots nearby silently falls back to the global list, so
+    // adding one without the spots to back it is a lie in a table nobody would notice.
+    for (const [tz, [lat, lon]] of Object.entries(TIMEZONE_ANCHORS)) {
+      const picks = nearbyPicks(SPOTS, tz, ONBOARDING_PICKS);
+      expect(picks, tz).not.toBe(ONBOARDING_PICKS);
+      expect(picks.length, tz).toBeGreaterThanOrEqual(3);
+      // And "nearby" has to mean it. Roughly 1,000km, the same bound nearbyPicks applies —
+      // asserted here by country in some places, but distance is what the function promises,
+      // and it is the part that stays true as the catalog grows across borders.
+      for (const id of picks) {
+        const s = SPOTS[id];
+        const dLat = s.lat - lat;
+        const dLon = (s.lon - lon) * Math.cos(((s.lat + lat) / 2) * (Math.PI / 180));
+        expect(Math.sqrt(dLat * dLat + dLon * dLon) * 111, tz + ' ' + id).toBeLessThan(1000);
+      }
+    }
   });
 
   it('reaches both surfing hemispheres properly', () => {

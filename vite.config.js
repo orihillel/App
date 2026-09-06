@@ -1,12 +1,35 @@
 // vitest/config re-exports Vite's defineConfig with the `test` field merged
 // in, so the same config file works for both `vite build`/`vite dev` and
 // `vitest` — no separate vitest.config.js needed.
+import { execSync } from 'node:child_process';
 import { defineConfig } from 'vitest/config';
 import react from '@vitejs/plugin-react';
 import { VitePWA } from 'vite-plugin-pwa';
 
+// Which build is on screen, baked in at build time.
+//
+// Three times now a change has been reported as "not working" when the real answer was that it
+// had not been merged and deployed yet, and there is no way to tell those two apart by looking
+// at the app. The menu shows this, so the question is answerable in one glance instead of by
+// reading commit history.
+//
+// GITHUB_SHA is set by Actions, which is the build that actually reaches the site; the git call
+// is the local fallback, and 'dev' covers a tree with no git at all.
+function buildId() {
+  if (process.env.GITHUB_SHA) return process.env.GITHUB_SHA.slice(0, 7);
+  try {
+    return execSync('git rev-parse --short=7 HEAD', { stdio: ['ignore', 'pipe', 'ignore'] }).toString().trim();
+  } catch {
+    return 'dev';
+  }
+}
+
 // https://vite.dev/config/
 export default defineConfig({
+  define: {
+    __BUILD_ID__: JSON.stringify(buildId()),
+    __BUILD_DATE__: JSON.stringify(new Date().toISOString().slice(0, 10)),
+  },
   plugins: [
     react(),
     VitePWA({
