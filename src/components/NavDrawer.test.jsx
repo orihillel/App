@@ -136,4 +136,14 @@ describe('NavDrawer', () => {
     expect(screen.getByText(/Open-Meteo/)).toBeTruthy();
     expect(screen.getByText(/Natural Earth/)).toBeTruthy();
   });
+
+  it('names the build it is running, so "is this deployed yet?" is answerable on screen', () => {
+    // Three changes in a row were reported as broken when they simply had not been merged and
+    // deployed, and nothing in the app distinguished the two. Vite substitutes the commit at
+    // build time; under the test runner it falls back rather than rendering "undefined".
+    renderDrawer();
+    const line = screen.getByText(/^Build /);
+    expect(line.textContent).toMatch(/^Build [0-9a-f]{7}|^Build dev/);
+    expect(line.textContent).not.toMatch(/undefined/);
+  });
 });

@@ -18,7 +18,9 @@ export default [
     languageOptions: {
       ecmaVersion: 'latest',
       sourceType: 'module',
-      globals: globals.browser,
+      // __BUILD_ID__/__BUILD_DATE__ are substituted by Vite's `define` at build time (see
+      // vite.config.js) — real constants in the bundle, but invisible to a plain parse.
+      globals: { ...globals.browser, __BUILD_ID__: 'readonly', __BUILD_DATE__: 'readonly' },
       parserOptions: { ecmaFeatures: { jsx: true } },
     },
     plugins: { 'react-hooks': reactHooks, 'react-refresh': reactRefresh },

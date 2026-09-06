@@ -1058,8 +1058,15 @@ there's intentionally one source of truth, not separate logic per view.
   - *Also:* Escape and the scrim close it, focus moves into the panel, it is a labelled
     `role="dialog"`, and the units control is a segmented pair rather than a toggle that can be
     tapped into the wrong unit.
-  - *Verified:* lint, `check:classnames`, `check:spots`, **377 app tests** (13 new), build, and
-    a headless run that opens the menu from the home header and navigates to the globe with it.
+  - **The menu also names the build it is running.** Three separate changes in a row were
+    reported as "not working" when the real answer was that they had not been merged and
+    deployed yet, and nothing in the app could tell those two apart — the third of them was this
+    very menu. Vite's `define` bakes the commit and date in at build time (`GITHUB_SHA` in
+    Actions, a `git rev-parse` locally, `dev` otherwise) and the drawer's footer shows it. One
+    glance now answers "is this deployed?" instead of a trip through commit history.
+  - *Verified:* lint, `check:classnames`, `check:spots`, **378 app tests** (14 new), build, and
+    a headless run that opens the menu from the home header, reads `Build 139f71b · 2026-09-06`
+    in its footer, and navigates to the globe through it.
 
 ## Suggested next steps
 

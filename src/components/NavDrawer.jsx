@@ -24,6 +24,11 @@ import { SPOTS, ORDER as SEED_ORDER } from '../lib/spots.js';
 // here would be four hundred rows of "yours" that you never chose. What is genuinely yours is
 // the go-to spot and anything you searched for and added, which is what this shows — the same
 // distinction ProfileView already draws.
+// Substituted by Vite at build time; the fallbacks keep the component renderable anywhere the
+// define is not applied, such as a bare unit-test runner.
+const buildId = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev';
+const buildDate = typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : 'local';
+
 export function NavDrawer({
   spots, order, goToId, activeId, onSelectSpot, openSearch, onNavigate,
   units, toggleUnits, alertCount = 0, onClose,
@@ -123,8 +128,12 @@ export function NavDrawer({
             onClick={go(() => onNavigate('profile'))}
           />
 
+          {/* The build on screen. Three separate changes have been reported as "not working"
+              when the real answer was that they had not been merged and deployed yet, and
+              nothing in the app could tell those two apart. This can. */}
           <div style={{ borderTop: '1px solid ' + COLORS.navyBorder, marginTop: 18, paddingTop: 14, fontSize: 10, color: COLORS.foamDim, lineHeight: 1.6 }}>
-            Forecast by Open-Meteo · coastline by Natural Earth
+            <div>Forecast by Open-Meteo · coastline by Natural Earth</div>
+            <div>{'Build ' + buildId + ' · ' + buildDate}</div>
           </div>
         </div>
       </div>
