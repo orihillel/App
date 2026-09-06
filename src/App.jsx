@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react'
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SPOTS, ORDER, searchCatalog } from './lib/spots.js';
-import { fetchSpotForecast, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
+import { fetchSpotForecast, fetchNowForSpots, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration } from './lib/calibration.js';
@@ -108,7 +108,14 @@ export default function App() {
   const [contSelectedIdx, setContSelectedIdx] = useState(null);
   const [toast, setToast] = useState('');
   const [forecast, setForecast] = useState({});
-  const [loadingIds, setLoadingIds] = useState(() => new Set(ORDER));
+  // Empty, not the whole catalog.
+  //
+  // This used to start as `new Set(ORDER)` — every spot marked "fetching" up front — which was
+  // right only while the loader called loadSpotData for every spot in turn, each clearing its
+  // own entry. The batched backfill does not, so seeding it left every spot but the first stuck
+  // on FETCHING forever, and the guard below then refused to fetch them at all. A spot is now
+  // marked loading by the thing that actually loads it.
+  const [loadingIds, setLoadingIds] = useState(() => new Set());
   const [errorIds, setErrorIds] = useState(() => new Set());
   const [view, setView] = useState('home');
 
@@ -156,7 +163,14 @@ export default function App() {
     dataRef.current = { spots, order, forecast, clockHour: sel ? sel.hour : null };
   });
 
+  // Two effects can ask for the same spot in the same commit — the mount loader and the
+  // "whatever is on screen" one both want the active spot — and neither sees the other's
+  // setState until the next render. A ref is checked synchronously, so the second caller drops
+  // out instead of firing a duplicate pair of requests.
+  const inFlight = useRef(new Set());
   const loadSpotData = useCallback(async (id, spotObj) => {
+    if (inFlight.current.has(id)) return;
+    inFlight.current.add(id);
     setLoadingIds((prev) => new Set(prev).add(id));
     setErrorIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
     try {
@@ -165,30 +179,45 @@ export default function App() {
     } catch {
       setErrorIds((prev) => new Set(prev).add(id));
     } finally {
+      inFlight.current.delete(id);
       setLoadingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
     }
+  }, []);
+
+  // Only the spot on screen and the go-to spot get a full forecast. Everything else gets one
+  // "right now" reading, batched.
+  //
+  // This used to call fetchSpotForecast for all of ORDER — two requests each, seven days of
+  // hourly data, eleven marine variables — which measured at **809 requests on a single app
+  // open** against a free tier allowing 600 a minute and 10,000 a day. It was already over
+  // budget at 348 spots; at 403 the app simply stopped being able to fetch, which is what a
+  // rate limit looks like from the inside. See fetchNowForSpots for the arithmetic.
+  const loadBackfill = useCallback(async () => {
+    const rest = ORDER.filter((id) => SPOTS[id] && id !== activeIdRef.current && id !== goToIdRef.current);
+    const results = await fetchNowForSpots(rest.map((id) => ({ id, spot: SPOTS[id] })));
+    setForecast((prev) => {
+      const next = { ...prev };
+      for (const [id, value] of Object.entries(results)) {
+        // Never let a one-hour reading overwrite a real forecast: the spot page reads fields
+        // this cannot supply, and the globe is happy with either.
+        if (!next[id] || next[id].now) next[id] = value;
+      }
+      return next;
+    });
   }, []);
 
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const chunkSize = 5;
-      // The spot being looked at goes first, then the go-to spot, then everything else.
-      //
-      // This walked ORDER straight through, so the spot on screen waited behind up to 247
-      // others before its own forecast arrived — measured at over nine seconds still showing
-      // FETCHING, and worse the further down the catalog a spot sits. The backfill matters
-      // (the globe colours every marker from it) but it is not what anyone is waiting for.
-      const first = [activeIdRef.current, goToIdRef.current].filter((id) => id && SPOTS[id]);
-      const queue = [...new Set([...first, ...ORDER])];
-      for (let i = 0; i < queue.length; i += chunkSize) {
-        if (cancelled) return;
-        const chunk = queue.slice(i, i + chunkSize);
-        await Promise.all(chunk.map((id) => loadSpotData(id, SPOTS[id])));
-      }
+      // The spot being looked at first, then the go-to spot, then the rest of the catalog in
+      // one batched pass — the detail view is what someone is actually waiting for.
+      const first = [...new Set([activeIdRef.current, goToIdRef.current].filter((id) => id && SPOTS[id]))];
+      await Promise.all(first.map((id) => loadSpotData(id, SPOTS[id])));
+      if (cancelled) return;
+      await loadBackfill();
     })();
     return () => { cancelled = true; };
-  }, [loadSpotData]);
+  }, [loadSpotData, loadBackfill]);
 
   // Marked in a ref the moment a request starts, not when it finishes. This effect depends on
   // `forecast`, which changes on every one of the 230 spots loading in the background, so a
@@ -197,7 +226,10 @@ export default function App() {
   const agreementRequested = useRef(new Set());
   useEffect(() => {
     const spotObj = spots[activeId];
-    const hours = forecast[activeId] && forecast[activeId].hours;
+    const full = forecast[activeId] && !forecast[activeId].now ? forecast[activeId] : null;
+    const hours = full && full.hours;
+    // Model agreement compares a series; the batched one-hour reading is not one, so this
+    // waits for the real forecast rather than asking about a single point.
     if (!spotObj || !hours || agreementRequested.current.has(activeId)) return;
     agreementRequested.current.add(activeId);
     (async () => {
@@ -217,9 +249,19 @@ export default function App() {
   // forecasts load ahead of the one you asked for.
   useEffect(() => {
     const spotObj = spots[activeId];
-    if (!spotObj || forecast[activeId] || loadingIds.has(activeId)) return;
+    // A `now` entry is the batched one-hour reading the globe colours markers from. It is not
+    // a forecast — no chart, no week, no tide, no best window — so the spot page still has to
+    // fetch properly. Treating it as "already loaded" would leave every spot but the first two
+    // showing placeholders forever.
+    const loaded = forecast[activeId] && !forecast[activeId].now;
+    // `errorIds` is in the guard because this effect depends on `forecast` and `loadingIds`,
+    // both of which change when a fetch *fails* — so without it a spot whose forecast cannot
+    // be fetched is retried the instant the last attempt gives up, forever, which is a request
+    // storm aimed at an API that has just said no. It stops instead, and HomeView's retry
+    // button is how it gets asked again.
+    if (!spotObj || loaded || loadingIds.has(activeId) || errorIds.has(activeId)) return;
     loadSpotData(activeId, spotObj);
-  }, [activeId, spots, forecast, loadingIds, loadSpotData]);
+  }, [activeId, spots, forecast, loadingIds, errorIds, loadSpotData]);
 
   const buoyRequested = useRef(new Set());
   useEffect(() => {
@@ -456,16 +498,25 @@ export default function App() {
     }
   }
 
-  // live feed: keep every spot's forecast current, not just a one-time fetch on open
+  // Live feed: the spot on screen in full, the rest as one batched pass.
+  //
+  // This used to re-fetch a seven-day forecast for every spot in the catalog every ten minutes
+  // — 806 requests a cycle, ~116,000 a day against a 10,000-a-day allowance. Fifteen minutes is
+  // also closer to honest: the wave model behind this runs four times a day.
   useEffect(() => {
     const interval = setInterval(() => {
-      dataRef.current.order.forEach((id) => { loadSpotData(id, dataRef.current.spots[id]); });
-    }, 10 * 60 * 1000);
+      const id = activeIdRef.current;
+      if (id && dataRef.current.spots[id]) loadSpotData(id, dataRef.current.spots[id]);
+      loadBackfill();
+    }, 15 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [loadSpotData]);
+  }, [loadSpotData, loadBackfill]);
 
   const spot = spots[activeId];
-  const spotForecast = forecast[activeId];
+  // The spot page reads a full forecast only. A `now` entry exists for the globe's markers and
+  // carries a single hour; letting it through here would render a chart from one point and a
+  // week from none, which reads as broken data rather than as loading.
+  const spotForecast = forecast[activeId] && !forecast[activeId].now ? forecast[activeId] : null;
   const hourData = (spotForecast && spotForecast.hours) || PLACEHOLDER_HOURS;
   const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length ? spotForecast.continuous : PLACEHOLDER_CONTINUOUS);
   const contWaveLine = linePath(contData.map((p) => p.waveFt), 300, 70, 10);
