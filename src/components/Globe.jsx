@@ -7,7 +7,7 @@ import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import { base64ToBytes, decodeHeights, fillGridGaps, sampleGridSmooth } from '../lib/wavegrid.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
-import { waveColor, waveScaleGradient, waveScaleTicks, waveScaleUnitLabel, gridAgeLabel } from '../lib/wavescale.js';
+import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption } from '../lib/wavescale.js';
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
@@ -333,10 +333,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     function loadCoastlineTopology() {
       if (!coastlinePromise) {
         const base = (import.meta.env && import.meta.env.BASE_URL) || '/';
-        coastlinePromise = fetch(base.replace(/\/$/, '') + '/coastline-10m.json')
-          .then((r) => (r.ok ? r.json() : null))
+        // The name is versioned deliberately — see scripts/build-coastline.mjs. Files in
+        // public/ are not content-hashed, so a changed file at an unchanged URL leaves stale
+        // copies in browser caches, and a stale coastline costs the wave overlay its mask
+        // without saying so.
+        const url = base.replace(/\/$/, '') + '/coastline-10m-v2.json';
+        const get = () => fetch(url).then((r) => (r.ok ? r.json() : null));
+        // 753KB over a phone connection drops sometimes. One retry, because the alternative
+        // for the overlay is a whole zoom range's worth of coastline it cannot draw.
+        coastlinePromise = get()
+          .catch(() => get())
           // Offline, or the asset missing: every layer that wants it degrades rather than
-          // fails, so there is nothing to report and nothing to retry.
+          // fails, so there is nothing more to retry.
           .catch(() => null);
       }
       return coastlinePromise;
@@ -493,7 +501,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
             material,
           );
           globeGroup.add(waveMesh);
-          setWaveMeta({ ok: true, generatedAt: grid.generatedAt, stale: grid.stale });
+          setWaveMeta({
+            ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
+          });
           state.dataDirty = true;
         })
         .catch(() => setWaveMeta({ ok: false }));
@@ -1046,9 +1056,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
                   ))}
                 </div>
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
-                  {'Open-ocean wave height (' + waveScaleUnitLabel(units) + ') · '}
-                  {gridAgeLabel(waveMeta.generatedAt) || 'age unknown'}
-                  {waveMeta.stale ? ' · last good data' : ''}
+                  {waveLegendCaption(waveMeta, units)}
                 </div>
                 <div style={{ fontSize: 9, color: COLORS.foamDim, marginTop: 3, textAlign: 'center', opacity: 0.8 }}>
                   Big is not the same as good — the spot colours below already account for wind, tide and swell direction.

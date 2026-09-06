@@ -22,7 +22,7 @@ export default defineConfig({
         // enough to show it. Precaching it would triple the install payload for every user,
         // including everyone who never opens the globe, to prefetch something the globe
         // already fetches lazily and works fine without.
-        globIgnores: ['**/coastline-10m.json'],
+        globIgnores: ['**/coastline-10m-v2.json'],
       },
       includeAssets: ['icons/favicon-32.png'],
       manifest: {

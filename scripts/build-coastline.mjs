@@ -28,7 +28,15 @@ import { gzipSync } from 'node:zlib';
 import { fileURLToPath } from 'node:url';
 import landTopo from 'world-atlas/land-10m.json' with { type: 'json' };
 
-const outPath = fileURLToPath(new URL('../public/coastline-10m.json', import.meta.url));
+// The name carries a version, and it has to.
+//
+// Files in public/ are copied to the site verbatim — Vite content-hashes bundled assets, but
+// not these — so changing what this file *contains* while keeping its URL leaves every browser
+// that has fetched it holding a stale copy at the same address. That happened: the version
+// without `objects` is indistinguishable by URL from the version with it, and a stale copy
+// silently costs the wave overlay its land mask, which looks exactly like the bug the mask was
+// added to fix. Bump the suffix whenever the shape of this file changes.
+const outPath = fileURLToPath(new URL('../public/coastline-10m-v2.json', import.meta.url));
 const json = JSON.stringify({
   transform: landTopo.transform,
   arcs: landTopo.arcs,
