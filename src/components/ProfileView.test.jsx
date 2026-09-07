@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/react';
+import { render, screen, fireEvent, within } from '@testing-library/react';
 
 vi.mock('../lib/auth.js', () => ({ isAuthConfigured: vi.fn() }));
 vi.mock('./AuthButtons.jsx', () => ({ AuthButtons: () => <div data-testid="auth-buttons-stub" /> }));
@@ -96,5 +96,92 @@ describe('ProfileView ACCOUNT section', () => {
 
     fireEvent.click(screen.getByText('Log out'));
     expect(props.onLogOut).toHaveBeenCalled();
+  });
+});
+
+describe('ProfileView go-to picker', () => {
+  // It used to be a horizontal strip of every spot in `order`: measured at 403 pills in the
+  // running app, with no search and no grouping, so choosing one meant swiping past hundreds.
+  // The catalog is the `spots` map; `order` is the much shorter list of spots that are yours.
+  // The bulk entries are therefore in `spots` and NOT in `order` -- an id in `order` that is
+  // not a seed id is by definition one the user added, which is why it belongs in the picker.
+  const BIG = { ...SPOTS };
+  for (let i = 0; i < 40; i++) BIG['bulk-' + i] = { name: 'Bulk Spot ' + i, region: 'Nowhere' };
+  const BIG_ORDER = ORDER;
+
+  it('lists what is yours, not the whole catalog', () => {
+    renderProfile({ spots: BIG, order: BIG_ORDER });
+    const picker = screen.getByRole('group', { name: 'Go-to spot choices' });
+    expect(within(picker).getByText('Lower Trestles')).toBeTruthy();   // the go-to
+    expect(within(picker).getByText('My Local Break')).toBeTruthy();   // added by hand
+    expect(within(picker).queryByText('Bulk Spot 7')).toBeNull();      // catalog, not yours
+  });
+
+  it('reaches the rest of the catalog by typing rather than by swiping', () => {
+    renderProfile({ spots: BIG, order: BIG_ORDER });
+    fireEvent.change(screen.getByLabelText(/Search spots to set your go-to/), { target: { value: 'Bulk Spot 7' } });
+    const picker = screen.getByRole('group', { name: 'Go-to spot choices' });
+    expect(within(picker).getByText('Bulk Spot 7')).toBeTruthy();
+    expect(within(picker).queryByText('My Local Break')).toBeNull();   // filtered out while searching
+  });
+
+  it('says so when nothing matches, instead of showing an empty gap', () => {
+    renderProfile({ spots: BIG, order: BIG_ORDER });
+    fireEvent.change(screen.getByLabelText(/Search spots to set your go-to/), { target: { value: 'zzzznotaspot' } });
+    expect(screen.getByText('No spot matches that.')).toBeTruthy();
+  });
+
+  it('sets the go-to spot and clears the search', () => {
+    const props = renderProfile({ spots: BIG, order: BIG_ORDER });
+    const input = screen.getByLabelText(/Search spots to set your go-to/);
+    fireEvent.change(input, { target: { value: 'Bulk Spot 3' } });
+    fireEvent.click(within(screen.getByRole('group', { name: 'Go-to spot choices' })).getByText('Bulk Spot 3'));
+    expect(props.setGoToSpot).toHaveBeenCalledWith('bulk-3');
+    expect(input.value).toBe('');
+  });
+
+  it('marks which one is the go-to', () => {
+    renderProfile();
+    const picker = screen.getByRole('group', { name: 'Go-to spot choices' });
+    expect(within(picker).getByText('Lower Trestles').closest('button').getAttribute('aria-pressed')).toBe('true');
+    expect(within(picker).getByText('My Local Break').closest('button').getAttribute('aria-pressed')).toBe('false');
+  });
+});
+
+describe('ProfileView layout', () => {
+  const HEADINGS = ['GO-TO SPOT', 'UNITS', 'ALERTS', 'PUSH NOTIFICATIONS', 'YOUR SESSIONS', 'DATA'];
+
+  it('renders every section heading identically', () => {
+    // YOUR SESSIONS was written out separately from the rest and sat in a container that added
+    // its own '0 24px' on top of the page padding, putting it 24px right of every other
+    // heading -- 82px against 58px, measured in the browser. One shared component now.
+    renderProfile();
+    const styles = new Set();
+    for (const text of HEADINGS) {
+      const el = screen.getByText((_, node) => node.textContent.trim() === text && node.children.length === 0);
+      styles.add(el.style.cssText.replace(/\s+/g, ' '));
+    }
+    expect(styles.size, [...styles].join('  ||  ')).toBe(1);
+  });
+
+  it('puts no section in a container that indents it past the others', () => {
+    renderProfile();
+    for (const text of HEADINGS) {
+      const el = screen.getByText((_, node) => node.textContent.trim() === text && node.children.length === 0);
+      let n = el.parentElement, extra = null;
+      while (n && n !== document.body) {
+        if (n.style && (n.style.paddingLeft || n.style.padding)) { extra = n; break; }
+        n = n.parentElement;
+      }
+      // Exactly one padded ancestor is allowed: the page container every section shares.
+      const padded = [];
+      let m = el.parentElement;
+      while (m && m !== document.body) {
+        if (m.style && (m.style.paddingLeft || m.style.padding)) padded.push(m.style.padding || m.style.paddingLeft);
+        m = m.parentElement;
+      }
+      expect(padded.length, text + ' has padded ancestors: ' + JSON.stringify(padded)).toBeLessThanOrEqual(1);
+      expect(extra === null || padded.length === 1).toBe(true);
+    }
   });
 });
