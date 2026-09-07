@@ -1,0 +1,120 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap">
+  <style>
+    body { margin: 0; background: #070F18; color: #F4F7F6; font-family: Inter, system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
+    a { color: #39E6C4; } a:hover { color: #2FA98C; }
+    .mono { font-family: 'JetBrains Mono', ui-monospace, monospace; }
+    .grot { font-family: 'Space Grotesk', system-ui, sans-serif; }
+    .tap { min-width: 44px; min-height: 44px; display: flex; align-items: center; justify-content: center; background: none; border: none; padding: 0; color: inherit; }
+    .col > * { flex-shrink: 0; }
+    .card { background: #0F2136; border: 1px solid rgba(244,247,246,0.14); border-radius: 10px; }
+    .lbl { font-size: 12px; letter-spacing: 0.08em; font-weight: 600; color: rgba(244,247,246,0.58); }
+    .sk { background: rgba(244,247,246,0.09); border-radius: 5px; animation: pulse 1.5s ease-in-out infinite; }
+    @keyframes pulse { 0%, 100% { opacity: 0.5; } 50% { opacity: 0.95; } }
+    @media (prefers-reduced-motion: reduce) { .sk { animation: none; } }
+  </style>
+</helmet>
+
+<div style="width: 390px; height: 844px; display: flex; flex-direction: column; overflow: hidden; background: #070F18;">
+  <div style="height: 44px; flex-shrink: 0;"></div>
+  <div class="col" style="flex: 1; overflow: hidden; display: flex; flex-direction: column;">
+
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 14px 4px;">
+      <div class="tap"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><path d="M3 6h18M3 12h18M3 18h18"/></svg></div>
+      <span class="grot" style="font-weight: 600; font-size: 14px; letter-spacing: 0.14em;">SURFCAST</span>
+      <div style="display: flex; align-items: center; gap: 2px;">
+        <div class="tap" style="border: 1px solid rgba(244,247,246,0.14); border-radius: 6px; min-width: 46px;"><span class="mono" style="font-size: 12px; font-weight: 700; color: rgba(244,247,246,0.58);">FT</span></div>
+        <div class="tap"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5"/></svg></div>
+      </div>
+    </div>
+
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 0 10px 10px;">
+      <div style="display: flex; align-items: center; gap: 2px; min-width: 0;">
+        <div class="tap" style="flex-shrink: 0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><path d="M15 18l-6-6 6-6"/></svg></div>
+        <div style="min-width: 0;">
+          <div class="grot" style="font-weight: 700; font-size: 26px; line-height: 1.1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Lower Trestles</div>
+          <div style="font-size: 14px; color: rgba(244,247,246,0.58); margin-top: 3px;">San Clemente, CA</div>
+        </div>
+        <div class="tap" style="flex-shrink: 0;"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><path d="M9 18l6-6-6-6"/></svg></div>
+      </div>
+      <div style="display: flex; align-items: center; flex-shrink: 0;">
+        <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="#FFC24B" stroke="#FFC24B" stroke-width="2" stroke-linejoin="round"><path d="M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5-5.8-3-5.8 3 1.1-6.5L2.6 9.8l6.5-.9z"/></svg></div>
+      </div>
+    </div>
+
+    <!-- hero: skeleton. No numbers exist yet, so none are shown. -->
+    <div style="margin: 0 14px; border-radius: 14px; background: #0F2136; border: 1px solid rgba(244,247,246,0.14); padding: 16px 16px 18px; position: relative; overflow: hidden;">
+      <div style="position: absolute; top: 0; left: 0; right: 0; height: 3px; background: rgba(244,247,246,0.14);"></div>
+      <div style="display: flex; align-items: center; gap: 8px;">
+        <span class="mono" style="background: #33465C; color: rgba(244,247,246,0.58); font-weight: 700; font-size: 12px; letter-spacing: 0.08em; padding: 4px 9px; border-radius: 4px;">CHECKING…</span>
+        <span class="mono" style="font-size: 13px; color: rgba(244,247,246,0.58);">AT 7A</span>
+      </div>
+      <div style="display: flex; align-items: baseline; gap: 8px; margin-top: 14px;">
+        <div class="sk" style="width: 148px; height: 50px;"></div>
+        <span class="mono" style="font-weight: 700; font-size: 18px; color: rgba(244,247,246,0.58);">FT</span>
+      </div>
+      <div style="display: flex; flex-direction: column; gap: 9px; margin-top: 18px;">
+        <div class="sk" style="width: 190px; height: 13px;"></div>
+        <div class="sk" style="width: 150px; height: 13px;"></div>
+        <div class="sk" style="width: 118px; height: 13px;"></div>
+      </div>
+      <div style="font-size: 15px; color: rgba(244,247,246,0.58); margin-top: 18px; line-height: 1.45;">Cobblestone point break. Works best on a SW groundswell with a light east wind.</div>
+    </div>
+
+    <div class="card" style="margin: 14px 14px 0; padding: 12px 14px;">
+      <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px;">
+        <span class="lbl">WAVE HEIGHT TODAY</span>
+        <div class="sk" style="width: 62px; height: 12px;"></div>
+      </div>
+      <div class="sk" style="width: 100%; height: 48px; border-radius: 8px;"></div>
+      <div style="display: flex; justify-content: space-between; margin-top: 8px;">
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">5a</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">7a</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">9a</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">11a</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">1p</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">3p</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">5p</span>
+        <span class="mono" style="font-size: 12px; color: rgba(244,247,246,0.58);">7p</span>
+      </div>
+    </div>
+
+    <div class="card" style="margin: 14px 14px 0; padding: 12px 14px;">
+      <span class="lbl">WAVE HEIGHT THIS WEEK</span>
+      <div class="sk" style="width: 100%; height: 68px; border-radius: 8px; margin-top: 8px;"></div>
+    </div>
+
+    <div style="display: flex; gap: 8px; padding: 14px 14px 0;">
+      <div class="card" style="flex: 1; padding: 10px 11px;">
+        <div class="lbl" style="font-size: 11px;">SWELL</div>
+        <div class="sk" style="width: 52px; height: 17px; margin-top: 7px;"></div>
+      </div>
+      <div class="card" style="flex: 1; padding: 10px 11px;">
+        <div class="lbl" style="font-size: 11px;">WIND</div>
+        <div class="sk" style="width: 52px; height: 17px; margin-top: 7px;"></div>
+      </div>
+      <div class="card" style="flex: 1; padding: 10px 11px;">
+        <div class="lbl" style="font-size: 11px;">TIDE</div>
+        <div class="sk" style="width: 52px; height: 17px; margin-top: 7px;"></div>
+      </div>
+    </div>
+  </div>
+
+  <div style="flex-shrink: 0; display: flex; justify-content: space-around; align-items: center; padding: 8px 16px 18px; border-top: 1px solid rgba(244,247,246,0.14);">
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="#FF6A47" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/></svg></div>
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linejoin="round"><path d="M9 4L3 6.5v13L9 17l6 3 6-2.5v-13L15 7z"/><path d="M9 4v13M15 7v13"/></svg></div>
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><path d="M18 8A6 6 0 0 0 6 8c0 6-3 7-3 7h18s-3-1-3-7"/><path d="M10.5 20a2 2 0 0 0 3 0"/></svg></div>
+    <div class="tap"><svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="rgba(244,247,246,0.58)" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="8" r="4"/><path d="M4.5 21a7.5 7.5 0 0 1 15 0"/></svg></div>
+  </div>
+</div>
+</x-dc>
+</body>
+</html>

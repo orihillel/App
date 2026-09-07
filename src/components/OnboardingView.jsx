@@ -46,15 +46,15 @@ export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openG
 
       <div className="flex" style={{ gap: 8 }}>
         <button className="tl-btn flex items-center justify-center" onClick={openSearch}
-          style={{ flex: 1, gap: 6, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 0', color: COLORS.tealBright, fontWeight: 700, fontSize: 12.5 }}>
+          style={{ flex: 1, gap: 6, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, minHeight: 46, color: COLORS.tealBright, fontWeight: 700, fontSize: 14 }}>
           <Search size={14} /> Search by name
         </button>
         <button className="tl-btn flex items-center justify-center" onClick={openGlobePicker}
-          style={{ flex: 1, gap: 6, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 0', color: COLORS.tealBright, fontWeight: 700, fontSize: 12.5 }}>
+          style={{ flex: 1, gap: 6, background: 'none', border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, minHeight: 46, color: COLORS.tealBright, fontWeight: 700, fontSize: 14 }}>
           <Map size={14} /> Browse the globe
         </button>
       </div>
-      <button className="tl-btn" onClick={() => completeOnboarding(activeId)} style={{ width: '100%', marginTop: 14, background: 'none', border: 'none', color: COLORS.foamDim, fontSize: 12, padding: '6px 0' }}>
+      <button className="tl-btn" onClick={() => completeOnboarding(activeId)} style={{ width: '100%', marginTop: 14, background: 'none', border: 'none', color: COLORS.foamDim, fontSize: 12, minHeight: 44, padding: 0 }}>
         Skip for now
       </button>
     </div>

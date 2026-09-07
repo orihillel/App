@@ -41,10 +41,14 @@ export default defineConfig({
       srcDir: 'src',
       filename: 'sw.js',
       injectManifest: {
-        // The vector coastline is ~3MB and is only fetched once the globe is zoomed in far
-        // enough to show it. Precaching it would triple the install payload for every user,
-        // including everyone who never opens the globe, to prefetch something the globe
-        // already fetches lazily and works fine without.
+        // The vector coastline is ~3MB (807KB gzipped) and is only fetched once the globe is
+        // zoomed in far enough to show it. Precaching it would triple the install payload for
+        // every user, including everyone who never opens the globe, to prefetch something the
+        // globe already fetches lazily and works fine without.
+        //
+        // Left out of the precache, but not left uncached: src/sw.js keeps it cache-first at
+        // runtime, so it is paid for once by the people who actually open the globe and is
+        // then instant, and available offline, for them.
         globIgnores: ['**/coastline-10m-v2.json'],
       },
       includeAssets: ['icons/favicon-32.png'],

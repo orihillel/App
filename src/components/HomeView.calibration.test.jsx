@@ -30,7 +30,7 @@ function renderHome(props = {}) {
       spot={{ name: 'Maravi', region: 'Tel Aviv, Israel', blurb: 'A spot.' }}
       isGoTo={false} makeGoTo={() => {}} showSpotNav={false}
       onPrevSpot={() => {}} onNextSpot={() => {}}
-      h={HOUR_ROW} isLoading={false} hasError={false} retry={() => {}}
+      h={HOUR_ROW} dataState="ok" fetchedAt={Date.now()} retry={() => {}}
       waveChart={{ d: '', pts: [[0, 0]] }} hourIdx={0} setHourIdx={() => {}} hourData={[HOUR_ROW]}
       activeId="maravi" contData={[{ waveFt: 3, tideFt: 1, windSpd: 5, windDeg: 90, day: 'Tue', hour: 7 }]}
       contWaveLine={{ d: '', pts: [[0, 0]] }} contTideLine={{ d: '', pts: [[0, 0]] }}
@@ -72,8 +72,17 @@ describe('HomeView calibration line', () => {
   });
 
   it('stays out of the way while the forecast is still loading', () => {
-    // A correction shown beside placeholder numbers would be describing nothing.
-    renderHome({ calibration: calibration(biasedSamples(20, 1.3)), isLoading: true });
+    // There are no numbers on screen yet to correct -- the card is a skeleton until real ones
+    // arrive. (It used to be placeholder numbers, and a correction beside those described
+    // nothing at all.)
+    renderHome({ calibration: calibration(biasedSamples(20, 1.3)), dataState: 'loading' });
+    expect(screen.queryByText(/Runs \d+%/)).toBeNull();
+  });
+
+  it('stays out of the way when the reading on screen is a stale one', () => {
+    // A learned correction describes the model's bias now, not four hours ago, and stacking
+    // it on a reading already labelled LAST KNOWN is two hedges on one number.
+    renderHome({ calibration: calibration(biasedSamples(20, 1.3)), dataState: 'stale' });
     expect(screen.queryByText(/Runs \d+%/)).toBeNull();
   });
 

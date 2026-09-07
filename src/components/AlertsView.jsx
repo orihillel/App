@@ -7,10 +7,10 @@ export function AlertsView({ alerts, spots, units, checkAlertMatch, openNewAlert
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
         <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>Alerts</span>
-        <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 6 }} aria-label="Close alerts"><X size={18} color={COLORS.foamDim} /></button>
+        <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 0, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }} aria-label="Close alerts"><X size={22} color={COLORS.foamDim} /></button>
       </div>
       <div style={{ padding: '0 20px 12px' }}>
-        <button className="tl-btn" onClick={openNewAlert} style={{ width: '100%', background: COLORS.tealBright, border: 'none', borderRadius: 12, padding: '11px 13px', color: COLORS.navy, fontWeight: 700, fontSize: 14 }}>+ New alert</button>
+        <button className="tl-btn" onClick={openNewAlert} style={{ width: '100%', background: COLORS.tealBright, border: 'none', borderRadius: 12, minHeight: 46, color: COLORS.navy, fontWeight: 700, fontSize: 15 }}>+ New alert</button>
       </div>
       <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {alerts.length === 0 && (

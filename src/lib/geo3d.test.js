@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { markerScaleForDistance, markerScreenSizeRatio } from './geo3d.js';
+import * as THREE from 'three';
+import { markerScaleForDistance, markerScreenSizeRatio, latLonToVector3, rotationToFace, shortestAngleTo } from './geo3d.js';
 
 // The globe's actual numbers, so these assertions track the real thing. `shell` is 1.0 --
 // markers are centred exactly on the surface so a dot sits at its true coordinates from every
@@ -62,5 +63,55 @@ describe('markerScreenSizeRatio', () => {
     // Move the closest zoom and the curve still lands on closeShrink there.
     const opts = { ...OPTS, minDistance: 1.2 };
     expect(markerScreenSizeRatio(1.2, opts)).toBeCloseTo(opts.closeShrink, 6);
+  });
+});
+
+describe('rotationToFace', () => {
+  // Checked by doing the thing rather than by re-deriving the algebra: rotate the real vector
+  // with three's own Euler, in the order the globe uses, and see where it ends up.
+  function facedPosition(lat, lon) {
+    const { rotX, rotY } = rotationToFace(lat, lon);
+    return latLonToVector3(lat, lon, 1).applyEuler(new THREE.Euler(rotX, rotY, 0));
+  }
+
+  it('brings any point round to the camera axis', () => {
+    for (const [lat, lon] of [[0, 0], [33.4, -117.6], [-34, 151], [0, 179.5], [0, -179.5], [64, -21], [-45, -73]]) {
+      const p = facedPosition(lat, lon);
+      expect(Math.abs(p.x), `x at ${lat},${lon}`).toBeLessThan(1e-9);
+      expect(Math.abs(p.y), `y at ${lat},${lon}`).toBeLessThan(1e-9);
+      expect(p.z, `z at ${lat},${lon}`).toBeCloseTo(1, 9); // +Z, not -Z: the near side, not the antipode
+    }
+  });
+
+  it('faces the poles without spinning off to a NaN', () => {
+    for (const lat of [90, -90]) {
+      const p = facedPosition(lat, 0);
+      expect(Number.isFinite(p.x) && Number.isFinite(p.y) && Number.isFinite(p.z)).toBe(true);
+      expect(p.z).toBeCloseTo(1, 9);
+    }
+  });
+});
+
+describe('shortestAngleTo', () => {
+  it('goes the short way round rather than most of a turn', () => {
+    // From just past the antimeridian to just before it: 6 degrees, not 354.
+    const from = Math.PI - 0.05;
+    const to = -Math.PI + 0.05;
+    expect(Math.abs(shortestAngleTo(from, to) - from)).toBeLessThan(0.2);
+  });
+
+  it('lands on an angle equivalent to the target', () => {
+    for (const [a, b] of [[0, 1], [3, -3], [-3, 3], [0, Math.PI], [10, -10]]) {
+      const out = shortestAngleTo(a, b);
+      const diff = Math.abs(((out - b) % (Math.PI * 2)));
+      expect(Math.min(diff, Math.PI * 2 - diff)).toBeLessThan(1e-9);
+    }
+  });
+
+  it('never travels more than half a turn', () => {
+    for (let i = 0; i < 40; i++) {
+      const a = (i - 20) * 0.7, b = (i * 1.3) - 12;
+      expect(Math.abs(shortestAngleTo(a, b) - a)).toBeLessThanOrEqual(Math.PI + 1e-9);
+    }
   });
 });
