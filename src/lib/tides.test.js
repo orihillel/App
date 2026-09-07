@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nextTideEvent } from './placeholders.js';
+import { nextTideEvent } from './tides.js';
 
 // A simple curve: rises to a high at hour 3, falls to a low at hour 9, rises again.
 const TIDE = [0, 1, 2, 3, 2, 1, 0, -1, -2, -3, -2, -1, 0].map((ft, hour) => ({ hour, ft }));

@@ -8,7 +8,7 @@ import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration } from './lib/calibration.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
-import { PLACEHOLDER_HOURS, PLACEHOLDER_TIDE_TODAY, PLACEHOLDER_TIDE_NEXT, PLACEHOLDER_CONTINUOUS, nextTideEvent } from './lib/placeholders.js';
+import { nextTideEvent } from './lib/tides.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
@@ -22,7 +22,14 @@ import { BottomNav } from './components/BottomNav.jsx';
 import { NavDrawer } from './components/NavDrawer.jsx';
 
 const GLOBAL_CSS = `
+/* @import has to be the first rule in a stylesheet -- anything above it makes it invalid and
+   the fonts silently fall back -- so the reset goes directly under it, not above. */
 @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap');
+/* The document had no reset, and never needed one while the app sat inside a centred frame on
+   a beige page -- the browser's default 8px body margin just widened the beige. Going edge to
+   edge, that margin pushes the whole app down and left and leaves the bottom nav 8px below the
+   fold. Nothing else in the app sets it. */
+html, body { margin: 0; padding: 0; background: #070F18; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
 .tl-btn { cursor: pointer; }
@@ -58,16 +65,19 @@ const GLOBAL_CSS = `
 .overflow-x-auto { overflow-x: auto; }
 .overflow-hidden { overflow: hidden; }
 .relative { position: relative; }
-.min-h-screen { min-height: 100vh; }
+.min-h-screen { min-height: 100vh; min-height: 100dvh; }
 .w-full { width: 100%; }
 .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .p-6 { padding: 1.5rem; }
+.px-3 { padding-left: 0.75rem; padding-right: 0.75rem; }
+.px-4 { padding-left: 1rem; padding-right: 1rem; }
 .px-6 { padding-left: 1.5rem; padding-right: 1.5rem; }
 .px-7 { padding-left: 1.75rem; padding-right: 1.75rem; }
 .pt-2 { padding-top: 0.5rem; }
 .pt-4 { padding-top: 1rem; }
 .pb-1 { padding-bottom: 0.25rem; }
 .pb-3 { padding-bottom: 0.75rem; }
+.mx-4 { margin-left: 1rem; margin-right: 1rem; }
 .mx-6 { margin-left: 1.5rem; margin-right: 1.5rem; }
 `;
 
@@ -158,8 +168,8 @@ export default function App() {
     // index. `hourIdx` only indexes the *active* spot's daylight window, and since PR #22 those
     // windows differ per spot: the same index is a different time of day elsewhere, and off the
     // end entirely at a spot with a shorter day.
-    const own = (forecast[activeId] && forecast[activeId].hours) || PLACEHOLDER_HOURS;
-    const sel = own[Math.min(hourIdx, own.length - 1)];
+    const own = (forecast[activeId] && forecast[activeId].hours) || null;
+    const sel = own && own.length ? own[Math.min(hourIdx, own.length - 1)] : null;
     dataRef.current = { spots, order, forecast, clockHour: sel ? sel.hour : null };
   });
 
@@ -175,7 +185,9 @@ export default function App() {
     setErrorIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
     try {
       const result = await fetchSpotForecast(spotObj);
-      setForecast((prev) => ({ ...prev, [id]: result }));
+      // When the next refresh fails, this is what lets the page say "4h 20m ago" instead of
+      // quietly presenting stale numbers as current ones.
+      setForecast((prev) => ({ ...prev, [id]: { ...result, fetchedAt: Date.now() } }));
     } catch {
       setErrorIds((prev) => new Set(prev).add(id));
     } finally {
@@ -525,24 +537,35 @@ export default function App() {
   // carries a single hour; letting it through here would render a chart from one point and a
   // week from none, which reads as broken data rather than as loading.
   const spotForecast = forecast[activeId] && !forecast[activeId].now ? forecast[activeId] : null;
-  const hourData = (spotForecast && spotForecast.hours) || PLACEHOLDER_HOURS;
-  const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length ? spotForecast.continuous : PLACEHOLDER_CONTINUOUS);
-  const contWaveLine = linePath(contData.map((p) => p.waveFt), 300, 70, 10);
-  const contTideLine = linePath(contData.map((p) => (p.tideFt != null ? p.tideFt : 0)), 300, 70, 10);
-  const contWindLine = linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10);
-  const contSelected = contSelectedIdx != null ? contData[contSelectedIdx] : null;
+  // Every value below is either a real measurement or null. There is no third option any more.
+  //
+  // It used to be a third option, and it was the worst bug in the app. When a fetch was slow
+  // or failed, these fell back to PLACEHOLDER_HOURS and friends: a believable 3-5ft at 12s
+  // from the SW, a sine-wave week, a tide curve, all rendered in exactly the same type as
+  // real data with nothing to tell them apart. The card said "Live data didn't load for this
+  // spot" directly beneath numbers it had invented. In a weather app that is bad; in a surf
+  // app someone drives to the coast on it.
+  const hourData = (spotForecast && spotForecast.hours && spotForecast.hours.length) ? spotForecast.hours : null;
+  const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length) ? spotForecast.continuous : null;
+  const contWaveLine = contData ? linePath(contData.map((p) => p.waveFt), 300, 70, 10) : null;
+  const contTideLine = contData ? linePath(contData.map((p) => (p.tideFt != null ? p.tideFt : 0)), 300, 70, 10) : null;
+  const contWindLine = contData ? linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10) : null;
+  const contSelected = contData && contSelectedIdx != null ? contData[contSelectedIdx] : null;
   // The sampled hours are no longer a fixed list of eight — a short winter day at a
   // high-latitude spot yields fewer — so an index chosen for one spot can overshoot the next.
-  const safeHourIdx = Math.min(hourIdx, hourData.length - 1);
-  const h = hourData[safeHourIdx];
+  const safeHourIdx = hourData ? Math.min(hourIdx, hourData.length - 1) : 0;
+  const h = hourData ? hourData[safeHourIdx] : null;
   const isGoTo = activeId === goToId;
   const spotCalibration = calibration(calSamples[activeId]);
-  const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : PLACEHOLDER_TIDE_TODAY;
-  const tideNext = (spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : PLACEHOLDER_TIDE_NEXT;
-  const tide = linePath(tideToday, 100, 34, 4);
-  const waveChart = linePath(hourData.map((hr) => waveAvg(hr.wave)), 300, 56, 8);
-  const isLoading = loadingIds.has(activeId);
+  const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : null;
+  const tideNext = (h && spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : null;
+  const tide = tideToday ? linePath(tideToday, 100, 34, 4) : null;
+  const waveChart = hourData ? linePath(hourData.map((hr) => waveAvg(hr.wave)), 300, 56, 8) : null;
   const hasError = errorIds.has(activeId);
+  // The four states the spot page can be in, named once here rather than re-derived from
+  // three booleans at every call site. "stale" is the interesting one: the fetch failed but a
+  // real reading from earlier survives, and showing it with its age beats showing nothing.
+  const dataState = h ? (hasError ? 'stale' : 'ok') : (hasError ? 'empty' : 'loading');
 
   function makeGoTo() { if (!isGoTo) { setGoToId(activeId); setToast(spot.name + ' set as your go-to spot'); } }
   function openSearch() { setSearchOpen(true); }
@@ -667,26 +690,26 @@ export default function App() {
     } catch { /* best-effort */ }
   }
 
+  // The app fills the device, rather than drawing a picture of one.
+  //
+  // What used to be here was the original chat-to-code mockup's shell: a beige page, a 6px
+  // bezel with 44px corners, and a painted "9:41" status bar with fake signal and battery
+  // glyphs. On a phone that cost about an eighth of the width and a tenth of the height, and
+  // sat the fake clock directly above the real one; on a desktop the app was 28% of the
+  // window and the rest was beige. index.html has always carried viewport-fit=cover and
+  // apple-mobile-web-app-status-bar-style=black-translucent, so the app was built to go
+  // edge to edge — the frame was the only thing stopping it.
+  //
+  // The safe-area insets are what replaces the painted bar: real space for the real status
+  // bar and the home indicator, on the devices that have them, and zero elsewhere.
   return (
-    <div className="min-h-screen w-full flex items-center justify-center p-6" style={{ background: '#E9E7DF' }}>
+    <div className="min-h-screen w-full flex justify-center" style={{ background: COLORS.navy }}>
       <style>{GLOBAL_CSS}</style>
-      <div className="relative overflow-hidden" style={{ width: '100%', maxWidth: 390, borderRadius: 44, background: COLORS.navy, border: '6px solid #08141F', boxShadow: '0 30px 60px -20px rgba(11,28,46,0.45)', fontFamily: 'Inter, sans-serif' }}>
+      <div className="relative overflow-hidden" style={{ width: '100%', maxWidth: 480, height: '100dvh', background: COLORS.navy, fontFamily: 'Inter, sans-serif', display: 'flex', flexDirection: 'column' }}>
 
-        <div className="flex justify-between items-center px-7 pt-4 pb-1" style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12, color: COLORS.foam, opacity: 0.85 }}>
-          <span>9:41</span>
-          <div className="flex items-center" style={{ gap: 4 }}>
-            <div className="flex items-end" style={{ gap: 2 }}>
-              <div style={{ width: 3, height: 4, background: COLORS.foam, borderRadius: 1 }} />
-              <div style={{ width: 3, height: 6, background: COLORS.foam, borderRadius: 1 }} />
-              <div style={{ width: 3, height: 8, background: COLORS.foam, borderRadius: 1 }} />
-              <div style={{ width: 3, height: 10, background: COLORS.foam, borderRadius: 1 }} />
-            </div>
-            <div style={{ width: 20, height: 10, border: '1.5px solid ' + COLORS.foam, borderRadius: 3, padding: 1.5, marginLeft: 3 }}>
-              <div style={{ width: '70%', height: '100%', background: COLORS.foam, borderRadius: 1 }} />
-            </div>
-          </div>
-        </div>
-
+        {/* Only this scrolls. The nav below stays put, which it did not when the whole frame
+            was one scrolling column and a tall spot page pushed it off the bottom. */}
+        <div className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingTop: 'env(safe-area-inset-top, 0px)' }}>
         {!onboarded ? (
           onboardingGlobeOpen ? (
             <Suspense fallback={<GlobeLoading />}>
@@ -712,7 +735,7 @@ export default function App() {
           <HomeView
             units={units} toggleUnits={toggleUnits} openSearch={openSearch} openMenu={() => setMenuOpen(true)}
             spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1} onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
-            h={h} isLoading={isLoading} hasError={hasError} retry={() => loadSpotData(activeId, spot)}
+            h={h} dataState={dataState} fetchedAt={spotForecast ? spotForecast.fetchedAt : null} retry={() => loadSpotData(activeId, spot)}
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
             best={spotForecast ? spotForecast.best : null}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
@@ -724,6 +747,7 @@ export default function App() {
             tideToday={tideToday} tide={tide} tideNext={tideNext}
           />
         )}
+        </div>
 
         <div style={{ position: 'relative', height: 0 }}>
           {toast && (

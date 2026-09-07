@@ -13,7 +13,6 @@ import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
-import { PLACEHOLDER_HOURS } from '../lib/placeholders.js';
 import LANDMASSES from '../data/landmasses.json';
 import { ConditionScale } from './ConditionScale.jsx';
 
@@ -1004,7 +1003,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
         const sfm = live.forecast[m.id];
-        const hrs = (sfm && sfm.hours) || PLACEHOLDER_HOURS;
+        // No forecast means no hour, and the marker stays grey. It used to fall back to a
+        // set of invented hours whose rating happened to be 'LOADING', which reached the same
+        // grey by a route that made the legend's "grey = no reading yet" a lie.
+        const hrs = (sfm && sfm.hours) || null;
         // By clock hour, not array index: each spot's hours come from its own daylight window,
         // so index N is a different time of day at each spot — and out of range entirely at one
         // with a shorter day, which left those markers grey.
