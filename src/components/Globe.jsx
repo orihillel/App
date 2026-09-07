@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
-import { latLonToVector3, markerScaleForDistance } from '../lib/geo3d.js';
+import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleTo } from '../lib/geo3d.js';
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import {
@@ -13,6 +13,7 @@ import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
+import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import LANDMASSES from '../data/landmasses.json';
 import { ConditionScale } from './ConditionScale.jsx';
 
@@ -42,6 +43,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
   const markDirtyRef = useRef(null);
   useEffect(() => { if (markDirtyRef.current) markDirtyRef.current(); }, [wavesOn]);
   const [globeError, setGlobeError] = useState(false);
+  // How many spots currently have a live reading, so the legend can say what its colour scale
+  // actually covers instead of implying it covers everything.
+  const [liveCount, setLiveCount] = useState(null);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -722,38 +726,47 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // reason the globe got progressively less smooth as the spot catalog grew from 44 to 153.
     // Per-marker color still works (setColorAt writes into a per-instance color attribute),
     // and Raycaster handles InstancedMesh natively, reporting which instance was hit.
-    const markers = [];
+    // Markers pile up on the coastlines that carry the most spots. Zoomed out, California,
+    // Central America and southwest France are each an indistinct blob of overlapping dots,
+    // and a tap gets whichever one the raycaster happened to hit first -- so spots within a
+    // cell of a grid merge into one marker carrying a count, and the cell shrinks as you zoom
+    // until, close enough, nothing merges at all. Tapping a cluster turns the globe to it and
+    // zooms a step, which is what splits it. The grid maths lives in lib/markercluster.js.
+    const allSpots = [];
     dataRef.current.order.forEach((id) => {
       const s = dataRef.current.spots[id];
-      if (!s) return;
-      const label = document.createElement('div');
-      label.className = 'tl-label';
-      label.textContent = s.name;
+      if (!s || !Number.isFinite(s.lat) || !Number.isFinite(s.lon)) return;
+      allSpots.push({ id, lat: s.lat, lon: s.lon });
+    });
+
+    // One label element per possible marker, made once and reused. Clusters re-form on every
+    // zoom step, and creating and destroying four hundred DOM nodes for that would be the
+    // expensive part of the whole feature.
+    const labelPool = allSpots.map(() => {
+      const el = document.createElement('div');
+      el.className = 'tl-label';
       // Anchored at the container's origin; updateLabels() moves it purely via transform.
-      label.style.left = '0';
-      label.style.top = '0';
-      container.appendChild(label);
-      markers.push({
-        id, label,
-        basePos: latLonToVector3(s.lat, s.lon, MARKER_SHELL),
-        worldPos: new THREE.Vector3(), // scratch, reused every frame instead of .clone()
-        labelText: '', labelShown: false, // last-written DOM state, so we only touch the DOM on change
-      });
+      el.style.left = '0';
+      el.style.top = '0';
+      el.style.display = 'none';
+      container.appendChild(el);
+      return el;
     });
 
     const markerGeo = new THREE.SphereGeometry(0.026, 12, 12);
     const markerMat = new THREE.MeshBasicMaterial();
-    const markerMesh = new THREE.InstancedMesh(markerGeo, markerMat, Math.max(markers.length, 1));
+    // Allocated for every spot and then drawn with `count` set to however many markers the
+    // current zoom actually produces -- an InstancedMesh cannot be resized, but it can be
+    // told to draw fewer than it holds.
+    const markerMesh = new THREE.InstancedMesh(markerGeo, markerMat, Math.max(allSpots.length, 1));
     const instanceDummy = new THREE.Object3D();
-    markers.forEach((m, i) => {
-      instanceDummy.position.copy(m.basePos);
-      instanceDummy.updateMatrix();
-      markerMesh.setMatrixAt(i, instanceDummy.matrix);
-    });
-    markerMesh.instanceMatrix.needsUpdate = true;
     // Positions never change (the globe group is what rotates) but the scale does, per zoom
     // level — see updateMarkerScale below — so the matrix buffer is rewritten occasionally.
     markerMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+
+    let markers = [];
+    let clusterCellDeg = -1;
+    let lastReadingCount = -1;
 
     // Markers shrink *on screen* as you zoom in, rather than holding a fixed world size.
     //
@@ -794,17 +807,58 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       lastMarkerScale = scale;
       for (let i = 0; i < markers.length; i++) {
         instanceDummy.position.copy(markers[i].basePos);
-        instanceDummy.scale.setScalar(scale);
+        // A cluster is drawn bigger than a lone spot, by log rather than by count, so sixty
+        // spots reads as more than two without becoming a dot the size of a country.
+        instanceDummy.scale.setScalar(scale * clusterScale(markers[i].count));
         instanceDummy.updateMatrix();
         markerMesh.setMatrixAt(i, instanceDummy.matrix);
       }
       markerMesh.instanceMatrix.needsUpdate = true;
     }
-    updateMarkerScale();
+    function clusterScale(count) {
+      return count > 1 ? Math.min(2.1, 1 + Math.log10(count) * 0.85) : 1;
+    }
     const instanceColor = new THREE.Color();
-    markers.forEach((_, i) => markerMesh.setColorAt(i, instanceColor.set('#33465C')));
+    // Every slot starts grey, including the ones no current cluster uses, so a marker can
+    // never appear carrying a colour left over from a different zoom level.
+    for (let i = 0; i < Math.max(allSpots.length, 1); i++) markerMesh.setColorAt(i, instanceColor.set('#33465C'));
     if (markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
     globeGroup.add(markerMesh);
+
+    // Re-form the clusters for the current zoom. Called from the frame loop, and cheap to call
+    // there because it does nothing until the cell size has actually moved.
+    function rebuildMarkers(cellDeg) {
+      clusterCellDeg = cellDeg;
+      const clusters = clusterPoints(allSpots, cellDeg);
+      markers = clusters.map((c, i) => ({
+        id: c.ids[0], ids: c.ids, count: c.count, lat: c.lat, lon: c.lon,
+        basePos: latLonToVector3(c.lat, c.lon, MARKER_SHELL),
+        worldPos: new THREE.Vector3(), // scratch, reused every frame instead of .clone()
+        label: labelPool[i], labelText: '', labelTitle: '', labelShown: false,
+      }));
+      // A cluster's label is a count chip centred on the dot, not a name floating above it.
+      for (let i = 0; i < markers.length; i++) {
+        const wanted = markers[i].count > 1 ? 'tl-label tl-count' : 'tl-label';
+        if (markers[i].label.className !== wanted) markers[i].label.className = wanted;
+      }
+      markerMesh.count = markers.length;
+      // Labels belonging to slots this zoom does not use would otherwise hang around on screen.
+      for (let i = markers.length; i < labelPool.length; i++) {
+        if (labelPool[i].style.display !== 'none') labelPool[i].style.display = 'none';
+      }
+      lastMarkerScale = -1; // the matrices belong to the previous set; rewrite all of them
+      updateMarkerScale();
+      refreshMarkerData();
+      state.dataDirty = true;
+    }
+    function updateClusters() {
+      const cell = cellSizeForDistance(state.distance);
+      if (clusterCellDeg < 0) { rebuildMarkers(cell); return; }
+      // Only on a real change: a slow pinch would otherwise rebuild four hundred markers and
+      // their labels on every frame of the gesture.
+      if (Math.abs(cell - clusterCellDeg) < Math.max(0.35, clusterCellDeg * 0.12)) return;
+      rebuildMarkers(cell);
+    }
 
     // Tapping a marker (as opposed to dragging to rotate) jumps straight to that spot's page.
     // "A tap" is a mousedown/up or touchstart/end pair with barely any movement between them
@@ -821,6 +875,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // How far off a dot a tap can land and still count as meant for it, in CSS pixels --
     // roughly half a fingertip.
     const TAP_TOLERANCE_PX = 22;
+    // How far in one tap on a cluster. Enough that the cell size drops and the cluster splits,
+    // gentle enough that you can still tell where you were.
+    const CLUSTER_ZOOM_STEP = 0.55;
     const pickScratch = new THREE.Vector3();
     function pickSpotAt(clientX, clientY) {
       const rect = renderer.domElement.getBoundingClientRect();
@@ -831,7 +888,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       const hit = raycaster.intersectObject(markerMesh)[0];
       if (hit && hit.instanceId != null) {
         const marker = markers[hit.instanceId];
-        if (marker) onSelectSpot(marker.id);
+        if (marker) chooseMarker(marker);
         return;
       }
       // Nothing exactly under the finger. Dots shrink on screen as you zoom in (see
@@ -839,7 +896,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       // reliably tap -- so shrinking the ray target along with the dot would trade one problem
       // for another. Fall back to the nearest marker within a fingertip's radius: the dot stays
       // a small visual mark of a point while the thing you actually hit stays finger-sized.
-      let bestId = null;
+      let bestMarker = null;
       let bestDistance = TAP_TOLERANCE_PX;
       const px = clientX - rect.left;
       const py = clientY - rect.top;
@@ -853,9 +910,23 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         const dx = (pickScratch.x * 0.5 + 0.5) * rect.width - px;
         const dy = (-pickScratch.y * 0.5 + 0.5) * rect.height - py;
         const distance = Math.hypot(dx, dy);
-        if (distance < bestDistance) { bestDistance = distance; bestId = m.id; }
+        if (distance < bestDistance) { bestDistance = distance; bestMarker = m; }
       }
-      if (bestId != null) onSelectSpot(bestId);
+      if (bestMarker) chooseMarker(bestMarker);
+    }
+
+    // Tapping one spot opens it. Tapping a cluster cannot -- it stands for anything up to
+    // several dozen -- so it turns the globe to that patch of coast and zooms a step closer,
+    // which is the thing that breaks the cluster back into its members. Two or three taps
+    // walks you down from a continent to a single break.
+    function chooseMarker(m) {
+      if (m.count <= 1) { onSelectSpot(m.id); return; }
+      const { rotX, rotY } = rotationToFace(m.lat, m.lon);
+      // The short way round: without this, a cluster just past the antimeridian sends the
+      // globe most of a turn to reach a point a few degrees away.
+      state.targetRotX = shortestAngleTo(state.targetRotX, rotX);
+      state.targetRotY = shortestAngleTo(state.targetRotY, rotY);
+      state.targetDistance = clampDistance(state.targetDistance * CLUSTER_ZOOM_STEP);
     }
     function isTap(downX, downY, downTime, upX, upY) {
       return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
@@ -909,7 +980,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       const zoomedIn = state.distance < 2.2;
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
-        let show = zoomedIn && m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation).dot(camDir) > FACING_THRESHOLD;
+        // Spot names still only appear once you are close enough for them not to overlap, but a
+        // cluster's count shows at every zoom: a numbered marker you can read is the entire
+        // point of grouping them, and an unnumbered blob is what it replaced.
+        let show = (m.count > 1 || zoomedIn) && m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation).dot(camDir) > FACING_THRESHOLD;
         if (show) {
           m.worldPos.project(camera); // in place, on the world position just computed above
           // Facing the camera is not the same as being on screen. Zoomed out they amount to the
@@ -926,7 +1000,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         if (!m.labelShown) { m.label.style.display = 'block'; m.labelShown = true; }
         // transform rather than left/top: this is a compositor-only property, so moving a label
         // doesn't force the browser into a layout pass for every visible label every frame.
-        m.label.style.transform = `translate(-50%, -130%) translate(${(m.worldPos.x * 0.5 + 0.5) * width}px, ${(-m.worldPos.y * 0.5 + 0.5) * height}px)`;
+        const anchor = m.count > 1 ? 'translate(-50%, -50%)' : 'translate(-50%, -130%)';
+        m.label.style.transform = `${anchor} translate(${(m.worldPos.x * 0.5 + 0.5) * width}px, ${(-m.worldPos.y * 0.5 + 0.5) * height}px)`;
       }
     }
 
@@ -1000,29 +1075,51 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     function refreshMarkerData() {
       const live = dataRef.current;
       let colorsChanged = false;
+      let spotsWithReading = 0;
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
-        const sfm = live.forecast[m.id];
-        // No forecast means no hour, and the marker stays grey. It used to fall back to a
-        // set of invented hours whose rating happened to be 'LOADING', which reached the same
-        // grey by a route that made the legend's "grey = no reading yet" a lie.
-        const hrs = (sfm && sfm.hours) || null;
-        // By clock hour, not array index: each spot's hours come from its own daylight window,
-        // so index N is a different time of day at each spot — and out of range entirely at one
-        // with a shorter day, which left those markers grey.
-        const hr = pickHourAt(hrs, live.clockHour);
-        const rating = hr ? hr.rating : 'LOADING';
-        const color = (rating === 'LOADING' || !hr || hr.score == null) ? '#33465C' : scoreToColor(hr.score);
-        markerMesh.setColorAt(i, instanceColor.set(color));
+        // A cluster takes the colour of its best member. That is the question someone scanning
+        // a globe is asking -- is there anything worth surfing along that coast -- and the
+        // legend says so rather than leaving it to be guessed at.
+        let bestScore = null;
+        let bestRating = null;
+        for (const id of m.ids) {
+          const sfm = live.forecast[id];
+          // No forecast means no hour, and the marker stays grey. It used to fall back to a
+          // set of invented hours whose rating happened to be 'LOADING', which reached the same
+          // grey by a route that made the legend's "grey = no reading yet" a lie.
+          // By clock hour, not array index: each spot's hours come from its own daylight window,
+          // so index N is a different time of day at each spot — and out of range entirely at one
+          // with a shorter day, which left those markers grey.
+          const hr = pickHourAt((sfm && sfm.hours) || null, live.clockHour);
+          if (!hr || hr.score == null || hr.rating === 'LOADING') continue;
+          spotsWithReading++;
+          if (bestScore == null || hr.score > bestScore) { bestScore = hr.score; bestRating = hr.rating; }
+        }
+        markerMesh.setColorAt(i, instanceColor.set(bestScore == null ? '#33465C' : scoreToColor(bestScore)));
         colorsChanged = true;
         const spotObj = live.spots[m.id];
-        const text = (spotObj ? spotObj.name : m.id) + ' · ' + (rating === 'LOADING' ? '···' : rating);
+        const text = m.count > 1
+          ? String(m.count)
+          : (spotObj ? spotObj.name : m.id) + ' · ' + (bestRating || '···');
+        // The chip carries the number; the rest is for anyone reading it with a screen reader
+        // or hovering, where "61" alone says nothing.
+        const title = m.count > 1
+          ? m.count + ' spots' + (bestRating ? ' · best ' + bestRating : ' · no readings yet')
+          : text;
+        if (title !== m.labelTitle) { m.label.title = title; m.label.setAttribute('aria-label', title); m.labelTitle = title; }
         if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; }
       }
       if (colorsChanged && markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
+      // What the legend reports. "124 of 403" is the difference between a colour scale that
+      // describes the globe and one that describes a quarter of it while looking the same.
+      if (spotsWithReading !== lastReadingCount) {
+        lastReadingCount = spotsWithReading;
+        setLiveCount(spotsWithReading);
+      }
       state.dataDirty = true; // colors/labels may have changed, so the next frame must draw
     }
-    refreshMarkerData();
+    updateClusters(); // builds the first set of markers, and colours them
     const dataTimer = setInterval(refreshMarkerData, 1000);
 
     // Smoothing. Input writes to the *target* rotation/distance; each frame eases the rendered
@@ -1075,6 +1172,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       camera.lookAt(0, 0, 0);
       updateNearPlane();
       updateMarkerScale();
+      updateClusters();
       updateLabels();
       ensureCoastline();
       ensureWaveOverlay();
@@ -1102,7 +1200,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       renderer.domElement.removeEventListener('touchstart', touchStart);
       renderer.domElement.removeEventListener('touchmove', touchMove);
       renderer.domElement.removeEventListener('touchend', touchEnd);
-      markers.forEach((m) => { if (m.label.parentNode) m.label.parentNode.removeChild(m.label); });
+      // The pool, not `markers`: markers holds only the clusters the current zoom produced, so
+      // tearing down from it orphans every label belonging to a set that has since re-formed.
+      // (Measured: 751 label nodes alive after two mounts, against 403 spots.)
+      labelPool.forEach((el) => { if (el.parentNode) el.parentNode.removeChild(el); });
       starGeo.dispose(); starMat.dispose(); starDotTexture.dispose();
       glowTexture.dispose(); glowMat.dispose();
       mapTexture.dispose(); oceanMat.dispose(); oceanMesh.geometry.dispose();
@@ -1131,15 +1232,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
   }, []);
 
   return (
-    <div>
-      <div className="flex justify-between items-center px-6 pt-2 pb-3">
-        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>{title}</span>
-        <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 6 }} aria-label="Close globe"><X size={18} color={COLORS.foamDim} /></button>
+    // A column, so the canvas takes whatever height is left rather than a fixed 420px box that
+    // left dead space on a tall phone and overflowed a short one.
+    <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
+      <div className="flex justify-between items-center px-4" style={{ paddingBottom: 2 }}>
+        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, paddingLeft: 6 }}>{title}</span>
+        <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 0, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }} aria-label="Close globe"><X size={22} color={COLORS.foamDim} /></button>
       </div>
-      <div style={{ padding: '0 20px 6px', fontSize: 11, color: COLORS.foamDim }}>
+      <div style={{ padding: '0 20px 6px', fontSize: 13, color: COLORS.foamDim, lineHeight: 1.45 }}>
         {hint || `${order.length} spot${order.length === 1 ? '' : 's'} you've found · tap a marker to view it · drag to rotate, pinch or scroll to zoom`}
       </div>
-      <div ref={containerRef} style={{ position: 'relative', width: '100%', height: 420, touchAction: 'none' }} />
+      <div ref={containerRef} style={{ position: 'relative', width: '100%', flex: 1, minHeight: 300, touchAction: 'none' }} />
       {globeError && (
         <div style={{ margin: '0 20px', padding: '14px 16px', background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, fontSize: 12, color: COLORS.foamDim, lineHeight: 1.5 }}>
           3D rendering failed to start in this preview — that's a real signal, not just a display glitch. Let me know and I'll switch this view to the flat map instead.
@@ -1151,7 +1254,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           onClick={() => setWavesOn((v) => !v)}
           aria-pressed={wavesOn}
           style={{
-            width: '100%', padding: '7px 10px', marginBottom: 10, borderRadius: 8, fontSize: 11.5,
+            width: '100%', minHeight: 44, marginBottom: 10, borderRadius: 8, fontSize: 14,
             background: wavesOn ? COLORS.navyCard : 'none',
             border: '1px solid ' + (wavesOn ? COLORS.tealBright : COLORS.navyBorder),
             color: wavesOn ? COLORS.tealBright : COLORS.foamDim,
@@ -1202,7 +1305,21 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
           </div>
         )}
         <ConditionScale />
-        <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 6, textAlign: 'center' }}>Spot color = live conditions right now</div>
+        {/* This used to read "Spot color = live conditions right now" full stop, which is a
+            promise the view often cannot keep: on a cold open almost every marker is grey,
+            and during a rate limit most of them stay that way. Saying how many spots the
+            scale actually speaks for costs one clause and makes the grey legible. */}
+        <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 7, textAlign: 'center', lineHeight: 1.45 }}>
+          {liveCount == null
+            ? 'Spot colour = live conditions right now'
+            : liveCount === 0
+              ? 'No live conditions yet — every marker is grey until readings arrive'
+              : 'Spot colour = live conditions right now, for ' + liveCount + ' of ' + order.length + ' spots'
+                + (liveCount < order.length ? '. Grey markers have no reading yet.' : '')}
+        </div>
+        <div style={{ fontSize: 11, color: COLORS.foamDim, marginTop: 5, textAlign: 'center', lineHeight: 1.45, opacity: 0.85 }}>
+          A numbered marker is a group of spots — tap it to open it up. Its colour is the best of them.
+        </div>
       </div>
     </div>
   );

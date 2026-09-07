@@ -40,3 +40,32 @@ export function markerScreenSizeRatio(distance, opts) {
   const depth = Math.max(distance - opts.shell, 1e-6);
   return (markerScaleForDistance(distance, opts) / depth) * refDepth;
 }
+
+// The globe rotation that brings a point round to face the camera.
+//
+// Used when you tap a cluster of markers: the globe turns that patch of coast to the middle of
+// the screen and zooms a step closer, which is what splits the cluster into its members. The
+// globe applies these as `rotation.set(rotX, rotY, 0)` in three's default XYZ order, so this
+// solves Rx(rotX)*Ry(rotY)*v = (0, 0, +r) -- the +Z axis being where the camera sits.
+//
+// Deriving the signs by staring at the rotation matrices is exactly how a globe ends up
+// spinning to the antipode of the thing you tapped, so geo3d.test.js checks it the honest way:
+// rotate the real vector with three's own Euler and assert where it lands.
+export function rotationToFace(lat, lon) {
+  const v = latLonToVector3(lat, lon, 1);
+  const rotY = Math.atan2(-v.x, v.z);
+  const rotX = Math.atan2(v.y, Math.hypot(v.x, v.z));
+  return { rotX, rotY };
+}
+
+// The shortest way round to a target angle from where the globe currently sits.
+//
+// Without this a tap near the antimeridian can send the globe the long way round -- two thirds
+// of a turn to reach a point that was a few degrees away.
+export function shortestAngleTo(current, target) {
+  const TAU = Math.PI * 2;
+  let delta = (target - current) % TAU;
+  if (delta > Math.PI) delta -= TAU;
+  if (delta < -Math.PI) delta += TAU;
+  return current + delta;
+}

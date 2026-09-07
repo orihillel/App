@@ -65,8 +65,8 @@ export function NavDrawer({
       >
         <div className="flex items-center justify-between px-6" style={{ paddingTop: 18, paddingBottom: 16 }}>
           <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 13, letterSpacing: '0.14em', color: COLORS.foam }}>SURFCAST</span>
-          <button className="tl-btn" onClick={onClose} aria-label="Close menu" style={{ background: 'none', border: 'none', padding: 6 }}>
-            <X size={18} color={COLORS.foamDim} />
+          <button className="tl-btn" onClick={onClose} aria-label="Close menu" style={{ background: 'none', border: 'none', padding: 0, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
+            <X size={22} color={COLORS.foamDim} />
           </button>
         </div>
 
@@ -115,7 +115,7 @@ export function NavDrawer({
                   flex: 1, background: units === value ? COLORS.tealBright : COLORS.navyCard,
                   color: units === value ? COLORS.navy : COLORS.foam,
                   border: '1px solid ' + (units === value ? COLORS.tealBright : COLORS.navyBorder),
-                  borderRadius: 8, padding: '8px 0', fontSize: 12, fontWeight: 600,
+                  borderRadius: 8, minHeight: 44, fontSize: 14, fontWeight: 600,
                 }}
               >
                 {label}
@@ -143,7 +143,7 @@ export function NavDrawer({
 
 function Heading({ children }) {
   return (
-    <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, margin: '16px 0 8px' }}>
+    <div style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, margin: '18px 0 8px' }}>
       {children}
     </div>
   );
@@ -157,13 +157,13 @@ function Row({ icon, label, sub, trailing, active, onClick }) {
         display: 'flex', alignItems: 'center', gap: 11, width: '100%', textAlign: 'left',
         background: active ? COLORS.navyCard : 'none',
         border: '1px solid ' + (active ? COLORS.navyBorder : 'transparent'),
-        borderRadius: 10, padding: '9px 10px', marginBottom: 2,
+        borderRadius: 10, minHeight: 48, padding: '0 10px', marginBottom: 2,
       }}
     >
       <span style={{ flexShrink: 0, display: 'flex' }}>{icon}</span>
       <span style={{ minWidth: 0, flex: 1 }}>
-        <span style={{ display: 'block', fontSize: 13.5, color: COLORS.foam, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
-        {sub && <span style={{ display: 'block', fontSize: 10.5, color: COLORS.foamDim, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</span>}
+        <span style={{ display: 'block', fontSize: 15, color: COLORS.foam, fontWeight: 500, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{label}</span>
+        {sub && <span style={{ display: 'block', fontSize: 12.5, color: COLORS.foamDim, marginTop: 2, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{sub}</span>}
       </span>
       {trailing && (
         <span style={{ flexShrink: 0, fontSize: 9, fontWeight: 700, letterSpacing: '0.08em', color: COLORS.tealBright }}>{trailing}</span>

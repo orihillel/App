@@ -14,9 +14,37 @@ cleanupOutdatedCaches();
 const RUNTIME_CACHE = 'runtime-v1';
 const RUNTIME_CACHEABLE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'marine-api.open-meteo.com', 'api.open-meteo.com'];
 
+// The vector coastline, kept cache-first rather than precached.
+//
+// It is 3.0MB on disk and 807KB over the wire, and it is deliberately left out of the
+// precache list (see vite.config.js) because most sessions never open the globe and tripling
+// the install payload for all of them would be a poor trade. But the opposite extreme is what
+// it had: nothing cached it either, so every cold cache paid the 807KB again and the globe
+// simply did not work offline. Fetched once, kept from then on, is the right middle.
+//
+// Cache-first, not network-first, and only safe because the filename carries its version: the
+// -v2 suffix exists precisely because an earlier build changed this file's contents at a stable
+// URL and every cached copy silently kept serving the old shape. New contents mean a new name.
+const IMMUTABLE_ASSET = /\/coastline-[\w-]+\.json$/;
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
+
+  if (url.origin === self.location.origin && IMMUTABLE_ASSET.test(url.pathname)) {
+    event.respondWith(
+      (async () => {
+        const cache = await caches.open(RUNTIME_CACHE);
+        const cached = await cache.match(event.request);
+        if (cached) return cached;
+        const fresh = await fetch(event.request);
+        if (fresh.ok) cache.put(event.request, fresh.clone());
+        return fresh;
+      })()
+    );
+    return;
+  }
+
   if (!RUNTIME_CACHEABLE_HOSTS.includes(url.hostname)) return;
   event.respondWith(
     (async () => {

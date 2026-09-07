@@ -62,11 +62,22 @@ function radicalInverse2(i) {
 // limit again.
 export function visibleSphereFraction(distance, halfFovRad) {
   if (!Number.isFinite(distance) || distance <= 1) return 0;
-  const graze = Math.asin(1 / distance);
+  const alpha = visibleAngularRadius(distance, halfFovRad);
   const horizon = (1 - 1 / distance) / 2;
-  if (!Number.isFinite(halfFovRad) || halfFovRad >= graze) return horizon;
-  const alpha = Math.asin(Math.min(1, distance * Math.sin(halfFovRad))) - halfFovRad;
   return Math.min(horizon, (1 - Math.cos(alpha)) / 2);
+}
+
+// The same patch, as the angle it subtends from the centre of the globe rather than as an area.
+//
+// Split out because the marker clustering needs the angle directly: "how many degrees of
+// geography am I looking at" is what decides how coarse a cluster cell should be. Returns the
+// horizon's own angle once the whole silhouette is inside the frame, which is the point beyond
+// which zooming out stops revealing more.
+export function visibleAngularRadius(distance, halfFovRad) {
+  if (!Number.isFinite(distance) || distance <= 1) return 0;
+  const graze = Math.asin(1 / distance);
+  if (!Number.isFinite(halfFovRad) || halfFovRad >= graze) return Math.acos(1 / distance);
+  return Math.asin(Math.min(1, distance * Math.sin(halfFovRad))) - halfFovRad;
 }
 
 // How many arrows to draw at a given camera distance.

@@ -38,6 +38,9 @@ html, body { margin: 0; padding: 0; background: #070F18; }
 .tl-label { position: absolute; pointer-events: none; transform: translate(-50%, -130%); white-space: nowrap;
   background: rgba(8,20,31,0.88); color: #F4F7F6; font-family: 'JetBrains Mono', monospace; font-size: 10px;
   padding: 3px 7px; border-radius: 8px; display: none; }
+/* A cluster marker's count, centred on the dot rather than floating above it like a name. */
+.tl-count { font-weight: 700; font-size: 11px; padding: 2px 6px; min-width: 9px; text-align: center;
+  background: rgba(7,15,24,0.92); border: 1px solid rgba(244,247,246,0.28); }
 @keyframes tl-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.8; } }
 .tl-pulse { animation: tl-pulse 1.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {

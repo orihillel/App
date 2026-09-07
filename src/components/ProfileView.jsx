@@ -80,7 +80,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
           <input
             className="tl-input" value={goToQuery} onChange={(e) => setGoToQuery(e.target.value)}
             placeholder={'Search ' + catalogSize + ' spots…'} aria-label="Search spots to set your go-to"
-            style={{ flex: 1, minWidth: 0, background: 'none', border: 'none', color: COLORS.foam, fontSize: 15, padding: '13px 0' }}
+            style={{ flex: 1, minWidth: 0, background: 'none', border: 'none', color: COLORS.foam, fontSize: 15, padding: '14px 0' }}
           />
           {goToQuery ? (
             <button className="tl-btn" onClick={() => setGoToQuery('')} aria-label="Clear search" style={{ ...TAP, minWidth: 32 }}>
@@ -120,19 +120,19 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
         <Heading>UNITS</Heading>
         <div className="flex" style={{ gap: 8, marginBottom: 18 }}>
           <button className="tl-btn" onClick={() => { if (units !== 'imperial') toggleUnits(); }}
-            style={{ flex: 1, background: units === 'imperial' ? COLORS.tealBright : COLORS.navyCard, color: units === 'imperial' ? COLORS.navy : COLORS.foam, border: '1px solid ' + (units === 'imperial' ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, padding: '9px 0', fontSize: 12.5, fontWeight: 600 }}>
+            style={{ flex: 1, background: units === 'imperial' ? COLORS.tealBright : COLORS.navyCard, color: units === 'imperial' ? COLORS.navy : COLORS.foam, border: '1px solid ' + (units === 'imperial' ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, fontSize: 14.5, fontWeight: 600 }}>
             Feet · mph
           </button>
           <button className="tl-btn" onClick={() => { if (units !== 'metric') toggleUnits(); }}
-            style={{ flex: 1, background: units === 'metric' ? COLORS.tealBright : COLORS.navyCard, color: units === 'metric' ? COLORS.navy : COLORS.foam, border: '1px solid ' + (units === 'metric' ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, padding: '9px 0', fontSize: 12.5, fontWeight: 600 }}>
+            style={{ flex: 1, background: units === 'metric' ? COLORS.tealBright : COLORS.navyCard, color: units === 'metric' ? COLORS.navy : COLORS.foam, border: '1px solid ' + (units === 'metric' ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, fontSize: 14.5, fontWeight: 600 }}>
             Meters · kph
           </button>
         </div>
 
         <Heading>ALERTS</Heading>
-        <button className="tl-btn" onClick={openAlerts} style={{ width: '100%', background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 13px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
-          <span style={{ fontSize: 13, color: COLORS.foam }}>{alerts.length} active alert{alerts.length === 1 ? '' : 's'}</span>
-          <span style={{ fontSize: 11, color: COLORS.tealBright, fontWeight: 600 }}>Manage →</span>
+        <button className="tl-btn" onClick={openAlerts} style={{ width: '100%', background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, minHeight: 48, padding: '0 13px', display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 18 }}>
+          <span style={{ fontSize: 15, color: COLORS.foam }}>{alerts.length} active alert{alerts.length === 1 ? '' : 's'}</span>
+          <span style={{ fontSize: 14, color: COLORS.tealBright, fontWeight: 600 }}>Manage →</span>
         </button>
 
         <Heading>PUSH NOTIFICATIONS</Heading>
