@@ -8,7 +8,7 @@ import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration } from './lib/calibration.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
-import { nextTideEvent } from './lib/tides.js';
+import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
@@ -646,6 +646,8 @@ export default function App() {
   const spotCalibration = calibration(calSamples[activeId]);
   const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : null;
   const tideNext = (h && spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : null;
+  // What it is doing at the hour on screen, as opposed to what it does next.
+  const tideNow = (h && spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? tideState(spotForecast.tideFine, h.hour) : null;
   const tide = tideToday ? linePath(tideToday, 100, 34, 4) : null;
   const waveChart = hourData ? linePath(hourData.map((hr) => waveAvg(hr.wave)), 300, 56, 8) : null;
   const hasError = errorIds.has(activeId);
@@ -837,7 +839,7 @@ export default function App() {
             onLogSession={logSession} calibration={spotCalibration}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
-            tideToday={tideToday} tide={tide} tideNext={tideNext}
+            tideToday={tideToday} tide={tide} tideNext={tideNext} tideNow={tideNow}
           />
         )}
         </div>

@@ -34,7 +34,7 @@ export function HomeView({
   h, dataState, fetchedAt, retry, errorReason,
   waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
-  tideToday, tide, tideNext,
+  tideToday, tide, tideNext, tideNow,
 }) {
   // Local to this view: the log panel is a transient bit of UI, not app state worth lifting.
   const [logging, setLogging] = useState(false);
@@ -388,6 +388,18 @@ export function HomeView({
           <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 18, color: tideToday ? COLORS.foam : COLORS.foamDim, marginTop: 5 }}>
             {tideToday && tideToday[hourIdx] != null ? formatHeight(tideToday[hourIdx], units) + heightUnit(units) : '—'}
           </div>
+          {/* What it is doing now. "Next High 3p" below answers a different question: a tide two
+              hours short of its high and one two hours past it read the same there, and are
+              opposite here.
+
+              On its own line rather than beside the height, which is where it was first put --
+              this column is a third of a 390px screen, about 114px, and "0.9ft ↓ Pulling" ran
+              off the right edge of the card. */}
+          {tideNow ? (
+            <div style={{ fontSize: 11.5, fontWeight: 600, color: tideStateColor(tideNow), letterSpacing: '0.02em', marginTop: 1 }}>
+              {tideStateArrow(tideNow)}{tideNow}
+            </div>
+          ) : null}
           {tide ? (
             <svg viewBox="0 0 100 34" style={{ width: '100%', height: 20, marginTop: 3 }}>
               <path d={tide.d} fill="none" stroke={COLORS.foamDim} strokeWidth="1.5" />
@@ -430,6 +442,21 @@ function Skeleton() {
 
 // The fetch failed and there is no earlier reading to fall back on. This says so, and offers
 // the one useful action, rather than filling the space with invented numbers.
+// The tide's state reads as a word, not a rating, so it takes the palette's quieter accents:
+// gold for the two turns (the same gold the tide curve is drawn in elsewhere on this page) and
+// teal for the two directions.
+function tideStateColor(state) {
+  return state === 'High' || state === 'Low' ? COLORS.gold : COLORS.tealBright;
+}
+
+// An arrow only where there is a direction to point. A tide at its turn is not going anywhere,
+// and an arrow on it would say it is.
+function tideStateArrow(state) {
+  if (state === 'Pushing') return '\u2191\u2009';
+  if (state === 'Pulling') return '\u2193\u2009';
+  return '';
+}
+
 function NoForecast({ retry, reason }) {
   return (
     <>
