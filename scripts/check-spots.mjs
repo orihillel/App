@@ -145,6 +145,46 @@ for (const id of Object.keys(UNMAPPED_ISLANDS)) {
   }
 }
 
+// Two entries for one wave.
+//
+// The catalog is written by hand over many sittings, and the same break can go in twice under
+// two names without anything noticing: both render, both fetch, both draw a marker, and the
+// arrows walk you from one to the other as though you had travelled. This found Pe'ahi in
+// twice -- `jaws` filed under Hawaii and `peahi` under USA, 250m apart.
+//
+// The threshold is deliberately tight. Genuinely distinct waves do sit close together (Pipeline
+// and Backdoor share a peak; Kirra and Snapper are a sandbar apart), so this asks "same place"
+// rather than "same area", and anything looser would reject real spots.
+const DUPLICATE_M = 400;
+
+// Pairs that really are this close and really are two waves. Listed rather than waved through
+// by loosening the threshold, so the exception stays visible and everything else is still
+// caught. Bells and Winkipop share a car park and break either side of the same headland.
+const ADJACENT = new Set(['bellsbeach|winkipop']);
+
+const near = [];
+const ids = Object.keys(SPOTS);
+for (let i = 0; i < ids.length; i++) {
+  for (let j = i + 1; j < ids.length; j++) {
+    const a = SPOTS[ids[i]];
+    const b = SPOTS[ids[j]];
+    const k = Math.cos((a.lat * Math.PI) / 180);
+    const dLat = a.lat - b.lat;
+    const dLon = (a.lon - b.lon) * k;
+    const m = Math.sqrt(dLat * dLat + dLon * dLon) * KM_PER_DEG * 1000;
+    if (m >= DUPLICATE_M) continue;
+    if (ADJACENT.has(ids[i] + '|' + ids[j]) || ADJACENT.has(ids[j] + '|' + ids[i])) continue;
+    near.push({ a: ids[i], b: ids[j], m });
+  }
+}
+if (near.length) {
+  console.error(`\n${near.length} pair(s) of spots sit within ${DUPLICATE_M}m of each other:`);
+  for (const n of near) {
+    console.error(`  ${n.m.toFixed(0).padStart(4)}m  ${n.a} (${SPOTS[n.a].name}) / ${n.b} (${SPOTS[n.b].name})`);
+  }
+  process.exit(1);
+}
+
 if (bad.length) {
   console.error(`\n${bad.length} spot(s) are further from a coastline than they should be:`);
   for (const r of bad) {
@@ -153,5 +193,5 @@ if (bad.length) {
   process.exit(1);
 }
 const exempt = Object.keys(UNMAPPED_ISLANDS).length;
-console.log(`\nOK — every spot is within ${MAX_KM}km of the coast`
+console.log(`\nOK — no two spots within ${DUPLICATE_M}m of each other; every spot is within ${MAX_KM}km of the coast`
   + (exempt ? `, bar ${exempt} on island(s) the dataset does not carry.` : '.'));

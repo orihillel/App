@@ -425,6 +425,12 @@ export default function App() {
     return () => clearTimeout(id);
   }, [toast]);
 
+  // Points the app back at something real when the active spot stops existing.
+  useEffect(() => {
+    if (spots[activeId] || !order.length) return;
+    setActiveId(order.includes(goToId) ? goToId : order[0]);
+  }, [spots, order, activeId, goToId]);
+
   useEffect(() => { setContSelectedIdx(null); }, [activeId]);
 
   useEffect(() => {
@@ -619,7 +625,11 @@ export default function App() {
   const canStepBack = useMemo(() => !!stepDirection(spots, order, activeId, -1), [spots, order, activeId]);
   const canStepOn = useMemo(() => !!stepDirection(spots, order, activeId, 1), [spots, order, activeId]);
 
-  const spot = spots[activeId];
+  // A stored id can outlive the spot it names: one removed from Profile, a catalog entry
+  // retired, or an account synced from a build that carried a spot this one does not. The
+  // effect below moves off it; this keeps the frame in between rendering, because the
+  // alternative is reading .name off undefined and showing a blank screen.
+  const spot = spots[activeId] || spots[goToId] || spots[order[0]];
   // The spot page reads a full forecast only. A `now` entry exists for the globe's markers and
   // carries a single hour; letting it through here would render a chart from one point and a
   // week from none, which reads as broken data rather than as loading.
