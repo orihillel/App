@@ -30,7 +30,7 @@ const TAP = {
 
 export function HomeView({
   units, toggleUnits, openSearch, openMenu,
-  spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot,
+  spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry,
   waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
@@ -64,8 +64,16 @@ export function HomeView({
           where it says what it does. */}
       <div className="flex justify-between items-center px-3" style={{ paddingBottom: 8 }}>
         <div className="flex items-center" style={{ minWidth: 0 }}>
+          {/* Dimmed and disabled at the ends rather than inert. The arrows walk spots in order of
+              distance from where you started, so at the near end there is nothing behind you --
+              and an arrow that silently does nothing reads as broken. */}
           {showSpotNav && (
-            <button className="tl-btn" style={TAP} onClick={onPrevSpot} aria-label="Previous spot"><ChevronLeft size={22} color={COLORS.foamDim} /></button>
+            <button
+              className="tl-btn" style={{ ...TAP, opacity: canPrevSpot ? 1 : 0.3, cursor: canPrevSpot ? 'pointer' : 'default' }}
+              onClick={onPrevSpot} disabled={!canPrevSpot} aria-label="Previous spot"
+            >
+              <ChevronLeft size={22} color={COLORS.foamDim} />
+            </button>
           )}
           <div style={{ minWidth: 0, paddingLeft: showSpotNav ? 0 : 8 }}>
             <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 26, color: COLORS.foam, lineHeight: 1.1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{spot.name}</div>
@@ -73,7 +81,12 @@ export function HomeView({
             {isGoTo && <div style={{ fontSize: 11.5, color: COLORS.tealBright, marginTop: 5, fontWeight: 600, letterSpacing: '0.06em' }}>YOUR GO-TO SPOT</div>}
           </div>
           {showSpotNav && (
-            <button className="tl-btn" style={TAP} onClick={onNextSpot} aria-label="Next spot"><ChevronRight size={22} color={COLORS.foamDim} /></button>
+            <button
+              className="tl-btn" style={{ ...TAP, opacity: canNextSpot ? 1 : 0.3, cursor: canNextSpot ? 'pointer' : 'default' }}
+              onClick={onNextSpot} disabled={!canNextSpot} aria-label="Next spot"
+            >
+              <ChevronRight size={22} color={COLORS.foamDim} />
+            </button>
           )}
         </div>
         <button className="tl-btn" style={TAP} onClick={makeGoTo} aria-label="Set as go-to spot">

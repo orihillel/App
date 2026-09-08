@@ -54,12 +54,23 @@ export function nearestFirst(spots, ids, anchorId) {
   return [...located.map((e) => e.id), ...unlocated.map((e) => e.id)];
 }
 
-// The id `delta` steps away from `currentId` along that ordering, wrapping at both ends.
-export function stepNearest(spots, ids, anchorId, currentId, delta) {
-  const ordered = nearestFirst(spots, ids, anchorId);
-  if (ordered.length === 0) return null;
+// The id `delta` steps away from `currentId` along an ordering, or null if there is nowhere to go.
+//
+// Clamped, not wrapped. Wrapping is meaningless here: the two ends of a distance-ordered list
+// are "the spot you are standing on" and "the furthest place on Earth from it", so a back step
+// from the start jumped 18,500km to Réunion, and a forward step from the end teleported home.
+// The first version of this wrapped, and a test cheerfully asserted it as correct.
+export function stepIn(ordered, currentId, delta) {
+  if (!Array.isArray(ordered) || ordered.length === 0) return null;
   const at = ordered.indexOf(currentId);
-  // Not in the list at all (a spot just removed, say): start from the anchor's own position.
+  // Not in the list at all -- a spot just removed, say -- so start from the anchor's own place.
   const from = at === -1 ? 0 : at;
-  return ordered[(from + delta + ordered.length * Math.abs(delta || 1)) % ordered.length];
+  const to = from + delta;
+  if (to < 0 || to >= ordered.length) return null;
+  return ordered[to];
+}
+
+// Convenience for callers that have no reason to hold the ordering themselves.
+export function stepNearest(spots, ids, anchorId, currentId, delta) {
+  return stepIn(nearestFirst(spots, ids, anchorId), currentId, delta);
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { distanceKm, nearestFirst, stepNearest } from './spotnav.js';
+import { distanceKm, nearestFirst, stepNearest, stepIn } from './spotnav.js';
 import { CATALOG } from './spots.catalog.js';
 import { ORDER } from './spots.js';
 
@@ -98,9 +98,20 @@ describe('stepNearest', () => {
     expect(stepNearest(SPOTS, IDS, 'trestles', forward, -1)).toBe('trestles');
   });
 
-  it('wraps at both ends rather than sticking', () => {
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'trestles', -1)).toBe('nazare');
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'nazare', 1)).toBe('trestles');
+  it('does not send you to the far side of the planet for pressing back', () => {
+    // The reported bug, and the reason clamping replaced wrapping. In a list ordered by
+    // distance the last entry is the furthest spot on Earth -- from Lower Trestles that is
+    // Réunion, 18,500km away -- so wrapping made the back arrow a teleport.
+    expect(stepNearest(SPOTS, IDS, 'trestles', 'trestles', -1)).toBeNull();
+  });
+
+  it('stops at the far end too, rather than teleporting home', () => {
+    expect(stepNearest(SPOTS, IDS, 'trestles', 'nazare', 1)).toBeNull();
+  });
+
+  it('clamps against the real catalog, not just a five-spot fixture', () => {
+    expect(stepNearest(CATALOG, ORDER, 'trestles', 'trestles', -1)).toBeNull();
+    expect(stepNearest(CATALOG, ORDER, 'trestles', 'trestles', 1)).not.toBeNull();
   });
 
   it('never bounces between two spots, which chaining nearest-to-current would', () => {
@@ -118,5 +129,20 @@ describe('stepNearest', () => {
 
   it('returns null with nothing to step through', () => {
     expect(stepNearest(SPOTS, [], 'trestles', 'trestles', 1)).toBeNull();
+  });
+});
+
+describe('stepIn', () => {
+  it('clamps at both ends', () => {
+    const list = ['a', 'b', 'c'];
+    expect(stepIn(list, 'a', -1)).toBeNull();
+    expect(stepIn(list, 'c', 1)).toBeNull();
+    expect(stepIn(list, 'b', -1)).toBe('a');
+    expect(stepIn(list, 'b', 1)).toBe('c');
+  });
+
+  it('has nowhere to go in an empty list', () => {
+    expect(stepIn([], 'a', 1)).toBeNull();
+    expect(stepIn(null, 'a', 1)).toBeNull();
   });
 });

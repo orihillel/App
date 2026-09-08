@@ -130,3 +130,55 @@ describe('HomeView data states', () => {
     }
   });
 });
+
+describe('the spot arrows', () => {
+  // Reported: the forward arrow walked nearby spots correctly, but the back arrow from the
+  // starting spot jumped to Tahiti. The ordering runs from where you are to the furthest place
+  // on Earth, so wrapping round the end was a teleport. It clamps now, and the arrow shows it.
+  const HOUR_ROW2 = {
+    t: '7a', hour: 7, wave: '3-4', period: 12, swellDir: 'SW', swellDeg: 225,
+    windSpd: 5, windDir: 'E', windDeg: 90, type: 'offshore', rating: 'GOOD', score: 5, trains: [],
+  };
+  function renderNav(props) {
+    const onPrevSpot = vi.fn(); const onNextSpot = vi.fn();
+    render(
+      <HomeView
+        units="imperial" toggleUnits={() => {}} openSearch={() => {}} openMenu={() => {}}
+        spot={{ name: 'Maravi', region: 'Tel Aviv, Israel', blurb: 'A spot.', lat: 32.1, lon: 34.8, offshoreDeg: 90 }}
+        isGoTo={false} makeGoTo={() => {}} showSpotNav
+        onPrevSpot={onPrevSpot} onNextSpot={onNextSpot}
+        h={HOUR_ROW2} dataState="ok" fetchedAt={Date.now()} retry={() => {}}
+        waveChart={{ d: 'M0,0', pts: [[0, 0]] }} hourIdx={0} setHourIdx={() => {}} hourData={[HOUR_ROW2]}
+        activeId="maravi" contData={null} contWaveLine={null} contTideLine={null} contWindLine={null}
+        contSelected={null} contSelectedIdx={null} setContSelectedIdx={() => {}}
+        tideToday={null} tide={null} tideNext={null}
+        best={null} waterC={null} wetsuit={null} agreement={null} buoy={null}
+        onLogSession={() => {}} calibration={null}
+        {...props}
+      />
+    );
+    return { onPrevSpot, onNextSpot };
+  }
+
+  it('cannot be pressed backwards from the spot you started on', () => {
+    const { onPrevSpot } = renderNav({ canPrevSpot: false, canNextSpot: true });
+    const back = screen.getByLabelText('Previous spot');
+    expect(back.disabled).toBe(true);
+    fireEvent.click(back);
+    expect(onPrevSpot).not.toHaveBeenCalled();
+  });
+
+  it('looks unavailable rather than merely doing nothing', () => {
+    renderNav({ canPrevSpot: false, canNextSpot: true });
+    expect(screen.getByLabelText('Previous spot').style.opacity).toBe('0.3');
+    expect(screen.getByLabelText('Next spot').style.opacity).toBe('1');
+  });
+
+  it('still steps when there is somewhere to go', () => {
+    const { onPrevSpot, onNextSpot } = renderNav({ canPrevSpot: true, canNextSpot: true });
+    fireEvent.click(screen.getByLabelText('Previous spot'));
+    fireEvent.click(screen.getByLabelText('Next spot'));
+    expect(onPrevSpot).toHaveBeenCalledTimes(1);
+    expect(onNextSpot).toHaveBeenCalledTimes(1);
+  });
+});
