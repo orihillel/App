@@ -7,12 +7,92 @@
     <meta name="theme-color" content="#070F18" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
-    <link rel="icon" type="image/png" href="/icons/favicon-32.png" />
-    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" href="/App/icons/favicon-32.png" />
+    <link rel="apple-touch-icon" href="/App/icons/apple-touch-icon.png" />
+
+    <!--
+      Fonts, asked for in the HTML rather than from JavaScript.
+
+      This used to be an @import inside GLOBAL_CSS in App.jsx -- a string React injects as a
+      <style> tag once it renders. Measured on a throttled connection, that meant the browser
+      did not even learn the font stylesheet existed until 1174ms: it had to download the whole
+      bundle (finishing at 909ms), parse it, run React, insert the style, and only then discover
+      the @import -- and then still fetch the stylesheet, and then the font files. Four hops,
+      none of which could start early because none of them were in the HTML.
+
+      preconnect opens the TCP+TLS connections to both Google hosts while the bundle is still
+      downloading, so the stylesheet request costs a round trip instead of a full handshake.
+      gstatic needs crossorigin because font files are fetched in CORS mode.
+
+      The stylesheet itself loads non-render-blocking (preload as=style, promoted to a real
+      stylesheet on load). A plain <link rel="stylesheet"> here would block the first paint on
+      a third-party response, which would undo the shell below -- the whole point of which is
+      to paint without waiting for anything.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      rel="preload"
+      as="style"
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap"
+      onload="this.rel='stylesheet'"
+    />
+    <noscript>
+      <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap" />
+    </noscript>
+
     <title>Surfcast — Surf Forecast</title>
+
+    <!--
+      The first paint, in the HTML.
+
+      Before this, index.html shipped an empty <div id="root"> and every style lived inside the
+      JS bundle, so nothing at all was on screen until 112KB of JavaScript had downloaded,
+      parsed and run: first paint tracked DOMContentLoaded almost exactly, at 1252ms on a slow
+      4G connection and 3440ms on slow 3G. Not even the background colour was set, so the wait
+      was spent looking at white.
+
+      Everything below is inert: no fonts, no images, no script. It paints as soon as the HTML
+      arrives. React's createRoot replaces the container's children on its first render, so
+      there is nothing to tear down and no way for this to outlive the real UI.
+    -->
+    <style>
+      html, body { margin: 0; padding: 0; background: #070F18; }
+      #boot {
+        position: fixed; inset: 0; display: flex; flex-direction: column;
+        align-items: center; justify-content: center; gap: 18px;
+        background: #070F18; color: #F4F7F6;
+        font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+      }
+      #boot .mark {
+        font-size: 15px; font-weight: 600; letter-spacing: 0.22em; opacity: 0.92;
+      }
+      #boot .bar {
+        width: 132px; height: 3px; border-radius: 2px; overflow: hidden;
+        background: rgba(244, 247, 246, 0.14);
+      }
+      #boot .bar::after {
+        content: ""; display: block; width: 42%; height: 100%; border-radius: 2px;
+        background: #39E6C4; animation: boot-slide 1.1s ease-in-out infinite;
+      }
+      @keyframes boot-slide {
+        0% { transform: translateX(-105%); }
+        100% { transform: translateX(340%); }
+      }
+      /* Someone who has asked not to see movement gets a steady bar rather than none: the
+         point is to show the app is working, and that survives without the animation. */
+      @media (prefers-reduced-motion: reduce) {
+        #boot .bar::after { animation: none; width: 100%; opacity: 0.5; }
+      }
+    </style>
   </head>
   <body>
-    <div id="root"></div>
+    <div id="root">
+      <div id="boot">
+        <span class="mark">SURFCAST</span>
+        <span class="bar"></span>
+      </div>
+    </div>
     <script type="module" src="/src/main.jsx"></script>
   </body>
 </html>

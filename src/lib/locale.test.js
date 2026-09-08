@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { defaultUnits, anchorFor, nearbyPicks, TIMEZONE_ANCHORS } from './locale.js';
-import { SPOTS, ORDER, ONBOARDING_PICKS, searchCatalog } from './spots.js';
+import { ORDER, ONBOARDING_PICKS, searchCatalog } from './spots.js';
+import { CATALOG as SPOTS } from './spots.catalog.js';
 
 describe('defaultUnits', () => {
   it('is metric in Israel, and everywhere else that uses it', () => {

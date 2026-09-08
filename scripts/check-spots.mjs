@@ -13,7 +13,7 @@
 // Run with: npm run check:spots
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { SPOTS } from '../src/lib/spots.js';
+import { CATALOG as SPOTS } from '../src/lib/spots.catalog.js';
 import { decodeArc } from '../src/lib/coastline.js';
 
 // A spot further than this from the coast is a mistake, not a judgement call. It is

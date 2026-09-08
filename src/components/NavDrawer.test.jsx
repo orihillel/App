@@ -1,7 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent, within } from '@testing-library/react';
 import { NavDrawer } from './NavDrawer.jsx';
-import { SPOTS, ORDER } from '../lib/spots.js';
+import { ORDER } from '../lib/spots.js';
+import { CATALOG as SPOTS } from '../lib/spots.catalog.js';
 
 const CUSTOM = { name: 'Herzliya Marina', region: 'Herzliya, Israel', lat: 32.16, lon: 34.79, offshoreDeg: 90 };
 
@@ -103,7 +104,9 @@ describe('NavDrawer', () => {
     renderDrawer({ alertCount: 2 });
     expect(screen.getByText('2 active')).toBeTruthy();
     const globe = screen.getByText('Globe').closest('button');
-    expect(within(globe).getByText(new RegExp(Object.keys(SPOTS).length + ' spots'))).toBeTruthy();
+    // +1 for the custom spot the harness adds: the drawer counts what the app actually holds,
+    // which before the catalog chunk lands is a smaller and perfectly honest number.
+    expect(within(globe).getByText(new RegExp((Object.keys(SPOTS).length + 1) + ' spots'))).toBeTruthy();
   });
 
   it('says "none set yet" rather than "0 active"', () => {

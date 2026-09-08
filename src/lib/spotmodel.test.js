@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { inArc, arcCentre, swellWindowFor, swellExposure, tideFit } from './spotmodel.js';
 import { conditionsScore } from './rating.js';
-import { SPOTS } from './spots.js';
+import { CATALOG as SPOTS } from './spots.catalog.js';
 
 describe('inArc', () => {
   it('handles a plain arc', () => {

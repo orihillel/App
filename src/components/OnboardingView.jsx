@@ -1,16 +1,19 @@
 import { Search, Map } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
-import { SPOTS, ONBOARDING_PICKS } from '../lib/spots.js';
+import { ONBOARDING_PICKS } from '../lib/spots.js';
 import { nearbyPicks } from '../lib/locale.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { AuthButtons } from './AuthButtons.jsx';
 
-export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding, onLoggedIn, setToast }) {
+export function OnboardingView({ spots, activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding, onLoggedIn, setToast }) {
   // Seven world-famous breaks was a fine default when the catalog was small, but it offers
   // nothing within thousands of kilometres of most people opening this. Nearby spots first,
   // falling back to the global list wherever the catalog is too thin to be useful — see
   // lib/locale.js.
-  const picks = nearbyPicks(SPOTS, undefined, ONBOARDING_PICKS);
+  // Ranked over the spots the app currently holds. That is the seed set for the first few
+  // tens of milliseconds and the full catalog after, so the list starts as the hand-picked
+  // fallback and sharpens into genuinely nearby breaks once the catalog chunk lands.
+  const picks = nearbyPicks(spots, undefined, ONBOARDING_PICKS);
   return (
     <div style={{ padding: '26px 24px 24px' }}>
       <div style={{ textAlign: 'center', marginBottom: 26 }}>
@@ -32,7 +35,7 @@ export function OnboardingView({ activeId, pickOnboardingSpot, openSearch, openG
       <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 10 }}>POPULAR SPOTS</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>
         {picks.map((id) => {
-          const s = SPOTS[id];
+          const s = spots[id];
           if (!s) return null;
           return (
             <button key={id} className="tl-btn" onClick={() => pickOnboardingSpot(id)}
