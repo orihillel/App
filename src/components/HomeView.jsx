@@ -31,7 +31,7 @@ const TAP = {
 export function HomeView({
   units, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
-  h, dataState, fetchedAt, retry,
+  h, dataState, fetchedAt, retry, errorReason,
   waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext,
@@ -102,7 +102,7 @@ export function HomeView({
 
           {dataState === 'loading' && <Skeleton />}
 
-          {dataState === 'empty' && <NoForecast retry={retry} />}
+          {dataState === 'empty' && <NoForecast retry={retry} reason={errorReason} />}
 
           {(dataState === 'ok' || stale) && (
             <>
@@ -430,7 +430,7 @@ function Skeleton() {
 
 // The fetch failed and there is no earlier reading to fall back on. This says so, and offers
 // the one useful action, rather than filling the space with invented numbers.
-function NoForecast({ retry }) {
+function NoForecast({ retry, reason }) {
   return (
     <>
       <div className="flex items-center" style={{ gap: 9 }}>
@@ -438,7 +438,7 @@ function NoForecast({ retry }) {
         <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontSize: 17, fontWeight: 600, color: COLORS.foam }}>No forecast right now</span>
       </div>
       <div style={{ fontSize: 15, color: COLORS.foamDim, marginTop: 9, lineHeight: 1.45 }}>
-        Couldn&apos;t reach the forecast service. Nothing here is a guess — better to show you nothing than a number we made up.
+        {reason || 'Couldn\u2019t reach the forecast service.'} Nothing here is a guess — better to show you nothing than a number we made up.
       </div>
       <button className="tl-btn flex items-center justify-center" onClick={retry} style={{ gap: 9, marginTop: 14, width: '100%', minHeight: 48, background: COLORS.foam, color: COLORS.navy, border: 'none', borderRadius: 10, fontSize: 15, fontWeight: 600 }}>
         <RefreshCw size={17} /> Try again

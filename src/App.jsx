@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } fro
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
-import { fetchSpotForecast, fetchNowForSpots, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
+import { fetchSpotForecast, fetchNowForSpots, fetchModelAgreement, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration } from './lib/calibration.js';
@@ -140,7 +140,13 @@ export default function App() {
   // marked loading by the thing that actually loads it.
   const [loadingIds, setLoadingIds] = useState(() => new Set());
   const [errorIds, setErrorIds] = useState(() => new Set());
+  // Why each failed spot failed, so the card can say something more useful than "couldn't
+  // reach it" -- see describeForecastError.
+  const [errorReasons, setErrorReasons] = useState({});
   const [view, setView] = useState('home');
+  // Latches on the first time the globe is opened and never clears: its markers keep their
+  // readings for the rest of the session rather than re-fetching on every visit.
+  const [globeSeen, setGlobeSeen] = useState(false);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [onboarded, setOnboarded] = useState(true);
@@ -240,13 +246,15 @@ export default function App() {
     inFlight.current.add(id);
     setLoadingIds((prev) => new Set(prev).add(id));
     setErrorIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
+    setErrorReasons((prev) => { const n = { ...prev }; delete n[id]; return n; });
     try {
       const result = await fetchSpotForecast(spotObj);
       // When the next refresh fails, this is what lets the page say "4h 20m ago" instead of
       // quietly presenting stale numbers as current ones.
       setForecast((prev) => ({ ...prev, [id]: { ...result, fetchedAt: Date.now() } }));
-    } catch {
+    } catch (e) {
       setErrorIds((prev) => new Set(prev).add(id));
+      setErrorReasons((prev) => ({ ...prev, [id]: describeForecastError(e) }));
     } finally {
       inFlight.current.delete(id);
       setLoadingIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
@@ -294,13 +302,23 @@ export default function App() {
       const known = dataRef.current.spots;
       const first = [...new Set([activeIdRef.current, goToIdRef.current].filter((id) => id && known[id]))];
       await Promise.all(first.map((id) => loadSpotData(id, known[id])));
-      if (cancelled) return;
+      if (cancelled || !globeSeen) return;
       await loadBackfill();
     })();
     return () => { cancelled = true; };
     // catalogReady is a dependency on purpose: the first pass runs against the seed set, and
     // this runs again with the real catalog so every marker on the globe gets a reading.
-  }, [loadSpotData, loadBackfill, catalogReady]);
+    //
+    // globeSeen is one too, and it is the reason the spot page has a forecast at all. Only the
+    // globe's markers read those one-hour readings, but the backfill ran on every app open --
+    // and Open-Meteo's free allowance is counted per *location*, not per request, so batching
+    // 403 spots into five calls still spent 403. Two of those opens is most of an hour's
+    // allowance and a dozen is the day's, for the whole network behind one address; once it
+    // was gone the spot page's own two requests were refused along with everything else, and
+    // every spot showed "no forecast" while the globe -- fed by the Worker's cached grid from
+    // its own address -- carried on looking fine. Nobody who never opens the globe should be
+    // spending 403 calls, so now nobody does until they do.
+  }, [loadSpotData, loadBackfill, catalogReady, globeSeen]);
 
   // Marked in a ref the moment a request starts, not when it finishes. This effect depends on
   // `forecast`, which changes on every one of the 230 spots loading in the background, so a
@@ -640,7 +658,7 @@ export default function App() {
   function openSearch() { setSearchOpen(true); }
   function handleNav(label) {
     if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); }
-    else if (label === 'map') { setView('globe'); }
+    else if (label === 'map') { setView('globe'); setGlobeSeen(true); }
     else if (label === 'alerts') { setView('alerts'); }
     else if (label === 'profile') { setView('profile'); }
     else { setToast('Part of the full app — not in this preview'); }
@@ -810,6 +828,7 @@ export default function App() {
             onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
             canPrevSpot={canStepBack} canNextSpot={canStepOn}
             h={h} dataState={dataState} fetchedAt={spotForecast ? spotForecast.fetchedAt : null} retry={() => loadSpotData(activeId, spot)}
+            errorReason={errorReasons[activeId]}
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
             best={spotForecast ? spotForecast.best : null}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
