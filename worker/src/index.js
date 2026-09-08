@@ -31,13 +31,27 @@ function json(body, env, status = 200) {
 // a free public service. Cached in KV so a busy minute is still one upstream request.
 // Live buoy observations, proxied and cached. Sources and caching live in buoySources.js —
 // each network is fetched and cached separately so one being down or slow costs only itself.
+// The lat/lon pair two endpoints take, read once and read strictly.
+//
+// Number('') and Number(null) are both 0, so reading these straight through Number() lets a
+// missing or empty coordinate pass as a real one -- and 0,0 is a real place, in the Gulf of
+// Guinea. A request with no coordinates was being answered about the ocean off Ghana rather
+// than refused. Returns null when there is nothing usable, so callers can say 400.
+function readCoords(url) {
+  const latRaw = url.searchParams.get('lat');
+  const lonRaw = url.searchParams.get('lon');
+  if (!latRaw || !lonRaw) return null;
+  const lat = Number(latRaw);
+  const lon = Number(lonRaw);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (Math.abs(lat) > 90 || Math.abs(lon) > 180) return null;
+  return { lat, lon };
+}
+
 async function handleBuoy(request, env) {
-  const url = new URL(request.url);
-  const lat = Number(url.searchParams.get('lat'));
-  const lon = Number(url.searchParams.get('lon'));
-  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
-    return json({ error: 'lat and lon required' }, env, 400);
-  }
+  const coords = readCoords(new URL(request.url));
+  if (!coords) return json({ error: 'lat and lon required' }, env, 400);
+  const { lat, lon } = coords;
   try {
     const stations = await loadAllStations(env);
     const nearest = nearestWaveStation(stations, lat, lon);
@@ -67,17 +81,9 @@ const FORECAST_TTL_S = 1800;
 
 async function handleForecast(request, env) {
   const url = new URL(request.url);
-  // Read as text first: Number('') and Number(null) are both 0, so a missing or empty
-  // coordinate would otherwise pass as a real one and be answered with a forecast for the
-  // Gulf of Guinea rather than an error.
-  const latRaw = url.searchParams.get('lat');
-  const lonRaw = url.searchParams.get('lon');
-  const lat = Number(latRaw);
-  const lon = Number(lonRaw);
-  if (!latRaw || !lonRaw || !Number.isFinite(lat) || !Number.isFinite(lon)
-    || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
-    return json({ error: 'lat and lon required' }, env, 400);
-  }
+  const coords = readCoords(url);
+  if (!coords) return json({ error: 'lat and lon required' }, env, 400);
+  const { lat, lon } = coords;
 
   // Keyed on the normalised coordinates alone. The incoming URL may carry anything else and
   // must not split the cache -- two visitors asking for the same spot are one upstream fetch.
