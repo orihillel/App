@@ -169,6 +169,29 @@ export default function App() {
   // Read by the Globe component's animation loop so every rendered frame reflects whatever is
   // currently in `forecast`, without a separate effect keyed on [forecast, hourIdx, ...] that
   // could fall out of sync (see Globe.jsx).
+  // The globe's code, fetched while the phone is idle rather than when the globe is tapped.
+  //
+  // That chunk is 175KB and measured just over a second of download on a slow connection --
+  // a second in which tapping the globe did nothing visible. Nothing else needs the network by
+  // this point, so it costs nobody anything to have it already there.
+  //
+  // Not unconditionally, though: this is 175KB for a view plenty of sessions never open. Data
+  // Saver is an explicit request not to do this, and on 2g the bandwidth is better spent on the
+  // forecast someone is actually waiting for. requestIdleCallback waits for a genuinely quiet
+  // moment; the timeout stops it waiting forever on a busy page, and the setTimeout fallback
+  // covers Safari, which still has no requestIdleCallback.
+  useEffect(() => {
+    const net = typeof navigator !== 'undefined' ? navigator.connection : null;
+    if (net && (net.saveData || /^(slow-)?2g$/.test(net.effectiveType || ''))) return;
+    const prefetch = () => { import('./components/Globe.jsx').catch(() => { /* tapping it will retry */ }); };
+    if (typeof requestIdleCallback === 'function') {
+      const id = requestIdleCallback(prefetch, { timeout: 4000 });
+      return () => cancelIdleCallback(id);
+    }
+    const id = setTimeout(prefetch, 2500);
+    return () => clearTimeout(id);
+  }, []);
+
   // The rest of the catalog, once the app is on screen.
   //
   // Deliberately an effect rather than a static import: a static one would put it back in the
