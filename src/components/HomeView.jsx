@@ -64,9 +64,9 @@ export function HomeView({
           where it says what it does. */}
       <div className="flex justify-between items-center px-3" style={{ paddingBottom: 8 }}>
         <div className="flex items-center" style={{ minWidth: 0 }}>
-          {/* Dimmed and disabled at the ends rather than inert. The arrows walk spots in order of
-              distance from where you started, so at the near end there is nothing behind you --
-              and an arrow that silently does nothing reads as broken. */}
+          {/* Left goes to the nearest spot west of here, right to the nearest east. Dimmed and
+              disabled when that side of the map is empty -- an arrow that silently does nothing
+              reads as broken. */}
           {showSpotNav && (
             <button
               className="tl-btn" style={{ ...TAP, opacity: canPrevSpot ? 1 : 0.3, cursor: canPrevSpot ? 'pointer' : 'default' }}
