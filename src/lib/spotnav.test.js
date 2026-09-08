@@ -1,148 +1,114 @@
 import { describe, it, expect } from 'vitest';
-import { distanceKm, nearestFirst, stepNearest, stepIn } from './spotnav.js';
+import { distanceKm, bearingDeg, isEastward, stepDirection } from './spotnav.js';
 import { CATALOG } from './spots.catalog.js';
 import { ORDER } from './spots.js';
 
 const SPOTS = {
   trestles: { name: 'Lower Trestles', lat: 33.3825, lon: -117.5972 },
-  blacks: { name: 'Blacks Beach', lat: 32.8891, lon: -117.2528 },   // ~65km from Trestles
-  malibu: { name: 'Malibu', lat: 34.0367, lon: -118.6779 },          // ~130km
-  pipeline: { name: 'Pipeline', lat: 21.6647, lon: -158.0538 },      // ~4,000km
-  nazare: { name: 'Nazaré', lat: 39.6033, lon: -9.0705 },            // ~9,000km
+  sanonofre: { name: 'San Onofre', lat: 33.3717, lon: -117.5656 },   // just east, ~3km
+  huntington: { name: 'Huntington Beach', lat: 33.6553, lon: -118.0025 }, // northwest, ~48km
+  blacks: { name: 'Blacks Beach', lat: 32.8891, lon: -117.2528 },    // southeast, ~63km
+  nazare: { name: 'Nazaré', lat: 39.6033, lon: -9.0705 },            // far east, ~9,000km
 };
-const IDS = ['trestles', 'blacks', 'malibu', 'pipeline', 'nazare'];
+const IDS = Object.keys(SPOTS);
 
-describe('distanceKm', () => {
-  it('measures a known separation', () => {
-    // Trestles to Blacks Beach is about 65km down the same coast.
-    expect(distanceKm(33.3825, -117.5972, 32.8891, -117.2528)).toBeGreaterThan(55);
-    expect(distanceKm(33.3825, -117.5972, 32.8891, -117.2528)).toBeLessThan(75);
+describe('bearingDeg', () => {
+  it('reads the four cardinal directions', () => {
+    expect(bearingDeg(0, 0, 1, 0)).toBeCloseTo(0, 3);    // north
+    expect(bearingDeg(0, 0, 0, 1)).toBeCloseTo(90, 3);   // east
+    expect(bearingDeg(0, 0, -1, 0)).toBeCloseTo(180, 3); // south
+    expect(bearingDeg(0, 0, 0, -1)).toBeCloseTo(270, 3); // west
   });
 
-  it('knows the antimeridian wraps', () => {
-    // The flat approximation this replaced put these on opposite sides of the planet.
-    expect(distanceKm(-16, 179.5, -16, -179.5)).toBeLessThan(150);
-  });
-
-  it('is zero for a spot and itself', () => {
-    expect(distanceKm(10, 20, 10, 20)).toBeCloseTo(0, 6);
+  it('crosses the antimeridian the short way', () => {
+    // 179E to 179W is a short hop east, not most of a lap westward. Subtracting longitudes
+    // would call this 358 degrees -- almost due west.
+    expect(bearingDeg(0, 179, 0, -179)).toBeCloseTo(90, 1);
+    expect(bearingDeg(0, -179, 0, 179)).toBeCloseTo(270, 1);
   });
 });
 
-describe('nearestFirst', () => {
-  it('puts the anchor first, then the coast around it', () => {
-    expect(nearestFirst(SPOTS, IDS, 'trestles')).toEqual(['trestles', 'blacks', 'malibu', 'pipeline', 'nazare']);
+describe('isEastward', () => {
+  it('splits the compass at the north-south line', () => {
+    expect(isEastward(0)).toBe(true);    // due north goes right
+    expect(isEastward(90)).toBe(true);   // due east
+    expect(isEastward(179)).toBe(true);
+    expect(isEastward(180)).toBe(false); // due south goes left
+    expect(isEastward(270)).toBe(false); // due west
+    expect(isEastward(359)).toBe(false);
   });
 
-  it('reorders when you move: the same catalog looks different from Portugal', () => {
-    const fromPortugal = nearestFirst(SPOTS, IDS, 'nazare');
-    expect(fromPortugal[0]).toBe('nazare');
-    // Pipeline is last from here and second-from-last from Trestles -- the ordering genuinely
-    // depends on where you are standing, which is the point. (Trestles edges out Malibu from
-    // Portugal by about a degree of longitude, so the top of the list is not simply reversed.)
-    expect(fromPortugal[fromPortugal.length - 1]).toBe('pipeline');
-    expect(nearestFirst(SPOTS, IDS, 'trestles')[fromPortugal.length - 1]).toBe('nazare');
+  it('gives a north-south coast two working arrows', () => {
+    // Israel's coast runs almost due north-south: nothing is meaningfully east or west of
+    // anything, so an east/west test on longitude alone would leave both arrows dead.
+    const north = bearingDeg(32.16, 34.79, 32.83, 34.97); // Herzliya -> Atlit, up the coast
+    const south = bearingDeg(32.83, 34.97, 32.16, 34.79);
+    expect(isEastward(north)).toBe(true);
+    expect(isEastward(south)).toBe(false);
+  });
+});
+
+describe('stepDirection', () => {
+  it('goes to the nearest spot on the eastern side', () => {
+    expect(stepDirection(SPOTS, IDS, 'trestles', 1)).toBe('sanonofre'); // 3km, just east
   });
 
-  it('keeps a spot with no coordinates rather than dropping it', () => {
-    const spots = { ...SPOTS, mystery: { name: 'Somewhere' } };
-    const out = nearestFirst(spots, [...IDS, 'mystery'], 'trestles');
-    expect(out).toContain('mystery');
-    expect(out[out.length - 1]).toBe('mystery'); // last, not lost
-    expect(out.length).toBe(6);
+  it('goes to the nearest spot on the western side', () => {
+    expect(stepDirection(SPOTS, IDS, 'trestles', -1)).toBe('huntington'); // northwest, 48km
   });
 
-  it('falls back to the given order when the anchor itself has no position', () => {
+  it('is its own inverse along a coast', () => {
+    // The whole reason for using direction: east then west comes back, with no stored state.
+    const east = stepDirection(SPOTS, IDS, 'trestles', 1);
+    expect(stepDirection(SPOTS, IDS, east, -1)).toBe('trestles');
+  });
+
+  it('never sends you to the other side of the planet for one press', () => {
+    // Nazaré is in the list and is 9,000km east; San Onofre is 3km east and wins.
+    expect(stepDirection(SPOTS, IDS, 'trestles', 1)).not.toBe('nazare');
+  });
+
+  it('returns null when that side is empty rather than wrapping round', () => {
+    const only = { a: { lat: 0, lon: 0 }, b: { lat: 0, lon: 10 } };
+    expect(stepDirection(only, ['a', 'b'], 'a', 1)).toBe('b');  // east
+    expect(stepDirection(only, ['a', 'b'], 'a', -1)).toBeNull(); // nothing west
+  });
+
+  it('skips spots with no usable position instead of throwing', () => {
     const spots = { ...SPOTS, ghost: { name: 'Ghost' } };
-    expect(nearestFirst(spots, IDS, 'ghost')).toEqual(IDS);
+    expect(stepDirection(spots, [...IDS, 'ghost'], 'trestles', 1)).toBe('sanonofre');
   });
 
-  it('is stable: building it twice gives the same sequence', () => {
-    // Two spots at an identical position must not swap between presses, or the arrows would
-    // step forward and land back where they started.
-    const spots = { ...SPOTS, twinA: { lat: 0, lon: 0 }, twinB: { lat: 0, lon: 0 } };
-    const ids = [...IDS, 'twinA', 'twinB'];
-    expect(nearestFirst(spots, ids, 'trestles')).toEqual(nearestFirst(spots, ids, 'trestles'));
+  it('has nowhere to go from a spot with no position of its own', () => {
+    expect(stepDirection({ ...SPOTS, ghost: {} }, [...IDS, 'ghost'], 'ghost', 1)).toBeNull();
   });
 
-  it('handles the real catalog without losing a spot', () => {
-    const out = nearestFirst(CATALOG, ORDER, 'trestles');
-    expect(out.length).toBe(ORDER.length);
-    expect(new Set(out).size).toBe(ORDER.length);
-    expect(out[0]).toBe('trestles');
+  it('ignores a spot sitting exactly where you are', () => {
+    const spots = { ...SPOTS, twin: { lat: 33.3825, lon: -117.5972 } };
+    expect(stepDirection(spots, [...IDS, 'twin'], 'trestles', 1)).toBe('sanonofre');
   });
 
-  it('actually puts Californian spots next to Trestles, which is the whole point', () => {
-    // The old order gave Pipeline (Hawaii) and Teahupo'o (Tahiti) four and five steps away.
-    const next5 = nearestFirst(CATALOG, ORDER, 'trestles').slice(1, 6);
-    for (const id of next5) {
-      expect(distanceKm(CATALOG.trestles.lat, CATALOG.trestles.lon, CATALOG[id].lat, CATALOG[id].lon),
-        id + ' is not nearby').toBeLessThan(200);
-    }
+  it('walks the real Californian coast in both directions', () => {
+    const east = stepDirection(CATALOG, ORDER, 'trestles', 1);
+    const west = stepDirection(CATALOG, ORDER, 'trestles', -1);
+    const a = CATALOG.trestles;
+    expect(distanceKm(a.lat, a.lon, CATALOG[east].lat, CATALOG[east].lon)).toBeLessThan(100);
+    expect(distanceKm(a.lat, a.lon, CATALOG[west].lat, CATALOG[west].lon)).toBeLessThan(100);
+    expect(isEastward(bearingDeg(a.lat, a.lon, CATALOG[east].lat, CATALOG[east].lon))).toBe(true);
+    expect(isEastward(bearingDeg(a.lat, a.lon, CATALOG[west].lat, CATALOG[west].lon))).toBe(false);
   });
 
-  it('returns nothing for nothing', () => {
-    expect(nearestFirst(SPOTS, [], 'trestles')).toEqual([]);
-    expect(nearestFirst(SPOTS, null, 'trestles')).toEqual([]);
-  });
-});
-
-describe('stepNearest', () => {
-  it('steps forward to the nearest spot, then the next nearest', () => {
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'trestles', 1)).toBe('blacks');
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'blacks', 1)).toBe('malibu');
-  });
-
-  it('goes back exactly the way it came', () => {
-    const forward = stepNearest(SPOTS, IDS, 'trestles', 'trestles', 1);
-    expect(stepNearest(SPOTS, IDS, 'trestles', forward, -1)).toBe('trestles');
-  });
-
-  it('does not send you to the far side of the planet for pressing back', () => {
-    // The reported bug, and the reason clamping replaced wrapping. In a list ordered by
-    // distance the last entry is the furthest spot on Earth -- from Lower Trestles that is
-    // Réunion, 18,500km away -- so wrapping made the back arrow a teleport.
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'trestles', -1)).toBeNull();
-  });
-
-  it('stops at the far end too, rather than teleporting home', () => {
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'nazare', 1)).toBeNull();
-  });
-
-  it('clamps against the real catalog, not just a five-spot fixture', () => {
-    expect(stepNearest(CATALOG, ORDER, 'trestles', 'trestles', -1)).toBeNull();
-    expect(stepNearest(CATALOG, ORDER, 'trestles', 'trestles', 1)).not.toBeNull();
-  });
-
-  it('never bounces between two spots, which chaining nearest-to-current would', () => {
-    // From Blacks the nearest spot is Trestles, so a chain would go Trestles -> Blacks ->
-    // Trestles forever. Anchored ordering keeps moving outward.
+  it('keeps moving rather than bouncing between two spots', () => {
+    // Five presses east from Lower Trestles must reach five different places.
     let at = 'trestles';
-    const seen = [at];
-    for (let i = 0; i < 4; i++) { at = stepNearest(SPOTS, IDS, 'trestles', at, 1); seen.push(at); }
-    expect(new Set(seen).size).toBe(5);
+    const seen = new Set([at]);
+    for (let i = 0; i < 5; i++) { at = stepDirection(CATALOG, ORDER, at, 1); seen.add(at); }
+    expect(seen.size).toBe(6);
   });
 
-  it('recovers when the current spot is no longer in the list', () => {
-    expect(stepNearest(SPOTS, IDS, 'trestles', 'deleted-spot', 1)).toBe('blacks');
-  });
-
-  it('returns null with nothing to step through', () => {
-    expect(stepNearest(SPOTS, [], 'trestles', 'trestles', 1)).toBeNull();
-  });
-});
-
-describe('stepIn', () => {
-  it('clamps at both ends', () => {
-    const list = ['a', 'b', 'c'];
-    expect(stepIn(list, 'a', -1)).toBeNull();
-    expect(stepIn(list, 'c', 1)).toBeNull();
-    expect(stepIn(list, 'b', -1)).toBe('a');
-    expect(stepIn(list, 'b', 1)).toBe('c');
-  });
-
-  it('has nowhere to go in an empty list', () => {
-    expect(stepIn([], 'a', 1)).toBeNull();
-    expect(stepIn(null, 'a', 1)).toBeNull();
+  it('both arrows work from every spot in the catalog', () => {
+    // A dead arrow is what the last two attempts shipped; this asserts neither is ever dead.
+    const dead = ORDER.filter((id) => !stepDirection(CATALOG, ORDER, id, 1) || !stepDirection(CATALOG, ORDER, id, -1));
+    expect(dead, 'spots with a dead arrow').toEqual([]);
   });
 });

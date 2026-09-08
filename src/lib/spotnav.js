@@ -1,19 +1,22 @@
 // Which spot the arrows on the spot page go to next.
 //
-// They used to step through `order`, which is the catalog's own list -- roughly the sequence
-// spots were added in. On screen that reads as arbitrary: from Lower Trestles in California the
-// next arrow went to Blacks Beach, then Rincon, then The Wedge, then Pipeline in Hawaii and
-// Teahupo'o in Tahiti. Nobody comparing surf is asking "what was entered after this one"; they
-// are asking what else is nearby.
+// Two rules, and they are the ones you would give someone holding a map: the right arrow goes
+// to the nearest spot on the eastern side, the left arrow to the nearest on the western side.
+// Due north counts as east and due south as west, so the arrows still work on a coast running
+// north to south -- Israel, Portugal, Chile -- where almost nothing is truly east or west of
+// anything else.
 //
-// So the arrows walk the catalog ordered by distance from an anchor -- the spot you arrived at
-// by searching, tapping the globe, or opening your go-to. Pressing forward repeatedly fans out
-// from there: nearest, second nearest, third.
+// Two earlier attempts at this are worth recording, because both were worse in ways that were
+// not obvious until the thing was used:
 //
-// Ordering by distance from a fixed anchor rather than chaining nearest-to-current is what makes
-// the arrows reversible. Chaining looks natural for one press and then traps you: from A the
-// nearest is B, and from B the nearest is very often A again, so the arrows bounce between two
-// spots forever. An anchor gives one stable sequence that back steps through exactly as it came.
+//   - stepping through the catalog's own list, which is roughly the order spots were added.
+//     From Lower Trestles the next arrow went to Pipeline in Hawaii and Teahupo'o in Tahiti.
+//   - ordering every spot by distance from an anchor and walking that. Forward was right, but
+//     the list runs from where you stand to the far side of the planet, so pressing back at
+//     the start wrapped to its last entry: Réunion, 18,500km away.
+//
+// Direction is what both were missing. It also makes the arrows their own inverses without any
+// stored state: the spot east of you is the one you came from when you head back west.
 
 const R_KM = 6371;
 const DEG = Math.PI / 180;
@@ -29,48 +32,46 @@ export function distanceKm(aLat, aLon, bLat, bLon) {
   return 2 * R_KM * Math.asin(Math.min(1, Math.sqrt(s)));
 }
 
-// `ids` ordered by how far each spot is from the anchor, the anchor itself first.
+// Initial compass bearing from a to b, 0 = due north, clockwise, in degrees.
 //
-// Anything without usable coordinates keeps its original relative position at the end rather
-// than being dropped: an arrow that silently skips a spot you added is worse than one that
-// visits it late.
-export function nearestFirst(spots, ids, anchorId) {
-  if (!Array.isArray(ids) || ids.length === 0) return [];
-  const anchor = spots && spots[anchorId];
-  if (!anchor || !Number.isFinite(anchor.lat) || !Number.isFinite(anchor.lon)) return ids.slice();
+// Spherical rather than a longitude subtraction, which is what keeps the antimeridian honest:
+// from 179°E to 179°W is a short hop east, not most of the way round the world westward.
+export function bearingDeg(aLat, aLon, bLat, bLon) {
+  const p1 = aLat * DEG, p2 = bLat * DEG;
+  const dl = (bLon - aLon) * DEG;
+  const y = Math.sin(dl) * Math.cos(p2);
+  const x = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+  return ((Math.atan2(y, x) / DEG) + 360) % 360;
+}
 
-  const located = [];
-  const unlocated = [];
-  ids.forEach((id, i) => {
+// Is `b` on the side of `a` the right arrow moves towards?
+//
+// The compass is split in half at the north-south line: bearings from due north round through
+// east to just before due south are the eastern side. Due north is deliberately on this side
+// and due south on the other, so that on a north-south coast the arrows become "up the coast"
+// and "down the coast" rather than both going nowhere.
+export function isEastward(bearing) {
+  return bearing < 180;
+}
+
+// The nearest spot on one side of where you are: `delta > 0` for east, `delta < 0` for west.
+// Returns null when that side is empty -- the app dims the arrow rather than leaving it inert.
+export function stepDirection(spots, ids, currentId, delta) {
+  const here = spots && spots[currentId];
+  if (!here || !Number.isFinite(here.lat) || !Number.isFinite(here.lon)) return null;
+  if (!Array.isArray(ids)) return null;
+  const wantEast = delta > 0;
+
+  let bestId = null;
+  let bestKm = Infinity;
+  for (const id of ids) {
+    if (id === currentId) continue;
     const s = spots[id];
-    if (!s) return;
-    if (!Number.isFinite(s.lat) || !Number.isFinite(s.lon)) { unlocated.push({ id, i }); return; }
-    located.push({ id, i, km: id === anchorId ? -1 : distanceKm(anchor.lat, anchor.lon, s.lat, s.lon) });
-  });
-  // Ties broken by the original index so the sequence is the same every time it is built --
-  // two spots on the same beach must not swap places between one press and the next.
-  located.sort((a, b) => a.km - b.km || a.i - b.i);
-  unlocated.sort((a, b) => a.i - b.i);
-  return [...located.map((e) => e.id), ...unlocated.map((e) => e.id)];
-}
-
-// The id `delta` steps away from `currentId` along an ordering, or null if there is nowhere to go.
-//
-// Clamped, not wrapped. Wrapping is meaningless here: the two ends of a distance-ordered list
-// are "the spot you are standing on" and "the furthest place on Earth from it", so a back step
-// from the start jumped 18,500km to Réunion, and a forward step from the end teleported home.
-// The first version of this wrapped, and a test cheerfully asserted it as correct.
-export function stepIn(ordered, currentId, delta) {
-  if (!Array.isArray(ordered) || ordered.length === 0) return null;
-  const at = ordered.indexOf(currentId);
-  // Not in the list at all -- a spot just removed, say -- so start from the anchor's own place.
-  const from = at === -1 ? 0 : at;
-  const to = from + delta;
-  if (to < 0 || to >= ordered.length) return null;
-  return ordered[to];
-}
-
-// Convenience for callers that have no reason to hold the ordering themselves.
-export function stepNearest(spots, ids, anchorId, currentId, delta) {
-  return stepIn(nearestFirst(spots, ids, anchorId), currentId, delta);
+    if (!s || !Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
+    if (s.lat === here.lat && s.lon === here.lon) continue; // no bearing to speak of
+    if (isEastward(bearingDeg(here.lat, here.lon, s.lat, s.lon)) !== wantEast) continue;
+    const km = distanceKm(here.lat, here.lon, s.lat, s.lon);
+    if (km < bestKm) { bestKm = km; bestId = id; }
+  }
+  return bestId;
 }

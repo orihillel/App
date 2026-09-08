@@ -9,7 +9,7 @@ import { addSample, calibration } from './lib/calibration.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { nextTideEvent } from './lib/tides.js';
-import { nearestFirst, stepIn } from './lib/spotnav.js';
+import { stepDirection } from './lib/spotnav.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
@@ -112,12 +112,6 @@ export default function App() {
   const [order, setOrder] = useState(() => ORDER.filter((id) => SEED_SPOTS[id]));
   const [catalogReady, setCatalogReady] = useState(false);
   const [activeId, setActiveId] = useState('trestles');
-  // Where the spot arrows measure "nearby" from.
-  //
-  // It is the spot you arrived at deliberately -- by search, the globe, your go-to -- and it
-  // stays put while you step, so the arrows fan outward from there instead of chaining
-  // nearest-to-current, which bounces between the same two spots forever. See lib/spotnav.js.
-  const [navAnchorId, setNavAnchorId] = useState('trestles');
   // Model agreement, cached per spot. Fetched only for the spot being looked at — it is a
   // second request per spot, and doing it for all 230 during the bulk load would double that
   // traffic for a signal nobody is reading on 229 of them.
@@ -449,7 +443,7 @@ export default function App() {
     storage.set('surf-onboarded', 'true').catch(() => {});
   }
   function pickOnboardingSpot(id) {
-    focusSpot(id);
+    setActiveId(id);
     completeOnboarding(id);
   }
   function openOnboardingGlobe() { setOnboardingGlobeOpen(true); }
@@ -601,16 +595,11 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loadSpotData, loadBackfill]);
 
-  // The spot order the arrows walk: everything you have, by distance from the anchor. Memoised
-  // because it is also what decides whether each arrow has anywhere to go, so it is read on
-  // every render rather than only when one is pressed.
-  const navOrder = useMemo(() => nearestFirst(spots, order, navAnchorId), [spots, order, navAnchorId]);
-  const navIdx = navOrder.indexOf(activeId);
-  // Clamped, not wrapped -- so at the near end there is genuinely nothing behind you, and the
-  // arrow says so instead of quietly doing nothing. (It used to wrap, which made the back arrow
-  // from your starting spot a jump to the furthest place on Earth.)
-  const canStepBack = navIdx > 0;
-  const canStepOn = navIdx >= 0 && navIdx < navOrder.length - 1;
+  // Whether each arrow has anywhere to go. With a full catalog both sides are always occupied,
+  // but a list of one spot -- or one where everything happens to lie the same way -- would
+  // leave an arrow with nothing to do, and it should look unavailable rather than be inert.
+  const canStepBack = useMemo(() => !!stepDirection(spots, order, activeId, -1), [spots, order, activeId]);
+  const canStepOn = useMemo(() => !!stepDirection(spots, order, activeId, 1), [spots, order, activeId]);
 
   const spot = spots[activeId];
   // The spot page reads a full forecast only. A `now` entry exists for the globe's markers and
@@ -650,7 +639,7 @@ export default function App() {
   function makeGoTo() { if (!isGoTo) { setGoToId(activeId); setToast(spot.name + ' set as your go-to spot'); } }
   function openSearch() { setSearchOpen(true); }
   function handleNav(label) {
-    if (label === 'home') { setView('home'); focusSpot(goToId); setHourIdx(1); }
+    if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); }
     else if (label === 'map') { setView('globe'); }
     else if (label === 'alerts') { setView('alerts'); }
     else if (label === 'profile') { setView('profile'); }
@@ -660,24 +649,19 @@ export default function App() {
   // marker on the globe. Resets the hour like handleNav('home') does, since this is "go look
   // at this spot" rather than "step through what I'm already comparing" (see stepSpot below).
   function viewSpot(id) {
-    focusSpot(id);
+    setActiveId(id);
     setView('home');
     setHourIdx(1);
   }
-  // Prev/Next arrows on a spot's own page, to browse every saved spot in order without
-  // leaving Home. Wraps around in both directions; doesn't reset the hour, so stepping
-  // through spots at (say) "9a" keeps comparing all of them at that same hour.
-  // The arrows walk the catalog by distance from the anchor, not by the order spots happen to
-  // be listed in. That list is roughly the sequence they were added, so from Lower Trestles the
-  // next arrow used to go Blacks, Rincon, The Wedge, then Pipeline in Hawaii -- while nobody
-  // comparing surf is asking what was entered after this one.
-  // Arriving at a spot deliberately -- search, the globe, your go-to, adding one -- moves the
-  // point the arrows measure "nearby" from. Stepping with the arrows does not, which is what
-  // keeps the sequence stable and reversible while you walk it.
-  function focusSpot(id) { setActiveId(id); setNavAnchorId(id); }
-
+  // Prev/Next arrows on a spot's own page, for walking along a coast without leaving Home.
+  // Doesn't reset the hour, so stepping through spots at (say) "9a" keeps comparing all of
+  // them at that same hour.
+  // Right goes to the nearest spot on the eastern side, left to the nearest on the western
+  // side, measured by compass bearing from where you are -- so on a north-south coast they
+  // become up the coast and down the coast. No memory of how you got here: the spot east of
+  // you is the one you came from when you head back west. See lib/spotnav.js.
   function stepSpot(delta) {
-    const next = stepIn(navOrder, activeId, delta);
+    const next = stepDirection(spots, order, activeId, delta);
     if (next) setActiveId(next);
   }
 
@@ -723,7 +707,7 @@ export default function App() {
     }
   }
   function selectSearchMatch(id) {
-    focusSpot(id);
+    setActiveId(id);
     setView('home');
     setSearchOpen(false);
     setSearchStep('query');
@@ -745,7 +729,7 @@ export default function App() {
     };
     setSpots((prev) => ({ ...prev, [id]: newSpot }));
     setOrder((prev) => [...prev, id]);
-    focusSpot(id);
+    setActiveId(id);
     closeSearch();
     loadSpotData(id, newSpot);
     if (!onboarded) completeOnboarding(id);
@@ -768,7 +752,7 @@ export default function App() {
     const nextOrder = order.filter((oid) => oid !== id);
     setOrder(nextOrder);
     setSpots((prev) => { const next = { ...prev }; delete next[id]; return next; });
-    if (activeId === id) focusSpot(nextOrder[0]);
+    if (activeId === id) setActiveId(nextOrder[0]);
     if (goToId === id) setGoToId(nextOrder[0]);
     try {
       const res = await storage.get('surf-spots');
