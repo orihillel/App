@@ -362,3 +362,72 @@ describe('checkSubscription (the cron logic)', () => {
     expect(sendPushNotification).not.toHaveBeenCalled();
   });
 });
+
+// The endpoint that exists so browsers stop spending Open-Meteo's per-location allowance --
+// see handleForecast. A fake edge cache, because caches.default is a Workers global.
+describe('GET /forecast', () => {
+  let store;
+  beforeEach(() => {
+    store = new Map();
+    globalThis.caches = {
+      default: {
+        match: async (req) => store.get(typeof req === 'string' ? req : req.url) || undefined,
+        put: async (req, res) => { store.set(typeof req === 'string' ? req : req.url, res); },
+      },
+    };
+  });
+  afterEach(() => { delete globalThis.caches; vi.unstubAllGlobals(); });
+
+  function okUpstream() {
+    return vi.fn(async (url) => new Response(
+      JSON.stringify(String(url).includes('marine') ? { hourly: { wave_height: [1] } } : { hourly: { wind_speed_10m: [3] } }),
+      { status: 200 },
+    ));
+  }
+
+  it('returns both upstream payloads under one roof', async () => {
+    vi.stubGlobal('fetch', okUpstream());
+    const res = await worker.fetch(new Request('https://worker.example/forecast?lat=33.3&lon=-117.5'), makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.marine.hourly.wave_height).toEqual([1]);
+    expect(body.wind.hourly.wind_speed_10m).toEqual([3]);
+  });
+
+  it('rejects coordinates it cannot use rather than asking upstream about NaN', async () => {
+    const spy = okUpstream();
+    vi.stubGlobal('fetch', spy);
+    const res = await worker.fetch(new Request('https://worker.example/forecast?lat=&lon=-117.5'), makeEnv());
+    expect(res.status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('serves the second asker from cache, so one spot is one upstream fetch', async () => {
+    const spy = okUpstream();
+    vi.stubGlobal('fetch', spy);
+    const url = 'https://worker.example/forecast?lat=33.3&lon=-117.5';
+    await worker.fetch(new Request(url), makeEnv());
+    const calls = spy.mock.calls.length;
+    const second = await worker.fetch(new Request(url), makeEnv());
+    expect(spy.mock.calls.length).toBe(calls); // no further upstream traffic
+    expect((await second.json()).marine.hourly.wave_height).toEqual([1]);
+  });
+
+  it('passes a rate limit through as 429, so the app can say so', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 429 })));
+    const res = await worker.fetch(new Request('https://worker.example/forecast?lat=1&lon=2'), makeEnv());
+    expect(res.status).toBe(429);
+    expect((await res.json()).status).toBe(429);
+  });
+
+  it('never caches a failure, or the next half hour serves it too', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 500 })));
+    const url = 'https://worker.example/forecast?lat=5&lon=6';
+    await worker.fetch(new Request(url), makeEnv());
+    expect(store.size).toBe(0);
+
+    vi.stubGlobal('fetch', okUpstream());
+    const res = await worker.fetch(new Request(url), makeEnv());
+    expect(res.status).toBe(200);
+  });
+});

@@ -218,3 +218,78 @@ describe('fetchSpotForecast error reporting', () => {
     await expect(fetchSpotForecast(spot)).rejects.toMatchObject({ status: 400 });
   });
 });
+
+// Where the two upstream payloads come from. The Worker exists so that browsers stop spending
+// an Open-Meteo allowance counted per location and shared across a whole network.
+describe('fetchSpotForecast routing', () => {
+  const SPOT2 = { lat: 33.38, lon: -117.59, offshoreDeg: 70 };
+
+  function workerBody() {
+    return { marine: makeMarineResponse(), wind: makeWindResponse() };
+  }
+
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('asks the Worker, not Open-Meteo, when one is configured', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify(workerBody()), { status: 200 });
+    });
+    await fetchSpotForecast(SPOT2);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('worker.example/forecast');
+    expect(calls.some((u) => u.includes('open-meteo.com'))).toBe(false);
+  });
+
+  it('goes straight to Open-Meteo when no Worker is configured', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', '');
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify(String(url).includes('marine') ? makeMarineResponse() : makeWindResponse()), { status: 200 });
+    });
+    await fetchSpotForecast(SPOT2);
+    expect(calls.every((u) => u.includes('open-meteo.com'))).toBe(true);
+  });
+
+  it('falls back to Open-Meteo when the Worker is unreachable', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('worker.example')) throw new TypeError('Failed to fetch');
+      return new Response(JSON.stringify(String(url).includes('marine') ? makeMarineResponse() : makeWindResponse()), { status: 200 });
+    });
+    const out = await fetchSpotForecast(SPOT2);
+    expect(out.hours.length).toBeGreaterThan(0);
+    expect(calls.some((u) => u.includes('open-meteo.com'))).toBe(true);
+  });
+
+  it('falls back when the Worker predates the endpoint and 404s', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      calls.push(String(url));
+      if (String(url).includes('worker.example')) return new Response('{}', { status: 404 });
+      return new Response(JSON.stringify(String(url).includes('marine') ? makeMarineResponse() : makeWindResponse()), { status: 200 });
+    });
+    const out = await fetchSpotForecast(SPOT2);
+    expect(out.hours.length).toBeGreaterThan(0);
+    expect(calls.some((u) => u.includes('open-meteo.com'))).toBe(true);
+  });
+
+  it('does not retry Open-Meteo directly when the Worker reports it rate-limited', async () => {
+    // Asking again from the browser would be refused too, and would spend one more of the
+    // very allowance that is exhausted. The status is passed through instead.
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ error: 'upstream', status: 429 }), { status: 429 });
+    });
+    await expect(fetchSpotForecast(SPOT2)).rejects.toMatchObject({ status: 429 });
+    expect(calls.some((u) => u.includes('open-meteo.com'))).toBe(false);
+  });
+});

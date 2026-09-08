@@ -51,6 +51,75 @@ async function handleBuoy(request, env) {
   }
 }
 
+// A spot's seven-day forecast, fetched from here rather than from each visitor's browser.
+//
+// Open-Meteo counts its free allowance per *location*, not per request, and the app knows 403
+// spots. A browser that colours every marker spends hundreds of an allowance shared by everyone
+// behind one address, and when it runs out the spot page's own two requests are refused along
+// with the rest -- every spot reading "no forecast" while this Worker's endpoints, calling from
+// Cloudflare's addresses, carried on answering. That is the bug this endpoint exists to end.
+//
+// Cached at the edge, so one upstream fetch per spot per half hour serves everyone who asks.
+// The response is the two upstream payloads passed through untouched: the shaping of them into
+// hours, tides and ratings lives in the app (src/lib/forecast.js) and stays there, so this
+// cannot drift away from what the app expects to parse.
+const FORECAST_TTL_S = 1800;
+
+async function handleForecast(request, env) {
+  const url = new URL(request.url);
+  // Read as text first: Number('') and Number(null) are both 0, so a missing or empty
+  // coordinate would otherwise pass as a real one and be answered with a forecast for the
+  // Gulf of Guinea rather than an error.
+  const latRaw = url.searchParams.get('lat');
+  const lonRaw = url.searchParams.get('lon');
+  const lat = Number(latRaw);
+  const lon = Number(lonRaw);
+  if (!latRaw || !lonRaw || !Number.isFinite(lat) || !Number.isFinite(lon)
+    || Math.abs(lat) > 90 || Math.abs(lon) > 180) {
+    return json({ error: 'lat and lon required' }, env, 400);
+  }
+
+  // Keyed on the normalised coordinates alone. The incoming URL may carry anything else and
+  // must not split the cache -- two visitors asking for the same spot are one upstream fetch.
+  const cache = caches.default;
+  const cacheKey = new Request(url.origin + '/forecast?lat=' + lat + '&lon=' + lon);
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+
+  const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + lat + '&longitude=' + lon +
+    '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
+  const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon +
+    '&hourly=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto&forecast_days=7';
+
+  let marineRes;
+  let windRes;
+  try {
+    [marineRes, windRes] = await Promise.all([fetch(marineUrl), fetch(windUrl)]);
+  } catch {
+    return json({ error: 'upstream unreachable' }, env, 502);
+  }
+  if (!marineRes.ok || !windRes.ok) {
+    // The upstream status is passed on rather than flattened to one error, because the app
+    // tells a rate limit apart from a rejected request and says different things about them.
+    const bad = marineRes.ok ? windRes : marineRes;
+    return json({ error: 'upstream', status: bad.status }, env, bad.status === 429 ? 429 : 502);
+  }
+
+  let marine;
+  let wind;
+  try {
+    [marine, wind] = await Promise.all([marineRes.json(), windRes.json()]);
+  } catch {
+    return json({ error: 'upstream returned junk' }, env, 502);
+  }
+
+  const res = json({ marine, wind }, env);
+  res.headers.set('Cache-Control', 'public, max-age=' + FORECAST_TTL_S);
+  // Only a good answer is cached; an error must not be served for the next half hour.
+  await cache.put(cacheKey, res.clone());
+  return res;
+}
+
 // The global wave-height grid for the globe's ocean overlay. See waveGrid.js.
 //
 // Built inline rather than in the background. Background builds were tried three ways and none
@@ -200,6 +269,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/me') return handleGetMe(request, env);
     if (request.method === 'PUT' && url.pathname === '/me/data') return handlePutMeData(request, env);
     if (request.method === 'GET' && url.pathname === '/buoy') return handleBuoy(request, env);
+    if (request.method === 'GET' && url.pathname === '/forecast') return handleForecast(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
