@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
+import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
@@ -9,7 +9,7 @@ import { addSample, calibration } from './lib/calibration.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { nextTideEvent } from './lib/tides.js';
-import { stepNearest } from './lib/spotnav.js';
+import { nearestFirst, stepIn } from './lib/spotnav.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
@@ -601,6 +601,17 @@ export default function App() {
     return () => clearInterval(interval);
   }, [loadSpotData, loadBackfill]);
 
+  // The spot order the arrows walk: everything you have, by distance from the anchor. Memoised
+  // because it is also what decides whether each arrow has anywhere to go, so it is read on
+  // every render rather than only when one is pressed.
+  const navOrder = useMemo(() => nearestFirst(spots, order, navAnchorId), [spots, order, navAnchorId]);
+  const navIdx = navOrder.indexOf(activeId);
+  // Clamped, not wrapped -- so at the near end there is genuinely nothing behind you, and the
+  // arrow says so instead of quietly doing nothing. (It used to wrap, which made the back arrow
+  // from your starting spot a jump to the furthest place on Earth.)
+  const canStepBack = navIdx > 0;
+  const canStepOn = navIdx >= 0 && navIdx < navOrder.length - 1;
+
   const spot = spots[activeId];
   // The spot page reads a full forecast only. A `now` entry exists for the globe's markers and
   // carries a single hour; letting it through here would render a chart from one point and a
@@ -666,7 +677,7 @@ export default function App() {
   function focusSpot(id) { setActiveId(id); setNavAnchorId(id); }
 
   function stepSpot(delta) {
-    const next = stepNearest(spots, order, navAnchorId, activeId, delta);
+    const next = stepIn(navOrder, activeId, delta);
     if (next) setActiveId(next);
   }
 
@@ -811,7 +822,9 @@ export default function App() {
         ) : (
           <HomeView
             units={units} toggleUnits={toggleUnits} openSearch={openSearch} openMenu={() => setMenuOpen(true)}
-            spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1} onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
+            spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1}
+            onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
+            canPrevSpot={canStepBack} canNextSpot={canStepOn}
             h={h} dataState={dataState} fetchedAt={spotForecast ? spotForecast.fetchedAt : null} retry={() => loadSpotData(activeId, spot)}
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
             best={spotForecast ? spotForecast.best : null}
