@@ -22,7 +22,8 @@ export function describeForecastError(err) {
   return 'Couldn\'t reach the forecast service.';
 }
 
-export async function fetchSpotForecast(spot) {
+// Open-Meteo, straight from the browser. The fallback, not the first choice -- see fetchRaw.
+async function fetchDirect(spot) {
   const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat + '&longitude=' + spot.lon +
     '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
   // sunrise/sunset drive which hours get sampled below, per spot and per date.
@@ -40,8 +41,45 @@ export async function fetchSpotForecast(spot) {
     err.status = bad.status;
     throw err;
   }
-  const marine = await marineRes.json();
-  const wind = await windRes.json();
+  const [marine, wind] = await Promise.all([marineRes.json(), windRes.json()]);
+  return { marine, wind };
+}
+
+// Where a spot's two upstream payloads come from.
+//
+// The Worker first, when one is configured. It calls Open-Meteo from Cloudflare's addresses
+// and caches the answer, so one upstream fetch per spot serves everyone -- rather than every
+// visitor spending an allowance that Open-Meteo counts per location and shares across everyone
+// behind one address. Exhausting it is what made every spot page read "no forecast" while the
+// globe, fed by this same Worker, looked perfectly healthy.
+//
+// Falling back to a direct call keeps the app working with no Worker configured at all, and if
+// the Worker is missing or broken. But *only* then: when the Worker answers that the upstream
+// refused it, asking Open-Meteo again from here would be refused too, and would spend one more
+// of the allowance to learn nothing. That status is passed straight through instead.
+async function fetchRaw(spot) {
+  const base = import.meta.env.VITE_PUSH_API_URL;
+  if (base) {
+    let res = null;
+    try {
+      res = await fetch(base + '/forecast?lat=' + spot.lat + '&lon=' + spot.lon);
+    } catch { /* Worker unreachable -- fall through and ask Open-Meteo directly */ }
+    if (res && res.ok) {
+      const body = await res.json().catch(() => null);
+      if (body && body.marine && body.wind) return { marine: body.marine, wind: body.wind };
+      // A 200 that isn't a forecast means this Worker predates the endpoint. Go direct.
+    } else if (res && res.status !== 404) {
+      const body = await res.json().catch(() => null);
+      const err = new Error('Forecast request failed');
+      err.status = (body && body.status) || res.status;
+      throw err;
+    }
+  }
+  return fetchDirect(spot);
+}
+
+export async function fetchSpotForecast(spot) {
+  const { marine, wind } = await fetchRaw(spot);
 
   // Which hours to sample, from this spot's own sunrise and sunset rather than a fixed
   // 5am-7pm list — see lib/daylight.js for why that fixed list was actively wrong at the
