@@ -26,7 +26,7 @@ import { ConditionScale } from './ConditionScale.jsx';
 // `{ spots, order, forecast, clockHour }` — read directly inside the animation loop so every
 // rendered frame reflects whatever is currently in `forecast`, with no separate sync effect
 // to fall out of date.
-export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spots', hint, units = 'metric' }) {
+export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, title = 'All spots', hint, units = 'metric' }) {
   const containerRef = useRef(null);
   // The wave overlay is off by default. It is a second reading of the same globe -- where the
   // swell is, rather than which spots are good -- and defaulting it on would bury the markers
@@ -34,6 +34,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
   const [wavesOn, setWavesOn] = useState(false);
   const [waveMeta, setWaveMeta] = useState(null);
   // The three.js scene is built once in a mount effect, so React state cannot reach it. Same
+  // Read through a ref for the same reason dataRef exists: the render loop is set up once, and
+  // closing over the prop would pin whichever version of it existed at mount.
+  const visibleCbRef = useRef(onVisibleSpots);
+  visibleCbRef.current = onVisibleSpots;
+
   // bridge the parent uses for forecast data: a ref the render loop reads.
   const wavesOnRef = useRef(false);
   wavesOnRef.current = wavesOn;
@@ -1030,6 +1035,57 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // So every frame the visible markers are projected, ranked by how near the middle of the
     // screen they are (the middle being what someone deliberately zoomed in on), and laid out
     // greedily, skipping any that would land on one already placed. See lib/labelplacement.js.
+    // Which spots are on screen, told to the parent so it can fetch readings for those and no
+    // others.
+    //
+    // One reading costs 36 billed values at Open-Meteo, so fetching the whole catalog on every
+    // globe open spent more than a day's free allowance in one go -- see loadConditionsFor in
+    // App.jsx. What is actually being looked at is a far smaller set, and it is already
+    // computed: updateLabels projects every marker and culls to the frustum each frame, so
+    // `labelWanted` is exactly the answer.
+    //
+    // Reported on a timer rather than per frame, and only when the set has actually changed,
+    // because this fires a network request at the other end and a drag is sixty frames a second.
+    // Ranked nearest-the-middle-first and capped, so a world view fills in what someone is
+    // pointing at rather than a random third of the planet; moving the globe asks for the rest.
+    const VISIBLE_REPORT_MS = 1200;
+    const VISIBLE_MAX_SPOTS = 120;
+    let lastReportAt = 0;
+    let lastReportKey = '';
+    function reportVisibleSpots() {
+      const cb = visibleCbRef.current;
+      if (!cb) return;
+      const now = performance.now();
+      if (now - lastReportAt < VISIBLE_REPORT_MS) return;
+      lastReportAt = now;
+
+      const onScreen = [];
+      for (const m of markers) {
+        if (!m.labelWanted) continue;
+        const dx = m.screenX - width / 2;
+        const dy = m.screenY - height / 2;
+        onScreen.push({ m, d2: dx * dx + dy * dy });
+      }
+      onScreen.sort((a, b) => a.d2 - b.d2);
+
+      const ids = [];
+      for (const { m } of onScreen) {
+        // A cluster stands for many spots and is coloured by the best of them, so its whole
+        // membership is what has to be known -- but not at the cost of blowing the cap on one
+        // dot, hence the budget check rather than a skip.
+        for (const id of m.ids) {
+          if (ids.length >= VISIBLE_MAX_SPOTS) break;
+          ids.push(id);
+        }
+        if (ids.length >= VISIBLE_MAX_SPOTS) break;
+      }
+      if (!ids.length) return;
+      const key = ids.join(',');
+      if (key === lastReportKey) return;
+      lastReportKey = key;
+      cb(ids);
+    }
+
     const labelCandidates = [];
     const labelShow = new Set();
     function updateLabels() {
@@ -1075,6 +1131,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
 
       labelShow.clear();
       for (const id of placeLabels(labelCandidates, { maxLabels: MAX_LABELS })) labelShow.add(id);
+
+      reportVisibleSpots();
 
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];

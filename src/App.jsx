@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } fro
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
-import { fetchSpotForecast, fetchNowForSpots, fetchModelAgreement, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
+import { fetchSpotForecast, fetchNowForSpots, fetchNowViaWorker, fetchModelAgreement, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration } from './lib/calibration.js';
@@ -144,9 +144,6 @@ export default function App() {
   // reach it" -- see describeForecastError.
   const [errorReasons, setErrorReasons] = useState({});
   const [view, setView] = useState('home');
-  // Latches on the first time the globe is opened and never clears: its markers keep their
-  // readings for the rest of the session rather than re-fetching on every visit.
-  const [globeSeen, setGlobeSeen] = useState(false);
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [onboarded, setOnboarded] = useState(true);
@@ -262,27 +259,51 @@ export default function App() {
   }, []);
 
   // Only the spot on screen and the go-to spot get a full forecast. Everything else gets one
-  // "right now" reading, batched.
+  // "right now" reading, and only when the globe is showing it.
   //
-  // This used to call fetchSpotForecast for all of ORDER — two requests each, seven days of
-  // hourly data, eleven marine variables — which measured at **809 requests on a single app
-  // open** against a free tier allowing 600 a minute and 10,000 a day. It was already over
-  // budget at 348 spots; at 403 the app simply stopped being able to fetch, which is what a
-  // rate limit looks like from the inside. See fetchNowForSpots for the arithmetic.
+  // Two rounds of this were wrong in the same way, and the second is why the app spent an
+  // evening unable to fetch anything at all. It began by calling fetchSpotForecast for every
+  // spot in ORDER — 809 requests on one app open. Batching those into one-hour readings cut
+  // the request count to nineteen and looked like the fix, but Open-Meteo bills by values
+  // returned, not by requests: one reading is 36 values, and a catalog of 540 is 19,440 of
+  // them against a free allowance of 10,000 a day. A single globe open spent more than a day.
+  //
+  // What actually costs less is asking for less. The globe reports which markers are on screen
+  // (onVisibleSpots below) and only those are fetched, through the Worker, which caches each
+  // spot separately so looking again is free. Coverage builds up as you explore, and the
+  // legend on the globe has always said how many spots it has readings for, so a partial
+  // answer is a state the display already tells the truth about.
   const backfillWarned = useRef(false);
-  const loadBackfill = useCallback(async () => {
-    // From the live map rather than the module: before the catalog chunk lands this is the
-    // seed set, which is why the backfill is re-run once it arrives.
+  const requestedNow = useRef(new Set());
+  const loadConditionsFor = useCallback(async (ids) => {
     const known = dataRef.current.spots;
-    const rest = ORDER.filter((id) => known[id] && id !== activeIdRef.current && id !== goToIdRef.current);
-    const results = await fetchNowForSpots(rest.map((id) => ({ id, spot: known[id] })));
+    const have = dataRef.current.forecast;
+    const wanted = ids.filter((id) => (
+      known[id] && !requestedNow.current.has(id) && !have[id]
+    ));
+    if (!wanted.length) return;
+    // Marked before the request, not after: the globe reports its markers every few seconds and
+    // would otherwise ask again for everything still in flight.
+    wanted.forEach((id) => requestedNow.current.add(id));
+
+    let results = await fetchNowViaWorker(wanted);
+    let failed = false;
+    if (!results) {
+      // No Worker, or it could not answer. Ask Open-Meteo directly, as before.
+      const direct = await fetchNowForSpots(wanted.map((id) => ({ id, spot: known[id] })));
+      failed = !Object.keys(direct).length && direct.failedBatches.length > 0;
+      results = direct;
+    }
     // Every batch refused and nothing to show for it is a different thing from a calm sea, and
     // grey markers alone do not say which. Said once, not on every refresh — a rate limit that
     // lasts an hour should not produce four toasts an hour.
-    if (!Object.keys(results).length && results.failedBatches.length && !backfillWarned.current) {
+    if (failed && !backfillWarned.current) {
       backfillWarned.current = true;
       setToast('Could not load conditions for the other spots');
     }
+    // A spot that came back empty is left unmarked, so moving the globe over it tries again
+    // rather than leaving it grey for the rest of the session.
+    for (const id of wanted) if (!results[id]) requestedNow.current.delete(id);
     setForecast((prev) => {
       const next = { ...prev };
       for (const [id, value] of Object.entries(results)) {
@@ -295,30 +316,17 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      // The spot being looked at first, then the go-to spot, then the rest of the catalog in
-      // one batched pass — the detail view is what someone is actually waiting for.
-      const known = dataRef.current.spots;
-      const first = [...new Set([activeIdRef.current, goToIdRef.current].filter((id) => id && known[id]))];
-      await Promise.all(first.map((id) => loadSpotData(id, known[id])));
-      if (cancelled || !globeSeen) return;
-      await loadBackfill();
-    })();
-    return () => { cancelled = true; };
+    // The spot being looked at, then the go-to spot. loadSpotData is idempotent per spot (an
+    // in-flight id is dropped rather than fetched twice), so there is nothing here to cancel.
+    const known = dataRef.current.spots;
+    const first = [...new Set([activeIdRef.current, goToIdRef.current].filter((id) => id && known[id]))];
+    first.forEach((id) => loadSpotData(id, known[id]));
     // catalogReady is a dependency on purpose: the first pass runs against the seed set, and
-    // this runs again with the real catalog so every marker on the globe gets a reading.
+    // this runs again once the real catalog has landed.
     //
-    // globeSeen is one too, and it is the reason the spot page has a forecast at all. Only the
-    // globe's markers read those one-hour readings, but the backfill ran on every app open --
-    // and Open-Meteo's free allowance is counted per *location*, not per request, so batching
-    // 403 spots into five calls still spent 403. Two of those opens is most of an hour's
-    // allowance and a dozen is the day's, for the whole network behind one address; once it
-    // was gone the spot page's own two requests were refused along with everything else, and
-    // every spot showed "no forecast" while the globe -- fed by the Worker's cached grid from
-    // its own address -- carried on looking fine. Nobody who never opens the globe should be
-    // spending 403 calls, so now nobody does until they do.
-  }, [loadSpotData, loadBackfill, catalogReady, globeSeen]);
+    // Nothing else is fetched here any more. The one-hour readings the globe's markers use are
+    // requested by the globe, for the markers it is actually showing -- see loadConditionsFor.
+  }, [loadSpotData, catalogReady]);
 
   // Marked in a ref the moment a request starts, not when it finishes. This effect depends on
   // `forecast`, which changes on every one of the 230 spots loading in the background, so a
@@ -605,19 +613,23 @@ export default function App() {
     }
   }
 
-  // Live feed: the spot on screen in full, the rest as one batched pass.
+  // Live feed: the spot on screen, refreshed in full.
   //
   // This used to re-fetch a seven-day forecast for every spot in the catalog every ten minutes
   // — 806 requests a cycle, ~116,000 a day against a 10,000-a-day allowance. Fifteen minutes is
   // also closer to honest: the wave model behind this runs four times a day.
+  //
+  // The other spots are no longer refreshed on a timer at all. They are the globe's markers,
+  // they are only fetched while the globe is showing them, and the Worker holds each one for
+  // half an hour — so the refresh happens when someone looks, which is the only time it is
+  // worth paying for.
   useEffect(() => {
     const interval = setInterval(() => {
       const id = activeIdRef.current;
       if (id && dataRef.current.spots[id]) loadSpotData(id, dataRef.current.spots[id]);
-      loadBackfill();
     }, 15 * 60 * 1000);
     return () => clearInterval(interval);
-  }, [loadSpotData, loadBackfill]);
+  }, [loadSpotData]);
 
   // Whether each arrow has anywhere to go. With a full catalog both sides are always occupied,
   // but a list of one spot -- or one where everything happens to lie the same way -- would
@@ -670,7 +682,7 @@ export default function App() {
   function openSearch() { setSearchOpen(true); }
   function handleNav(label) {
     if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); }
-    else if (label === 'map') { setView('globe'); setGlobeSeen(true); }
+    else if (label === 'map') { setView('globe'); }
     else if (label === 'alerts') { setView('alerts'); }
     else if (label === 'profile') { setView('profile'); }
     else { setToast('Part of the full app — not in this preview'); }
@@ -815,7 +827,7 @@ export default function App() {
         {!onboarded ? (
           onboardingGlobeOpen ? (
             <Suspense fallback={<GlobeLoading />}>
-              <Globe order={order} dataRef={dataRef} onClose={closeOnboardingGlobe} onSelectSpot={pickOnboardingSpotFromGlobe}
+              <Globe order={order} dataRef={dataRef} onClose={closeOnboardingGlobe} onSelectSpot={pickOnboardingSpotFromGlobe} onVisibleSpots={loadConditionsFor}
                 title="Pick your go-to spot" hint="Tap a marker to set it as your go-to spot · drag to rotate, pinch or scroll to zoom" />
             </Suspense>
           ) : (
@@ -824,7 +836,7 @@ export default function App() {
           )
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
-            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} units={units} />
+            <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} units={units} onVisibleSpots={loadConditionsFor} />
           </Suspense>
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />

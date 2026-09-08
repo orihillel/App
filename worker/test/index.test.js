@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createFakeKv } from './fakeKv.js';
+import { CATALOG } from '../../src/lib/spots.catalog.js';
 import { putSubscription, getSubscription } from '../src/store.js';
 import { GRID_KEY } from '../src/waveGrid.js';
 import { gridCellCount, encodeHeights, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
@@ -461,5 +462,99 @@ describe('coordinate validation', () => {
     )));
     const res = await worker.fetch(new Request('https://worker.example/forecast?lat=0&lon=0'), makeEnv());
     expect(res.status).toBe(200);
+  });
+});
+
+// The endpoint that exists so a globe open stops costing more than a day's Open-Meteo
+// allowance. Readings are cached per spot, not per request, which is what makes two viewers
+// looking at the same coast cost one fetch.
+describe('GET /conditions', () => {
+  let store;
+  beforeEach(() => {
+    store = new Map();
+    // Clones on the way in and on the way out, because the real Cache API hands back a fresh
+    // Response for every match. Returning the stored object itself made the second read of a
+    // cached entry fail with "Body has already been read" -- a property of the fake, not of the
+    // handler, and exactly the kind of thing that sends you debugging the wrong file.
+    globalThis.caches = {
+      default: {
+        match: async (req) => {
+          const hit = store.get(typeof req === 'string' ? req : req.url);
+          return hit ? hit.clone() : undefined;
+        },
+        put: async (req, res) => { store.set(typeof req === 'string' ? req : req.url, res.clone()); },
+      },
+    };
+  });
+  afterEach(() => { delete globalThis.caches; vi.unstubAllGlobals(); });
+
+  // Multi-location current readings, shaped the way Open-Meteo answers them.
+  function upstream() {
+    return vi.fn(async (url) => {
+      const n = (new URL(String(url)).searchParams.get('latitude') || '').split(',').length;
+      const marine = String(url).includes('marine');
+      const one = () => (marine
+        ? { current: { time: '2026-09-08T12:00', wave_height: 1.4, wave_period: 11, wave_direction: 270, swell_wave_height: 1, swell_wave_direction: 270, swell_wave_period: 12, sea_surface_temperature: 18 } }
+        : { current: { wind_speed_10m: 4, wind_direction_10m: 90 } });
+      return new Response(JSON.stringify(Array.from({ length: n }, one)), { status: 200 });
+    });
+  }
+
+  it('returns a reading for each id asked about', async () => {
+    vi.stubGlobal('fetch', upstream());
+    const res = await worker.fetch(new Request('https://worker.example/conditions?ids=trestles,pipeline'), makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Object.keys(body.spots).sort()).toEqual(['pipeline', 'trestles']);
+    expect(body.spots.trestles.now).toBe(true);
+  });
+
+  it('asks upstream once per spot, however many people ask for it', async () => {
+    const spy = upstream();
+    vi.stubGlobal('fetch', spy);
+    await worker.fetch(new Request('https://worker.example/conditions?ids=trestles,pipeline'), makeEnv());
+    const after = spy.mock.calls.length;
+    // A second viewer, overlapping on one spot: only the new one costs anything.
+    await worker.fetch(new Request('https://worker.example/conditions?ids=trestles,jbay'), makeEnv());
+    const second = spy.mock.calls.slice(after).map((c) => String(c[0]));
+    expect(second.length).toBeGreaterThan(0);
+    for (const u of second) {
+      expect(u).not.toContain(String(CATALOG.pipeline.lat));
+    }
+    const third = await worker.fetch(new Request('https://worker.example/conditions?ids=trestles,pipeline,jbay'), makeEnv());
+    expect(spy.mock.calls.length).toBe(after + second.length); // everything already cached
+    expect(Object.keys((await third.json()).spots).length).toBe(3);
+  });
+
+  it('refuses a request with no ids rather than fetching the whole catalog', async () => {
+    const spy = upstream();
+    vi.stubGlobal('fetch', spy);
+    const res = await worker.fetch(new Request('https://worker.example/conditions'), makeEnv());
+    expect(res.status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('caps how many spots one request can ask for', async () => {
+    const spy = upstream();
+    vi.stubGlobal('fetch', spy);
+    const ids = Object.keys(CATALOG).slice(0, 400).join(',');
+    const res = await worker.fetch(new Request('https://worker.example/conditions?ids=' + ids), makeEnv());
+    const body = await res.json();
+    expect(Object.keys(body.spots).length).toBeLessThanOrEqual(150);
+  });
+
+  it('drops ids it does not recognise instead of failing the whole request', async () => {
+    vi.stubGlobal('fetch', upstream());
+    const res = await worker.fetch(new Request('https://worker.example/conditions?ids=trestles,notaspot'), makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(Object.keys(body.spots)).toEqual(['trestles']);
+  });
+
+  it('answers with what it has when upstream fails, rather than throwing', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => new Response('{}', { status: 429 })));
+    const res = await worker.fetch(new Request('https://worker.example/conditions?ids=trestles'), makeEnv());
+    expect(res.status).toBe(200);
+    expect((await res.json()).spots).toEqual({});
   });
 });

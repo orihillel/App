@@ -355,6 +355,28 @@ function asList(payload, n) {
   return list.length >= n ? list : new Array(n).fill(null);
 }
 
+// The globe's "right now" readings, from the Worker rather than from here.
+//
+// One reading is 36 billed values (see the Worker's handleConditions), so a browser fetching
+// them for a whole catalog spends more than a day's free allowance in a single globe open.
+// Through the Worker they are cached per spot and shared by everyone, and this asks only for
+// what is on screen.
+//
+// Returns null when there is no Worker configured or it cannot answer, which is the caller's
+// signal to fall back to asking Open-Meteo directly.
+export async function fetchNowViaWorker(ids, { fetchImpl = fetch } = {}) {
+  const base = import.meta.env.VITE_PUSH_API_URL;
+  if (!base || !Array.isArray(ids) || !ids.length) return null;
+  try {
+    const res = await fetchImpl(base + '/conditions?ids=' + encodeURIComponent(ids.join(',')));
+    if (!res.ok) return null;
+    const body = await res.json();
+    return body && body.spots && typeof body.spots === 'object' ? body.spots : null;
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize = NOW_BATCH_SIZE, now = new Date() } = {}) {
   const out = {};
   // Every batch failing is a different thing from a few cells having no reading, and the only

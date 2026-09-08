@@ -1,4 +1,5 @@
-import { fetchSpotForecast } from '../../src/lib/forecast.js';
+import { fetchSpotForecast, fetchNowForSpots } from '../../src/lib/forecast.js';
+import { CATALOG } from '../../src/lib/spots.catalog.js';
 import { checkAlertMatch } from '../../src/lib/alerts.js';
 import { putSubscription, deleteSubscription, listSubscriptions } from './store.js';
 import { sendPushNotification, buildNotificationPayload } from './push.js';
@@ -124,6 +125,68 @@ async function handleForecast(request, env) {
   // Only a good answer is cached; an error must not be served for the next half hour.
   await cache.put(cacheKey, res.clone());
   return res;
+}
+
+// "Right now" readings for the globe's markers, fetched here and cached per spot.
+//
+// Open-Meteo bills by values returned, and one of these readings is 36 of them: ten marine
+// current variables, two wind, and a 24-hour sea-level series that is what lets a marker be
+// scored on tide the same way the spot page is. Every browser was fetching all of them for
+// every spot in the catalog on every globe open -- 540 spots, 19,440 units, against a free
+// allowance of 10,000 a day. One person opening the globe once spent more than a day's worth,
+// which is exactly how the app came to sit on "no forecast" for an evening.
+//
+// Two things fix that, and this endpoint is both. Asking only for the spots someone is actually
+// looking at (the globe reports them; see onVisibleSpots in Globe.jsx) turns hundreds into
+// dozens. Caching each spot separately here means the second person to look at a coast, and the
+// same person looking again, spends nothing: a cache key per spot rather than per request means
+// any overlap between two viewers' screens is already paid for.
+const CONDITIONS_TTL_S = 1800;
+
+// A bound on one request, not on how much of the world can be seen: the globe asks again as it
+// moves, and anything already cached comes back free.
+const CONDITIONS_MAX_IDS = 150;
+
+function conditionKey(origin, id) {
+  return new Request(origin + '/__condition/' + encodeURIComponent(id));
+}
+
+async function handleConditions(request, env) {
+  const url = new URL(request.url);
+  const raw = (url.searchParams.get('ids') || '').split(',').map((s) => s.trim()).filter(Boolean);
+  if (!raw.length) return json({ error: 'ids required' }, env, 400);
+
+  // Unknown ids are dropped rather than refused: a visitor on an older build can ask about a
+  // spot this one has retired, and the rest of their screen should still fill in.
+  const ids = [...new Set(raw)].filter((id) => CATALOG[id]).slice(0, CONDITIONS_MAX_IDS);
+  if (!ids.length) return json({ spots: {} }, env);
+
+  const cache = caches.default;
+  const spots = {};
+  const misses = [];
+  await Promise.all(ids.map(async (id) => {
+    const hit = await cache.match(conditionKey(url.origin, id));
+    if (hit) { spots[id] = await hit.json(); return; }
+    misses.push(id);
+  }));
+
+  if (misses.length) {
+    let fresh;
+    try {
+      fresh = await fetchNowForSpots(misses.map((id) => ({ id, spot: CATALOG[id] })));
+    } catch { fresh = {}; }
+    for (const [id, reading] of Object.entries(fresh)) {
+      spots[id] = reading;
+      const stored = json(reading, env);
+      stored.headers.set('Cache-Control', 'public, max-age=' + CONDITIONS_TTL_S);
+      // Not awaited into the response path: a slow cache write must not hold up the answer.
+      await cache.put(conditionKey(url.origin, id), stored);
+    }
+  }
+
+  // No Cache-Control on the envelope itself. The per-spot entries above are the cache; caching
+  // the combined answer too would key it on this exact id list, which is never asked for twice.
+  return json({ spots, cached: ids.length - misses.length, fetched: misses.length }, env);
 }
 
 // The global wave-height grid for the globe's ocean overlay. See waveGrid.js.
@@ -276,6 +339,7 @@ export default {
     if (request.method === 'PUT' && url.pathname === '/me/data') return handlePutMeData(request, env);
     if (request.method === 'GET' && url.pathname === '/buoy') return handleBuoy(request, env);
     if (request.method === 'GET' && url.pathname === '/forecast') return handleForecast(request, env);
+    if (request.method === 'GET' && url.pathname === '/conditions') return handleConditions(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);

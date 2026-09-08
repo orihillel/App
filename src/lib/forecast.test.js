@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError } from './forecast.js';
+import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError, fetchNowViaWorker } from './forecast.js';
 
 const SPOT = { lat: 33.38, lon: -117.6, offshoreDeg: 60 };
 
@@ -355,5 +355,45 @@ describe('fetchSpotForecast with gaps in the data', () => {
     serve(marine, makeWindResponse());
 
     await expect(fetchSpotForecast(SPOT3)).rejects.toThrow('Incomplete forecast data');
+  });
+});
+
+describe('fetchNowViaWorker', () => {
+  afterEach(() => { vi.unstubAllEnvs(); });
+
+  it('asks the Worker for exactly the spots given', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    const calls = [];
+    globalThis.fetch = vi.fn(async (url) => {
+      calls.push(String(url));
+      return new Response(JSON.stringify({ spots: { a: { hours: [{}], now: true } } }), { status: 200 });
+    });
+    const out = await fetchNowViaWorker(['a', 'b']);
+    expect(calls[0]).toContain('/conditions?ids=a%2Cb');
+    expect(out.a.now).toBe(true);
+  });
+
+  it('returns null when no Worker is configured, so the caller goes direct', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', '');
+    const spy = vi.fn();
+    globalThis.fetch = spy;
+    expect(await fetchNowViaWorker(['a'])).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
+  });
+
+  it('returns null rather than throwing when the Worker fails or is unreachable', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    globalThis.fetch = vi.fn(async () => new Response('{}', { status: 502 }));
+    expect(await fetchNowViaWorker(['a'])).toBeNull();
+    globalThis.fetch = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    expect(await fetchNowViaWorker(['a'])).toBeNull();
+  });
+
+  it('asks for nothing when given nothing', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    const spy = vi.fn();
+    globalThis.fetch = spy;
+    expect(await fetchNowViaWorker([])).toBeNull();
+    expect(spy).not.toHaveBeenCalled();
   });
 });
