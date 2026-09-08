@@ -27,11 +27,21 @@ const RUNTIME_CACHEABLE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'm
 // URL and every cached copy silently kept serving the old shape. New contents mean a new name.
 const IMMUTABLE_ASSET = /\/coastline-[\w-]+\.json$/;
 
+// NASA's Blue Marble imagery, on the same cache-first terms and for the same reason.
+//
+// The globe fetches a 2048px base image and then a 5400x2700 upgrade, several megabytes
+// between them, from a host outside our control -- and nothing cached either, so every cold
+// cache paid for both again and the globe had no imagery at all offline. These are archive
+// URLs under a dated, versioned path: the bytes behind them do not change, which is what makes
+// serving them from cache without revalidating safe.
+const IMMUTABLE_IMAGE_HOSTS = ['eoimages.gsfc.nasa.gov'];
+
 self.addEventListener('fetch', (event) => {
   if (event.request.method !== 'GET') return;
   const url = new URL(event.request.url);
 
-  if (url.origin === self.location.origin && IMMUTABLE_ASSET.test(url.pathname)) {
+  const sameOriginImmutable = url.origin === self.location.origin && IMMUTABLE_ASSET.test(url.pathname);
+  if (sameOriginImmutable || IMMUTABLE_IMAGE_HOSTS.includes(url.hostname)) {
     event.respondWith(
       (async () => {
         const cache = await caches.open(RUNTIME_CACHE);

@@ -14,7 +14,6 @@ import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellT
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
-import LANDMASSES from '../data/landmasses.json';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // Interactive 3D globe of every saved spot, colored by live conditions. Owns its own WebGL
@@ -149,79 +148,112 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     const globeGroup = new THREE.Group();
     scene.add(globeGroup);
 
-    // Left at 2048x1024, though the drawing cost is no longer the reason. Drawing this map
-    // measures 12ms at 2048 and 40ms at 4096 -- both cheap, and cheaper still since the
-    // wraparound handling below stopped redrawing every ring three times. What is not cheap is
-    // handing a 4096x2048 canvas to the GPU: the upload plus mipmap chain is ~32MB, and it is
-    // paid on every globe open for a map that real imagery replaces moments later. The
-    // resolution that matters when zoomed in comes from the satellite texture below, and from
-    // the device pixel ratio above.
-    const mapW = 2048, mapH = 1024;
-    // Stroke widths below were picked against a 2048-wide canvas; keeping them relative to it
-    // means changing mapW does not silently halve the weight of every coastline and grid line.
-    const mapScale = mapW / 2048;
-    const mapCanvas = document.createElement('canvas');
-    mapCanvas.width = mapW; mapCanvas.height = mapH;
-    const mctx = mapCanvas.getContext('2d');
-    const oceanGrad = mctx.createLinearGradient(0, 0, 0, mapH);
-    oceanGrad.addColorStop(0, '#0a2440');
-    oceanGrad.addColorStop(0.5, '#175a82');
-    oceanGrad.addColorStop(1, '#0a2440');
-    mctx.fillStyle = oceanGrad;
-    mctx.fillRect(0, 0, mapW, mapH);
-    function toPx(lat, lon) { return [((lon + 180) / 360) * mapW, ((90 - lat) / 180) * mapH]; }
-    mctx.fillStyle = '#5c8c56';
-    mctx.strokeStyle = 'rgba(18,36,26,0.5)';
-    mctx.lineWidth = 2.5 * mapScale;
-    LANDMASSES.forEach((pts) => {
-      // A handful of rings (Russia, Antarctica, Fiji) were unwrapped past
-      // ±180° during data prep so their coastline stays contiguous — that
-      // pushes some of their x coordinates outside the canvas, and they have
-      // to be painted again shifted a full map-width to cover the wraparound.
-      //
-      // That used to be done for every ring unconditionally: three full
-      // fill+stroke passes each, of which two land entirely off-canvas for
-      // all but a handful of them. Testing the ring's x-extent against the
-      // canvas first skips those, which is what makes the resolution above
-      // affordable -- it is roughly a third of the drawing work.
-      let minX = Infinity, maxX = -Infinity;
-      for (const [, lon] of pts) {
-        const x = ((lon + 180) / 360) * mapW;
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-      }
-      [-mapW, 0, mapW].forEach((xOffset) => {
-        if (maxX + xOffset < 0 || minX + xOffset > mapW) return; // nothing on canvas
-        mctx.beginPath();
-        pts.forEach(([lat, lon], i) => {
-          const [x, y] = toPx(lat, lon);
-          const px = x + xOffset;
-          if (i === 0) mctx.moveTo(px, y); else mctx.lineTo(px, y);
-        });
-        mctx.closePath();
-        mctx.fill();
-        mctx.stroke();
-      });
+    // The drawn world map, built after the globe is already on screen rather than before.
+    //
+    // A CPU profile of a globe open put 337ms in texSubImage2D -- handing this 2048x1024
+    // canvas and its mipmap chain to the GPU -- and every millisecond of it was spent before
+    // the first frame, so the tap did nothing visible for a third of a second. The sphere is
+    // now created with a flat ocean colour, drawn immediately, and the map is swapped in when
+    // it is ready. That is the same progressive path the satellite imagery already takes, one
+    // step earlier.
+    //
+    // The land outlines come with it: landmasses.json is 31.9KB gzipped, 18% of the globe
+    // chunk, and it is used for nothing but this canvas -- so importing it here keeps it out
+    // of the chunk whose download the globe is waiting on.
+    const oceanMat = new THREE.MeshPhongMaterial({
+      // Mid-ocean, from the middle stop of the gradient below, so the swap changes detail
+      // rather than colour.
+      color: 0x175a82, shininess: 14, specular: 0x1a3a4a,
     });
-    mctx.strokeStyle = 'rgba(244,247,246,0.13)';
-    mctx.lineWidth = 1 * mapScale;
-    for (let lat = -60; lat <= 60; lat += 30) {
-      const [, y] = toPx(lat, 0);
-      mctx.beginPath(); mctx.moveTo(0, y); mctx.lineTo(mapW, y); mctx.stroke();
+    let mapTexture = null;
+
+    // Whenever a texture goes on, the tint has to come off with it.
+    //
+    // MeshPhongMaterial multiplies `color` by `map`, so leaving the ocean blue set once a real
+    // map is applied renders the whole globe through a dark blue filter -- caught by comparing
+    // frames before and after this change, where the after-globe was visibly darker. White is
+    // what the material used before it had a placeholder colour to show.
+    function setOceanMap(tex) {
+      oceanMat.map = tex;
+      oceanMat.color.setHex(0xffffff);
+      oceanMat.needsUpdate = true;
     }
-    for (let lon = -150; lon <= 180; lon += 30) {
-      const [x] = toPx(0, lon);
-      mctx.beginPath(); mctx.moveTo(x, 0); mctx.lineTo(x, mapH); mctx.stroke();
+
+    function drawWorldMap(LANDMASSES) {
+      // Left at 2048x1024, though the drawing cost is no longer the reason. Drawing this map
+      // measures 12ms at 2048 and 40ms at 4096 -- both cheap, and cheaper still since the
+      // wraparound handling below stopped redrawing every ring three times. What is not cheap
+      // is handing a 4096x2048 canvas to the GPU: the upload plus mipmap chain is ~32MB, and
+      // it is paid on every globe open for a map that real imagery replaces moments later. The
+      // resolution that matters when zoomed in comes from the satellite texture below, and
+      // from the device pixel ratio above.
+      const mapW = 2048, mapH = 1024;
+      // Stroke widths below were picked against a 2048-wide canvas; keeping them relative to it
+      // means changing mapW does not silently halve the weight of every coastline and grid line.
+      const mapScale = mapW / 2048;
+      const mapCanvas = document.createElement('canvas');
+      mapCanvas.width = mapW; mapCanvas.height = mapH;
+      const mctx = mapCanvas.getContext('2d');
+      const oceanGrad = mctx.createLinearGradient(0, 0, 0, mapH);
+      oceanGrad.addColorStop(0, '#0a2440');
+      oceanGrad.addColorStop(0.5, '#175a82');
+      oceanGrad.addColorStop(1, '#0a2440');
+      mctx.fillStyle = oceanGrad;
+      mctx.fillRect(0, 0, mapW, mapH);
+      function toPx(lat, lon) { return [((lon + 180) / 360) * mapW, ((90 - lat) / 180) * mapH]; }
+      mctx.fillStyle = '#5c8c56';
+      mctx.strokeStyle = 'rgba(18,36,26,0.5)';
+      mctx.lineWidth = 2.5 * mapScale;
+      LANDMASSES.forEach((pts) => {
+        // A handful of rings (Russia, Antarctica, Fiji) were unwrapped past
+        // ±180° during data prep so their coastline stays contiguous — that
+        // pushes some of their x coordinates outside the canvas, and they have
+        // to be painted again shifted a full map-width to cover the wraparound.
+        //
+        // That used to be done for every ring unconditionally: three full
+        // fill+stroke passes each, of which two land entirely off-canvas for
+        // all but a handful of them. Testing the ring's x-extent against the
+        // canvas first skips those, which is what makes the resolution above
+        // affordable -- it is roughly a third of the drawing work.
+        let minX = Infinity, maxX = -Infinity;
+        for (const [, lon] of pts) {
+          const x = ((lon + 180) / 360) * mapW;
+          if (x < minX) minX = x;
+          if (x > maxX) maxX = x;
+        }
+        [-mapW, 0, mapW].forEach((xOffset) => {
+          if (maxX + xOffset < 0 || minX + xOffset > mapW) return; // nothing on canvas
+          mctx.beginPath();
+          pts.forEach(([lat, lon], i) => {
+            const [x, y] = toPx(lat, lon);
+            const px = x + xOffset;
+            if (i === 0) mctx.moveTo(px, y); else mctx.lineTo(px, y);
+          });
+          mctx.closePath();
+          mctx.fill();
+          mctx.stroke();
+        });
+      });
+      mctx.strokeStyle = 'rgba(244,247,246,0.13)';
+      mctx.lineWidth = 1 * mapScale;
+      for (let lat = -60; lat <= 60; lat += 30) {
+        const [, y] = toPx(lat, 0);
+        mctx.beginPath(); mctx.moveTo(0, y); mctx.lineTo(mapW, y); mctx.stroke();
+      }
+      for (let lon = -150; lon <= 180; lon += 30) {
+        const [x] = toPx(0, lon);
+        mctx.beginPath(); mctx.moveTo(x, 0); mctx.lineTo(x, mapH); mctx.stroke();
+      }
+      const tex = new THREE.CanvasTexture(mapCanvas);
+      // A flat texture wrapped on a sphere gets viewed at steep angles near the edges of what's
+      // visible, which is exactly the case anisotropic filtering is for — without it, those
+      // regions look noticeably blurrier/blockier than the center, which reads as "pixelated".
+      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.magFilter = THREE.LinearFilter;
+      tex.generateMipmaps = true;
+      return tex;
     }
-    const mapTexture = new THREE.CanvasTexture(mapCanvas);
-    // A flat texture wrapped on a sphere gets viewed at steep angles near the edges of what's
-    // visible, which is exactly the case anisotropic filtering is for — without it, those
-    // regions look noticeably blurrier/blockier than the center, which reads as "pixelated".
-    mapTexture.anisotropy = renderer.capabilities.getMaxAnisotropy();
-    mapTexture.minFilter = THREE.LinearMipmapLinearFilter;
-    mapTexture.magFilter = THREE.LinearFilter;
-    mapTexture.generateMipmaps = true;
-    const oceanMat = new THREE.MeshPhongMaterial({ map: mapTexture, shininess: 14, specular: 0x1a3a4a });
 
     // Real satellite imagery, layered on as progressive enhancement over the drawn map above.
     //
@@ -270,7 +302,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       // drawn map on the first swap, the smaller image on an upgrade.
       const previous = satelliteTexture || mapTexture;
       satelliteTexture = tex;
-      oceanMat.map = tex;
+      setOceanMap(tex);
       // Real imagery is already lit by the sun in the photograph; the drawn map needed the
       // shading to read as a sphere at all, so dial the specular highlight back to keep the
       // continents from looking wet.
@@ -1188,6 +1220,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     }
     animate();
 
+    // The drawn map is built only now, with the sphere already on screen.
+    //
+    // Two nested rAFs rather than one: the first schedules a frame, the second runs after that
+    // frame has been composited, so the globe is genuinely visible before this starts drawing
+    // a 2048x1024 canvas and handing it to the GPU.
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      // If real imagery beat it here there is nothing to draw: the satellite photo replaces
+      // this map entirely, so building it would be work nobody ever sees.
+      if (cancelled || satelliteTexture) return;
+      import('../data/landmasses.json')
+        .then((m) => {
+          if (cancelled || satelliteTexture) return;
+          mapTexture = drawWorldMap(m.default);
+          setOceanMap(mapTexture);
+          state.dataDirty = true;
+        })
+        .catch(() => { /* the flat ocean colour is a whole globe, just a plainer one */ });
+    }));
+
     return () => {
       cancelled = true;
       markDirtyRef.current = null;
@@ -1206,7 +1257,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
       labelPool.forEach((el) => { if (el.parentNode) el.parentNode.removeChild(el); });
       starGeo.dispose(); starMat.dispose(); starDotTexture.dispose();
       glowTexture.dispose(); glowMat.dispose();
-      mapTexture.dispose(); oceanMat.dispose(); oceanMesh.geometry.dispose();
+      if (mapTexture) mapTexture.dispose();
+      oceanMat.dispose(); oceanMesh.geometry.dispose();
       if (satelliteTexture) satelliteTexture.dispose();
       markerGeo.dispose(); markerMat.dispose(); markerMesh.dispose();
       // ~10MB of line vertices: the one buffer here big enough that leaking it across a few
