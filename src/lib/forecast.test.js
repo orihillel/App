@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchSpotForecast, geocodePlace, findOffshoreDirection } from './forecast.js';
+import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError } from './forecast.js';
 
 const SPOT = { lat: 33.38, lon: -117.6, offshoreDeg: 60 };
 
@@ -170,5 +170,51 @@ describe('findOffshoreDirection', () => {
   it('throws when the request itself fails', async () => {
     fetch.mockResolvedValue(mockFetchOnce({}, false));
     await expect(findOffshoreDirection(0, 0)).rejects.toThrow('Coastline lookup failed');
+  });
+});
+
+describe('describeForecastError', () => {
+  it('names rate limiting specifically, because waiting is the right advice only there', () => {
+    const err = new Error('Forecast request failed');
+    err.status = 429;
+    expect(describeForecastError(err)).toMatch(/rate-limiting/i);
+    expect(describeForecastError(err)).toMatch(/within the hour/i);
+  });
+
+  it('reports the status for a rejected request rather than blaming the connection', () => {
+    const err = new Error('Forecast request failed');
+    err.status = 400;
+    const msg = describeForecastError(err);
+    expect(msg).toContain('400');
+    expect(msg).not.toMatch(/couldn.t reach/i);
+  });
+
+  it('distinguishes the service being down from the request being wrong', () => {
+    const down = new Error('Forecast request failed'); down.status = 503;
+    expect(describeForecastError(down)).toMatch(/having trouble/i);
+    expect(describeForecastError(down)).toContain('503');
+  });
+
+  it('falls back to a reachability message when there is no status at all', () => {
+    expect(describeForecastError(new TypeError('Failed to fetch'))).toMatch(/couldn.t reach/i);
+    expect(describeForecastError(undefined)).toMatch(/couldn.t reach/i);
+  });
+
+  it('says the spot has no readings when the payload came back empty', () => {
+    expect(describeForecastError(new Error('Incomplete forecast data'))).toMatch(/no readings/i);
+  });
+});
+
+describe('fetchSpotForecast error reporting', () => {
+  it('carries the failing status out, so the page can say which failure it was', async () => {
+    const spot = { lat: 33.38, lon: -117.59, offshoreDeg: 70 };
+    globalThis.fetch = vi.fn(async () => new Response('{}', { status: 429 }));
+    await expect(fetchSpotForecast(spot)).rejects.toMatchObject({ status: 429 });
+  });
+
+  it('reports the status of whichever of the two calls failed, not always the first', async () => {
+    const spot = { lat: 33.38, lon: -117.59, offshoreDeg: 70 };
+    globalThis.fetch = vi.fn(async (url) => new Response('{}', { status: String(url).includes('marine') ? 200 : 400 }));
+    await expect(fetchSpotForecast(spot)).rejects.toMatchObject({ status: 400 });
   });
 });

@@ -6,6 +6,22 @@ import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
 import { confidenceForSeries, confidenceLabel } from './confidence.js';
 
+// What to tell someone when the forecast did not arrive.
+//
+// Deliberately specific about rate limiting, because that is the failure this app is most
+// likely to hit and the only one where waiting is genuinely the right advice: Open-Meteo's
+// free tier is counted per location, so a single app open used to spend hundreds of calls
+// colouring globe markers and could exhaust the day's allowance for the whole network.
+export function describeForecastError(err) {
+  const status = err && err.status;
+  if (status === 429) return 'The forecast service is rate-limiting this connection. It usually clears within the hour.';
+  if (status === 401 || status === 403) return 'The forecast service refused the request.';
+  if (typeof status === 'number' && status >= 500) return 'The forecast service is having trouble (error ' + status + ').';
+  if (typeof status === 'number') return 'The forecast service rejected the request (error ' + status + ').';
+  if (err && err.message === 'Incomplete forecast data') return 'The forecast has no readings for this spot right now.';
+  return 'Couldn\'t reach the forecast service.';
+}
+
 export async function fetchSpotForecast(spot) {
   const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat + '&longitude=' + spot.lon +
     '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
@@ -13,7 +29,17 @@ export async function fetchSpotForecast(spot) {
   const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + spot.lat + '&longitude=' + spot.lon +
     '&hourly=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto&forecast_days=7';
   const [marineRes, windRes] = await Promise.all([fetch(marineUrl), fetch(windUrl)]);
-  if (!marineRes.ok || !windRes.ok) throw new Error('Forecast request failed');
+  if (!marineRes.ok || !windRes.ok) {
+    // The status travels with the error. Every failure used to arrive at the spot page as the
+    // same sentence -- "couldn't reach the forecast service" -- which reads the same whether
+    // the service is down, the request is malformed, or this device has simply run out of
+    // quota for the hour. Those want three different things from the person reading it, and
+    // from anyone trying to work out afterwards what went wrong.
+    const bad = marineRes.ok ? windRes : marineRes;
+    const err = new Error('Forecast request failed');
+    err.status = bad.status;
+    throw err;
+  }
   const marine = await marineRes.json();
   const wind = await windRes.json();
 
