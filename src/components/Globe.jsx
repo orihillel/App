@@ -14,6 +14,7 @@ import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellT
 import { fetchWaveGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
+import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // Interactive 3D globe of every saved spot, colored by live conditions. Owns its own WebGL
@@ -874,8 +875,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         if (markers[i].label.className !== wanted) markers[i].label.className = wanted;
       }
       markerMesh.count = markers.length;
-      // Labels belonging to slots this zoom does not use would otherwise hang around on screen.
-      for (let i = markers.length; i < labelPool.length; i++) {
+      // Every pooled label is hidden here, not just the slots this zoom leaves unused.
+      //
+      // The elements are pooled and reused, but `markers` is rebuilt from scratch on each zoom
+      // step -- so a marker object arrives with labelShown false while the element it inherited
+      // is still displayed from the previous arrangement. updateLabels then skips hiding it,
+      // because as far as that marker knows it was never shown, and the label stays on screen
+      // for a spot that is no longer there. Measured while fixing the overlap: 22 labels
+      // visible against a cap of 14, the extra eight all stale. Clearing the pool on rebuild
+      // makes the next frame's placement authoritative.
+      for (let i = 0; i < labelPool.length; i++) {
         if (labelPool[i].style.display !== 'none') labelPool[i].style.display = 'none';
       }
       lastMarkerScale = -1; // the matrices belong to the previous set; rewrite all of them
@@ -902,6 +911,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // constant length -- which means the "is this marker facing the camera" test can compare the
     // raw dot product against a pre-scaled threshold instead of normalizing a vector per marker.
     const FACING_THRESHOLD = 0.28 * MARKER_SHELL;
+    // A ceiling as well as a collision test. Even perfectly tiled, forty names is not a map you
+    // can read -- it is a wall of text with a globe behind it.
+    const MAX_LABELS = 14;
     const raycaster = new THREE.Raycaster();
     const ndc = new THREE.Vector2();
     // How far off a dot a tap can land and still count as meant for it, in CSS pixels --
@@ -1007,24 +1019,66 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
     // (~460 throwaway allocations a frame at 153 spots, all of it GC pressure) and wrote
     // style.display on every marker every frame whether or not it had changed. Now each marker
     // reuses one scratch vector, and a hidden marker that's still hidden costs nothing.
+    // Labels are chosen by whether they fit, not by how far you have zoomed.
+    //
+    // The rule here used to be "closer than 2.2 shows every name", on the stated assumption that
+    // by then they would not overlap. They do: zoomed to a continent there are dozens of spots
+    // in frame, and the screen filled with overlapping pills several deep, hiding the map under
+    // them. No threshold can fix that, because how many labels are in frame depends on where you
+    // point the globe -- a hundred spots crowd California, four sit in the whole South Atlantic.
+    //
+    // So every frame the visible markers are projected, ranked by how near the middle of the
+    // screen they are (the middle being what someone deliberately zoomed in on), and laid out
+    // greedily, skipping any that would land on one already placed. See lib/labelplacement.js.
+    const labelCandidates = [];
+    const labelShow = new Set();
     function updateLabels() {
       camDir.copy(camera.position).normalize();
-      const zoomedIn = state.distance < 2.2;
+      labelCandidates.length = 0;
+
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
-        // Spot names still only appear once you are close enough for them not to overlap, but a
-        // cluster's count shows at every zoom: a numbered marker you can read is the entire
-        // point of grouping them, and an unnumbered blob is what it replaced.
-        let show = (m.count > 1 || zoomedIn) && m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation).dot(camDir) > FACING_THRESHOLD;
-        if (show) {
+        let onScreen = m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation).dot(camDir) > FACING_THRESHOLD;
+        if (onScreen) {
           m.worldPos.project(camera); // in place, on the world position just computed above
           // Facing the camera is not the same as being on screen. Zoomed out they amount to the
           // same thing, but zoomed in the camera only covers a few degrees of arc while the
           // facing test still passes for most of the hemisphere -- so without this check, spots
           // well outside the view get labels placed far outside the canvas, which then spill
           // over the header and nav (the container doesn't clip). Cull to the frustum instead.
-          show = m.worldPos.z < 1 && Math.abs(m.worldPos.x) <= 1 && Math.abs(m.worldPos.y) <= 1;
+          onScreen = m.worldPos.z < 1 && Math.abs(m.worldPos.x) <= 1 && Math.abs(m.worldPos.y) <= 1;
         }
+        if (!onScreen) { m.labelWanted = false; continue; }
+        m.labelWanted = true;
+        m.screenX = (m.worldPos.x * 0.5 + 0.5) * width;
+        m.screenY = (-m.worldPos.y * 0.5 + 0.5) * height;
+        // Measured once per label, when its text changes, and cached: offsetWidth forces layout,
+        // and doing that for hundreds of labels every frame is exactly the stutter this file has
+        // spent so long removing. A hidden element measures 0, so a label that has never been
+        // shown is given a size estimated from its text until it has been drawn once.
+        if (m.label.style.display === 'block' && m.labelText === m.measuredFor) {
+          if (!m.labelW) { m.labelW = m.label.offsetWidth; m.labelH = m.label.offsetHeight; }
+        } else if (m.labelText !== m.measuredFor) {
+          m.measuredFor = m.labelText; m.labelW = 0; m.labelH = 0;
+        }
+        const w = m.labelW || (m.count > 1 ? 26 : String(m.labelText || '').length * 6.2 + 14);
+        const h = m.labelH || 18;
+        labelCandidates.push({
+          id: i,
+          // The anchor differs: a count sits centred on its dot, a name floats above it.
+          x: m.screenX - w / 2,
+          y: m.count > 1 ? m.screenY - h / 2 : m.screenY - h * 1.3,
+          w, h,
+          rank: labelRank(m.screenX, m.screenY, width, height, { isCluster: m.count > 1 }),
+        });
+      }
+
+      labelShow.clear();
+      for (const id of placeLabels(labelCandidates, { maxLabels: MAX_LABELS })) labelShow.add(id);
+
+      for (let i = 0; i < markers.length; i++) {
+        const m = markers[i];
+        const show = m.labelWanted && labelShow.has(i);
         if (!show) {
           if (m.labelShown) { m.label.style.display = 'none'; m.labelShown = false; }
           continue;
@@ -1033,7 +1087,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, title = 'All spot
         // transform rather than left/top: this is a compositor-only property, so moving a label
         // doesn't force the browser into a layout pass for every visible label every frame.
         const anchor = m.count > 1 ? 'translate(-50%, -50%)' : 'translate(-50%, -130%)';
-        m.label.style.transform = `${anchor} translate(${(m.worldPos.x * 0.5 + 0.5) * width}px, ${(-m.worldPos.y * 0.5 + 0.5) * height}px)`;
+        m.label.style.transform = `${anchor} translate(${m.screenX}px, ${m.screenY}px)`;
       }
     }
 
