@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef, lazy, Suspense } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
-import { SPOTS, ORDER, searchCatalog } from './lib/spots.js';
+import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
 import { fetchSpotForecast, fetchNowForSpots, fetchModelAgreement, geocodePlace, findOffshoreDirection } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
@@ -22,13 +22,16 @@ import { BottomNav } from './components/BottomNav.jsx';
 import { NavDrawer } from './components/NavDrawer.jsx';
 
 const GLOBAL_CSS = `
-/* @import has to be the first rule in a stylesheet -- anything above it makes it invalid and
-   the fonts silently fall back -- so the reset goes directly under it, not above. */
-@import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@500;600;700&display=swap');
-/* The document had no reset, and never needed one while the app sat inside a centred frame on
-   a beige page -- the browser's default 8px body margin just widened the beige. Going edge to
-   edge, that margin pushes the whole app down and left and leaves the bottom nav 8px below the
-   fold. Nothing else in the app sets it. */
+/* The font @import used to live here, and that was the problem: this string only becomes a
+   <style> tag once React renders, so the browser could not discover the fonts until the whole
+   bundle had downloaded and run -- measured at 1174ms on a slow connection. It is a
+   preconnect plus a stylesheet link in index.html now, which starts it immediately.
+
+   The reset stays here as well as in index.html's boot styles, so the app is still correct if
+   this component is rendered somewhere that never served that HTML -- a unit test, or an
+   embed. The document had no reset at all until recently: it never needed one while the app
+   sat inside a centred frame on a beige page, where the browser's default 8px body margin
+   just widened the beige. Edge to edge, that margin pushes the whole app down and left. */
 html, body { margin: 0; padding: 0; background: #070F18; }
 .no-scrollbar::-webkit-scrollbar { display: none; }
 .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
@@ -99,8 +102,14 @@ function GlobeLoading() {
 }
 
 export default function App() {
-  const [spots, setSpots] = useState(SPOTS);
-  const [order, setOrder] = useState(ORDER);
+  // Seeded, not the full catalog. The 400-spot list is 30KB gzipped -- 27% of everything the
+  // browser downloaded before the app could start -- to render a screen that shows one spot,
+  // so it now arrives in its own chunk just after the first paint (see the effect below).
+  // SEED_SPOTS covers every screen that can appear before it lands: the go-to default and the
+  // onboarding picks.
+  const [spots, setSpots] = useState(SEED_SPOTS);
+  const [order, setOrder] = useState(() => ORDER.filter((id) => SEED_SPOTS[id]));
+  const [catalogReady, setCatalogReady] = useState(false);
   const [activeId, setActiveId] = useState('trestles');
   // Model agreement, cached per spot. Fetched only for the spot being looked at — it is a
   // second request per spot, and doing it for all 230 during the bulk load would double that
@@ -160,6 +169,27 @@ export default function App() {
   // Read by the Globe component's animation loop so every rendered frame reflects whatever is
   // currently in `forecast`, without a separate effect keyed on [forecast, hourIdx, ...] that
   // could fall out of sync (see Globe.jsx).
+  // The rest of the catalog, once the app is on screen.
+  //
+  // Deliberately an effect rather than a static import: a static one would put it back in the
+  // main bundle and undo the split. Everything downstream already copes with a partial map --
+  // the drawer, profile and globe all filter on `spots[id]` -- so the only visible difference
+  // in the tens of milliseconds before this resolves is a shorter list.
+  useEffect(() => {
+    let cancelled = false;
+    loadCatalog()
+      .then((catalog) => {
+        if (cancelled) return;
+        // `prev` wins over the catalog: it holds anything restored from storage or added by
+        // hand, and those must not be overwritten by a catalog entry of the same id.
+        setSpots((prev) => ({ ...catalog, ...prev }));
+        setOrder((prev) => [...ORDER, ...prev.filter((id) => !ORDER.includes(id))]);
+        setCatalogReady(true);
+      })
+      .catch(() => { /* the seeded spots still work; a reload retries */ });
+    return () => { cancelled = true; };
+  }, []);
+
   // Read by the bulk loader, which must not re-run when either changes.
   const activeIdRef = useRef(activeId);
   const goToIdRef = useRef(goToId);
@@ -209,8 +239,11 @@ export default function App() {
   // rate limit looks like from the inside. See fetchNowForSpots for the arithmetic.
   const backfillWarned = useRef(false);
   const loadBackfill = useCallback(async () => {
-    const rest = ORDER.filter((id) => SPOTS[id] && id !== activeIdRef.current && id !== goToIdRef.current);
-    const results = await fetchNowForSpots(rest.map((id) => ({ id, spot: SPOTS[id] })));
+    // From the live map rather than the module: before the catalog chunk lands this is the
+    // seed set, which is why the backfill is re-run once it arrives.
+    const known = dataRef.current.spots;
+    const rest = ORDER.filter((id) => known[id] && id !== activeIdRef.current && id !== goToIdRef.current);
+    const results = await fetchNowForSpots(rest.map((id) => ({ id, spot: known[id] })));
     // Every batch refused and nothing to show for it is a different thing from a calm sea, and
     // grey markers alone do not say which. Said once, not on every refresh — a rate limit that
     // lasts an hour should not produce four toasts an hour.
@@ -234,13 +267,16 @@ export default function App() {
     (async () => {
       // The spot being looked at first, then the go-to spot, then the rest of the catalog in
       // one batched pass — the detail view is what someone is actually waiting for.
-      const first = [...new Set([activeIdRef.current, goToIdRef.current].filter((id) => id && SPOTS[id]))];
-      await Promise.all(first.map((id) => loadSpotData(id, SPOTS[id])));
+      const known = dataRef.current.spots;
+      const first = [...new Set([activeIdRef.current, goToIdRef.current].filter((id) => id && known[id]))];
+      await Promise.all(first.map((id) => loadSpotData(id, known[id])));
       if (cancelled) return;
       await loadBackfill();
     })();
     return () => { cancelled = true; };
-  }, [loadSpotData, loadBackfill]);
+    // catalogReady is a dependency on purpose: the first pass runs against the seed set, and
+    // this runs again with the real catalog so every marker on the globe gets a reading.
+  }, [loadSpotData, loadBackfill, catalogReady]);
 
   // Marked in a ref the moment a request starts, not when it finishes. This effect depends on
   // `forecast`, which changes on every one of the 230 spots loading in the background, so a
@@ -720,7 +756,7 @@ export default function App() {
                 title="Pick your go-to spot" hint="Tap a marker to set it as your go-to spot · drag to rotate, pinch or scroll to zoom" />
             </Suspense>
           ) : (
-            <OnboardingView activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding}
+            <OnboardingView spots={spots} activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding}
               onLoggedIn={handleLoginResult} setToast={setToast} />
           )
         ) : view === 'globe' ? (

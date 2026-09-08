@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { cellSizeForDistance, clusterPoints, centroid } from './markercluster.js';
-import { SPOTS, ORDER } from './spots.js';
+import { ORDER } from './spots.js';
+import { CATALOG as SPOTS } from './spots.catalog.js';
 
 const CATALOG = ORDER.filter((id) => SPOTS[id]).map((id) => ({ id, lat: SPOTS[id].lat, lon: SPOTS[id].lon }));
 

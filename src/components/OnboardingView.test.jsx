@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
-import { ONBOARDING_PICKS, SPOTS } from '../lib/spots.js';
+import { ONBOARDING_PICKS } from '../lib/spots.js';
+import { CATALOG as SPOTS } from '../lib/spots.catalog.js';
 
 vi.mock('../lib/auth.js', () => ({ isAuthConfigured: vi.fn() }));
 vi.mock('./AuthButtons.jsx', () => ({ AuthButtons: () => <div data-testid="auth-buttons-stub" /> }));
@@ -10,6 +11,7 @@ const { OnboardingView } = await import('./OnboardingView.jsx');
 
 function renderOnboarding(overrides = {}) {
   const props = {
+    spots: SPOTS,
     activeId: 'trestles', pickOnboardingSpot: vi.fn(), openSearch: vi.fn(), openGlobePicker: vi.fn(),
     completeOnboarding: vi.fn(), onLoggedIn: vi.fn(), setToast: vi.fn(),
     ...overrides,
