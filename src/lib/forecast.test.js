@@ -71,13 +71,19 @@ describe('fetchSpotForecast', () => {
     await expect(fetchSpotForecast(SPOT)).rejects.toThrow('Forecast request failed');
   });
 
-  it('throws on a wave-height gap instead of guessing a value for it', async () => {
+  it('drops a wave-height gap instead of guessing a value for it', async () => {
+    // This used to throw, losing the whole week over one missing hour. The line it was really
+    // holding is that no number may be invented, and dropping the hour holds it just as well:
+    // the day comes back one point shorter, with every remaining point a real reading.
     const marine = makeMarineResponse();
     marine.hourly.wave_height[5] = null; // 5am: the first sampled hour for the sunrise below
     fetch.mockImplementation((url) =>
       Promise.resolve(mockFetchOnce(url.includes('marine-api') ? marine : makeWindResponse()))
     );
-    await expect(fetchSpotForecast(SPOT)).rejects.toThrow('Incomplete forecast data');
+    const result = await fetchSpotForecast(SPOT);
+    expect(result.hours.map((h) => h.hour)).not.toContain(5);
+    expect(result.hours).toHaveLength(7); // the eight sampled hours, less the empty one
+    expect(result.hours.every((h) => h.wave && h.windSpd != null)).toBe(true);
   });
 
   it('samples the hours around this spot\'s own sunrise and sunset', async () => {
@@ -291,5 +297,63 @@ describe('fetchSpotForecast routing', () => {
     });
     await expect(fetchSpotForecast(SPOT2)).rejects.toMatchObject({ status: 429 });
     expect(calls.some((u) => u.includes('open-meteo.com'))).toBe(false);
+  });
+});
+
+// The marine model is gridded over open water, so a cell close in to shore can be empty for a
+// few hours while the rest of the week is fine. Losing the whole forecast over that is what
+// this covers.
+describe('fetchSpotForecast with gaps in the data', () => {
+  const SPOT3 = { lat: 33.38, lon: -117.59, offshoreDeg: 60 };
+
+  function serve(marine, wind) {
+    globalThis.fetch = vi.fn(async (url) => new Response(
+      JSON.stringify(String(url).includes('marine') ? marine : wind), { status: 200 },
+    ));
+  }
+
+  it('keeps the hours that have readings instead of discarding the day', async () => {
+    const marine = makeMarineResponse();
+    // Morning gone, afternoon fine.
+    for (let i = 0; i < 12; i++) marine.hourly.wave_height[i] = null;
+    serve(marine, makeWindResponse());
+
+    const out = await fetchSpotForecast(SPOT3);
+    expect(out.hours.length).toBeGreaterThan(0);
+    expect(out.hours.every((h) => h.hour >= 12)).toBe(true);
+    // And the rest of the forecast survives with it.
+    expect(out.weekly.length).toBeGreaterThan(0);
+    expect(out.continuous.length).toBeGreaterThan(0);
+  });
+
+  it('drops an hour missing wind, not just one missing waves', async () => {
+    const wind = makeWindResponse();
+    for (let i = 0; i < 12; i++) wind.hourly.wind_speed_10m[i] = null;
+    serve(makeMarineResponse(), wind);
+
+    const out = await fetchSpotForecast(SPOT3);
+    expect(out.hours.length).toBeGreaterThan(0);
+    expect(out.hours.every((h) => h.hour >= 12)).toBe(true);
+  });
+
+  it('keeps tideToday aligned with the hours it kept', async () => {
+    const marine = makeMarineResponse();
+    for (let i = 0; i < 12; i++) marine.hourly.wave_height[i] = null;
+    serve(marine, makeWindResponse());
+
+    const out = await fetchSpotForecast(SPOT3);
+    // Misalignment here would draw the tide curve against the wrong times of day.
+    expect(out.tideToday).toHaveLength(out.hours.length);
+    out.hours.forEach((h, i) => {
+      expect(out.tideToday[i]).toBeCloseTo(marine.hourly.sea_level_height_msl[h.hour] * 3.28084, 5);
+    });
+  });
+
+  it('still fails, and says so, when no sampled hour has a reading', async () => {
+    const marine = makeMarineResponse();
+    marine.hourly.wave_height = marine.hourly.wave_height.map(() => null);
+    serve(marine, makeWindResponse());
+
+    await expect(fetchSpotForecast(SPOT3)).rejects.toThrow('Incomplete forecast data');
   });
 });

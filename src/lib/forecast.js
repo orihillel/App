@@ -85,14 +85,33 @@ export async function fetchSpotForecast(spot) {
   // 5am-7pm list — see lib/daylight.js for why that fixed list was actively wrong at the
   // high-latitude spots in the catalog.
   const windDaily = wind.daily || {};
-  const hourIndices = daylightHours(
+  const sampledHours = daylightHours(
     (windDaily.sunrise || [])[0],
     (windDaily.sunset || [])[0],
   );
 
+  // Of those, the ones the models actually have a reading for.
+  //
+  // The marine model is gridded over open water, so a cell close in to shore can come back
+  // empty for a few hours while the rest of the week is fine. This used to throw on the first
+  // such hour and lose everything: no chart, no week, no tide, no best window -- the same
+  // "no forecast right now" a total outage produces, from a spot with six good hours in the
+  // day and seven good days behind them. An hour with no reading is dropped instead, which
+  // is not the same as inventing one; the day simply has fewer points, exactly as it already
+  // does for a short winter day (see lib/daylight.js).
+  const mhForTide = marine.hourly || {};
+  const hourIndices = sampledHours.filter((idx) => {
+    const mh = marine.hourly || {};
+    const whh = wind.hourly || {};
+    return (mh.wave_height ? mh.wave_height[idx] : null) != null
+      && (whh.wind_speed_10m ? whh.wind_speed_10m[idx] : null) != null
+      && (whh.wind_direction_10m ? whh.wind_direction_10m[idx] : null) != null;
+  });
+  // Nothing usable anywhere in the window is still a failure, and still says so.
+  if (!hourIndices.length) throw new Error('Incomplete forecast data');
+
   // Today's tide range, computed up front so each hour can be scored by how close it sits
   // to today's own mid-tide (see conditionsScore) — not an absolute tide height.
-  const mhForTide = marine.hourly || {};
   const seaToday = hourIndices.map((idx) => (mhForTide.sea_level_height_msl ? mhForTide.sea_level_height_msl[idx] : null));
   const validTidesToday = seaToday.filter((v) => v != null);
   const tMin = validTidesToday.length ? Math.min(...validTidesToday) : null;
@@ -108,7 +127,6 @@ export async function fetchSpotForecast(spot) {
     const whh = wind.hourly || {};
     const ws = whh.wind_speed_10m ? whh.wind_speed_10m[idx] : null;
     const wdd = whh.wind_direction_10m ? whh.wind_direction_10m[idx] : null;
-    if (wh == null || ws == null || wdd == null) throw new Error('Incomplete forecast data');
     const waveFt = wh * 3.28084;
     const windMph = ws * 0.621371;
     const period = sp != null ? Math.round(sp) : Math.round(wp != null ? wp : 0);

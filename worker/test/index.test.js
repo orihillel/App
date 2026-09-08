@@ -431,3 +431,35 @@ describe('GET /forecast', () => {
     expect(res.status).toBe(200);
   });
 });
+
+// Coordinates, read strictly, on every endpoint that takes them. Number('') and Number(null)
+// are both 0, and 0,0 is a real place -- so a request with no coordinates used to be answered
+// about the Gulf of Guinea rather than refused.
+describe('coordinate validation', () => {
+  const BAD = ['?lat=&lon=-117.5', '?lon=-117.5', '?lat=33.3', '', '?lat=abc&lon=-117.5', '?lat=91&lon=0', '?lat=0&lon=181'];
+
+  beforeEach(() => {
+    globalThis.caches = { default: { match: async () => undefined, put: async () => {} } };
+  });
+  afterEach(() => { delete globalThis.caches; vi.unstubAllGlobals(); });
+
+  for (const path of ['/buoy', '/forecast']) {
+    it(`${path} refuses coordinates it cannot use, and asks nothing upstream`, async () => {
+      const spy = vi.fn(async () => new Response('{}', { status: 200 }));
+      vi.stubGlobal('fetch', spy);
+      for (const qs of BAD) {
+        const res = await worker.fetch(new Request('https://worker.example' + path + qs), makeEnv());
+        expect(res.status, `${path}${qs}`).toBe(400);
+      }
+      expect(spy).not.toHaveBeenCalled();
+    });
+  }
+
+  it('still accepts 0,0 when it is actually asked for', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (url) => new Response(
+      JSON.stringify(String(url).includes('marine') ? { hourly: {} } : { hourly: {} }), { status: 200 },
+    )));
+    const res = await worker.fetch(new Request('https://worker.example/forecast?lat=0&lon=0'), makeEnv());
+    expect(res.status).toBe(200);
+  });
+});
