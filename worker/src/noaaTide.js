@@ -75,13 +75,29 @@ export function nearestTideStation(stations, lat, lon, maxKm = MAX_STATION_KM) {
   return best;
 }
 
-// Two UTC calendar days of hourly predictions — enough to safely cover any US timezone's full
-// local "today" regardless of where midnight UTC happens to fall relative to the station's own
-// clock, without having to know that station's offset up front.
+// Four calendar days of hourly predictions, from yesterday UTC to two days ahead.
+//
+// The window is deliberately wider than the two days the app can display, because the dates in
+// the request and the dates in the answer are not on the same clock. time_zone=lst_ldt asks
+// NOAA to read begin_date and end_date in the *station's* local time, while the only date
+// available to compute them from here is UTC. Those disagree for part of every day, and always
+// in the direction that hurts: at 02:00 UTC a California station's own date is still yesterday,
+// so asking for "today" UTC skipped the whole of the local day actually being looked at and
+// returned real predictions only for days the user cannot see. Every evening, for seven hours,
+// the entire US west coast quietly fell back to the modeled curve.
+//
+// A day of slack on each side covers every offset NOAA's network spans, from Guam at UTC+10 to
+// American Samoa at UTC-11, without needing to know any station's offset up front. The extra
+// days cost about 48 more rows on a request that is cached for six hours and is astronomy
+// rather than weather -- it does not go stale, and this is only bounding how often NOAA is
+// asked at all.
+const WINDOW_BEFORE_MS = 24 * 60 * 60 * 1000;
+const WINDOW_AFTER_MS = 48 * 60 * 60 * 1000;
+
 export async function loadPredictions(env, station, { fetchImpl = fetch, now = new Date() } = {}) {
   const fmt = (d) => d.toISOString().slice(0, 10).replace(/-/g, '');
-  const begin = fmt(now);
-  const end = fmt(new Date(now.getTime() + 24 * 60 * 60 * 1000));
+  const begin = fmt(new Date(now.getTime() - WINDOW_BEFORE_MS));
+  const end = fmt(new Date(now.getTime() + WINDOW_AFTER_MS));
   const key = 'tide-predictions:' + station.id + ':' + begin;
   try {
     const cached = await env.SUBSCRIPTIONS.get(key);
@@ -98,10 +114,19 @@ export async function loadPredictions(env, station, { fetchImpl = fetch, now = n
     if (res.ok) {
       const body = await res.json();
       // "t" is a local timestamp like "2026-09-08 14:00" (a space, not a T) and "v" the
-      // predicted height in feet against MLLW -- a different vertical datum than the modeled
-      // curve's MSL, which does not matter here: nothing compares this height to any other
-      // absolute-referenced number. Everything downstream reads it relative to itself (today's
-      // own high and low, or the sample either side of a hover), the same as the modeled curve.
+      // predicted height in feet against MLLW -- mean lower low water, the chart datum a printed
+      // tide table uses, which sits a few feet below the mean sea level the modeled curve is
+      // measured from.
+      //
+      // That difference does matter, and an earlier version of this comment claimed it did not,
+      // on the grounds that every reader downstream works relative to its own series. The flaw
+      // in that: the two sources are not two series. They are interleaved hour by hour into one,
+      // and NOAA's coverage always runs out inside it -- the week chart is seven days long and
+      // this answers for four. Read across that seam, "the sample either side" spans both
+      // datums, which put a 3.4ft step into a curve whose steepest real hour moves 0.85ft and
+      // had nextTideEvent calling a high tide at 11am on a day whose high was at noon.
+      // lib/forecast.js's realTideLookup is what reconciles the two onto one datum before
+      // anything reads either.
       predictions = (Array.isArray(body.predictions) ? body.predictions : [])
         .map((p) => ({ t: p.t, ft: Number(p.v) }))
         .filter((p) => typeof p.t === 'string' && Number.isFinite(p.ft));

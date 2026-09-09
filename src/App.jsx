@@ -8,7 +8,7 @@ import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration, recalibrateHours, recalibrateContinuous } from './lib/calibration.js';
 import { bestWindow } from './lib/bestwindow.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
-import { linePath, waveAvg } from './lib/format.js';
+import { linePath, waveAvg, fillGaps } from './lib/format.js';
 import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
 import { checkAlertMatch } from './lib/alerts.js';
@@ -667,7 +667,7 @@ export default function App() {
   const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length)
     ? recalibrateContinuous(spotForecast.continuous, spotCalibration) : null;
   const contWaveLine = contData ? linePath(contData.map((p) => p.waveFt), 300, 70, 10) : null;
-  const contTideLine = contData ? linePath(contData.map((p) => (p.tideFt != null ? p.tideFt : 0)), 300, 70, 10) : null;
+  const contTideLine = contData ? linePath(fillGaps(contData.map((p) => p.tideFt)), 300, 70, 10) : null;
   const contWindLine = contData ? linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10) : null;
   const contSelected = contData && contSelectedIdx != null ? contData[contSelectedIdx] : null;
   // The sampled hours are no longer a fixed list of eight — a short winter day at a

@@ -193,10 +193,26 @@ describe('recalibrateHours', () => {
   it('reproduces every field exactly at ratio 1 -- the property that makes trusting this safe', () => {
     const original = hour();
     const [out] = recalibrateHours([original], { ready: true, ratio: 1 }, SPOT);
-    expect(out.waveFt).toBe(original.waveFt);
-    expect(out.wave).toBe(original.wave);
-    expect(out.score).toBe(original.score);
-    expect(out.rating).toBe(original.rating);
+    expect(out).toEqual(original);
+  });
+
+  it('corrects the swell trains too, since they sit on screen under the corrected height', () => {
+    const original = hour({ trains: [
+      { heightFt: 2.6, period: 13, deg: 210, dir: 'SSW', kind: 'groundswell' },
+      { heightFt: 1.0, period: 6, deg: 280, dir: 'W', kind: 'windswell' },
+    ] });
+    const [out] = recalibrateHours([original], { ready: true, ratio: 1.5 }, SPOT);
+    expect(out.trains[0].heightFt).toBeCloseTo(3.9, 10);
+    expect(out.trains[1].heightFt).toBeCloseTo(1.5, 10);
+    // Everything else about a train is untouched, and the order the score depends on holds.
+    expect(out.trains[0].kind).toBe('groundswell');
+    expect(out.trains[0].period).toBe(13);
+    expect(out.trains[0].heightFt).toBeGreaterThan(out.trains[1].heightFt);
+  });
+
+  it('passes a missing or empty train list through rather than throwing', () => {
+    expect(recalibrateHours([hour({ trains: [] })], { ready: true, ratio: 1.5 }, SPOT)[0].trains).toEqual([]);
+    expect(recalibrateHours([hour({ trains: undefined })], { ready: true, ratio: 1.5 }, SPOT)[0].trains).toBeUndefined();
   });
 
   it('scales the wave height and range string by the ratio', () => {

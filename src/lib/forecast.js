@@ -105,21 +105,67 @@ async function fetchRealTide(spot, { fetchImpl = fetch } = {}) {
 // array from hour zero of its own local day, NOAA answers with whatever hours its predictions
 // endpoint chose to return. Matching by index would quietly pair the wrong hour together the
 // moment those two disagreed about where a day starts.
-function realTideLookup(realTide) {
+//
+// They also measure from different floors, which is the harder half. NOAA answers on MLLW
+// (mean lower low water -- the chart datum a printed tide table uses, so its numbers are
+// essentially all positive); Open-Meteo's sea_level_height_msl is on MSL, swinging either side
+// of zero. The gap between those two floors is a few feet at a typical station.
+//
+// No array built here is ever entirely one source, so that gap cannot be ignored: NOAA answers
+// for today and tomorrow while the week chart runs seven days, so its later days are always
+// modeled. Substituting hour by hour without reconciling the datums left a cliff at the
+// boundary -- 3.4ft in one hour, on a curve whose steepest real hour was 0.85ft. That is not a
+// small error in a number, it is a different tide: nextTideEvent reads high and low off exactly
+// that shape, and it called a high tide at 11am on a day whose high was at noon.
+//
+// So both are put on one floor before either is read. A datum difference is a fixed vertical
+// shift, so the mean difference across every hour the two both cover estimates it directly,
+// and averaging over a day of a periodic curve also averages out the model's own wobble.
+// NOAA's numbers are left alone and the modeled curve is lifted onto them, rather than the
+// reverse, so a US spot reads the same heights as the tide table at the harbour -- on the days
+// NOAA covers and on the days it does not.
+const MIN_DATUM_OVERLAP_HOURS = 6;
+const tideHourKey = (t) => t.replace('T', ' ').slice(0, 13);
+
+function realTideLookup(realTide, times, modeledMetres) {
   const byHour = new Map();
   if (realTide && Array.isArray(realTide.predictions)) {
     for (const p of realTide.predictions) {
       if (typeof p.t !== 'string' || !Number.isFinite(p.ft)) continue;
-      byHour.set(p.t.replace('T', ' ').slice(0, 13), p.ft);
+      byHour.set(tideHourKey(p.t), p.ft);
     }
   }
-  return (isoLocalTime, modeledMetres, idx) => {
-    if (typeof isoLocalTime === 'string') {
-      const real = byHour.get(isoLocalTime.replace('T', ' ').slice(0, 13));
+  const modeled = Array.isArray(modeledMetres) ? modeledMetres : [];
+  const modeledFtAt = (idx) => (modeled[idx] != null ? modeled[idx] * 3.28084 : null);
+
+  // null means "use the modeled curve as it is and substitute nothing" -- the state every
+  // non-US spot is in, and the one to fall back to whenever the two cannot be reconciled.
+  let offset = null;
+  if (byHour.size) {
+    let sum = 0, overlap = 0, modeledHours = 0;
+    for (let i = 0; i < modeled.length; i++) {
+      const m = modeledFtAt(i);
+      if (m == null) continue;
+      modeledHours++;
+      const t = times && times[i];
+      const real = typeof t === 'string' ? byHour.get(tideHourKey(t)) : undefined;
+      if (real != null) { sum += real - m; overlap++; }
+    }
+    // No modeled curve at all means there is nothing to mix and nothing to reconcile: the
+    // real series stands on its own. Otherwise the offset has to be worth trusting before any
+    // substitution happens, because a bad one is worse than not substituting -- too little
+    // overlap and the safe answer is the single curve that is at least self-consistent.
+    if (!modeledHours) offset = 0;
+    else if (overlap >= MIN_DATUM_OVERLAP_HOURS) offset = sum / overlap;
+  }
+
+  return (isoLocalTime, idx) => {
+    if (offset != null && typeof isoLocalTime === 'string') {
+      const real = byHour.get(tideHourKey(isoLocalTime));
       if (real != null) return real;
     }
-    const modeled = modeledMetres ? modeledMetres[idx] : null;
-    return modeled != null ? modeled * 3.28084 : null;
+    const m = modeledFtAt(idx);
+    return m == null ? null : m + (offset == null ? 0 : offset);
   };
 }
 
@@ -131,7 +177,7 @@ export async function fetchSpotForecast(spot) {
   // mutation test confirmed by proving an outer one was never actually reachable -- rather than
   // keep it as reassurance nothing exercises, the guarantee is fetchRealTide's contract instead.
   const [{ marine, wind }, realTide] = await Promise.all([fetchRaw(spot), fetchRealTide(spot)]);
-  const tideFtAt = realTideLookup(realTide);
+  const tideFtAt = realTideLookup(realTide, (marine.hourly || {}).time, (marine.hourly || {}).sea_level_height_msl);
 
   // Which hours to sample, from this spot's own sunrise and sunset rather than a fixed
   // 5am-7pm list — see lib/daylight.js for why that fixed list was actively wrong at the
@@ -161,19 +207,26 @@ export async function fetchSpotForecast(spot) {
   // Nothing usable anywhere in the window is still a failure, and still says so.
   if (!hourIndices.length) throw new Error('Incomplete forecast data');
 
-  // Today's tide range, computed up front so each hour can be scored by how close it sits
-  // to today's own mid-tide (see conditionsScore) — not an absolute tide height.
+  // Every hour of today's tide, in feet — the curve the tide chart draws, and the range each
+  // hour is scored against.
   //
-  // In feet from here on, real tide or modeled: real arrives from NOAA already in feet, and
-  // this is the one number in the whole hour that would otherwise be built from two different
-  // units depending on which source answered a given hour -- min/max-scaling a mix of feet and
-  // metres against each other would corrupt tidePosition for every hour in the day, not just
-  // the ones a real reading covers.
+  // All 24 hours, not just the ones the page samples. Each hour is scored by where it sits
+  // between today's low and today's high (see conditionsScore), and a tide does not wait for
+  // daylight to turn: scaling against the sampled window instead makes whichever sampled hour
+  // happens to be lowest read as dead low, however far from the real low it is. On a diurnal
+  // tide whose low falls at 2am that is not a rounding difference — the 5am hour reads 0.00
+  // when the sea is really 15% of the way up the day, and tideFit hands a low-tide spot its
+  // full bonus for an hour that is not low tide.
   const timesAllForTide = (marine.hourly || {}).time || [];
-  const seaToday = hourIndices.map((idx) => tideFtAt(timesAllForTide[idx], (marine.hourly || {}).sea_level_height_msl, idx));
-  const validTidesToday = seaToday.filter((v) => v != null);
-  const tMin = validTidesToday.length ? Math.min(...validTidesToday) : null;
-  const tMax = validTidesToday.length ? Math.max(...validTidesToday) : null;
+  const tideFine = [];
+  for (let i = 0; i < Math.min(24, timesAllForTide.length); i++) {
+    const ft = tideFtAt(timesAllForTide[i], i);
+    if (ft == null) continue;
+    tideFine.push({ hour: i, ft });
+  }
+  const tMin = tideFine.length ? Math.min(...tideFine.map((p) => p.ft)) : null;
+  const tMax = tideFine.length ? Math.max(...tideFine.map((p) => p.ft)) : null;
+  const seaToday = hourIndices.map((idx) => tideFtAt(timesAllForTide[idx], idx));
 
   const hours = hourIndices.map((idx, i) => {
     const mh = marine.hourly || {};
@@ -246,14 +299,12 @@ export async function fetchSpotForecast(spot) {
   const windAllH = wind.hourly || {};
   const windSpeedAll = windAllH.wind_speed_10m || [];
   const windDirAll = windAllH.wind_direction_10m || [];
-  // Live sea-level curve from the same marine call — a modeled tide (referenced to global mean
-  // sea level, not a nautical chart datum), so heights won't match an official tide table
-  // exactly, but the rise/fall shape and high/low timing are real. Where a real NOAA prediction
-  // covers a hour (US spots, today and tomorrow, see fetchRealTide) tideFtAt reads that instead
-  // — a tide is astronomically deterministic, so a proper harmonic prediction is strictly more
-  // accurate for the timing of highs and lows than pulling one from the same model as the wave
-  // and wind numbers. Everywhere else, this is exactly what it always was.
-  const seaAll = hAll.sea_level_height_msl || [];
+  // Tide heights all come through tideFtAt, which already holds the modeled sea-level curve
+  // from this same marine call and the real NOAA prediction where there is one — see
+  // realTideLookup for how those two are reconciled onto a single datum. A tide is
+  // astronomically deterministic, so a harmonic prediction is strictly more accurate for the
+  // timing of highs and lows than pulling one from the same model as the wave and wind
+  // numbers; away from NOAA's coverage the modeled curve is exactly what it always was.
   const continuous = [];
   for (let idx = 0; idx < timesAll.length; idx += 3) {
     if (waveAll[idx] == null) continue;
@@ -270,7 +321,7 @@ export async function fetchSpotForecast(spot) {
     const cScore = cWindMph != null ? conditionsScore(cWaveFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot) : null;
     continuous.push({
       waveFt: cWaveFt,
-      tideFt: tideFtAt(timesAll[idx], seaAll, idx),
+      tideFt: tideFtAt(timesAll[idx], idx),
       windSpd: cWindMph != null ? Math.round(cWindMph) : null,
       windDeg: cWindDeg,
       score: cScore,
@@ -281,13 +332,7 @@ export async function fetchSpotForecast(spot) {
     });
   }
 
-  const tideToday = hourIndices.map((idx) => tideFtAt(timesAll[idx], seaAll, idx));
-  const tideFine = [];
-  for (let i = 0; i < Math.min(24, timesAll.length); i++) {
-    const ft = tideFtAt(timesAll[i], seaAll, i);
-    if (ft == null) continue;
-    tideFine.push({ hour: i, ft });
-  }
+  const tideToday = hourIndices.map((idx) => tideFtAt(timesAll[idx], idx));
 
   // Water temperature: one more hourly variable from the same marine call, and the answer to
   // "what do I take to the beach" that the app could not previously give at all.

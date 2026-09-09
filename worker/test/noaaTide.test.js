@@ -94,14 +94,40 @@ describe('loadPredictions', () => {
     expect(preds).toEqual([{ t: '2026-09-08 00:00', ft: 1.234 }, { t: '2026-09-08 01:00', ft: 1.4 }]);
   });
 
-  it('requests two UTC calendar days, so any US timezone\'s full local "today" is covered', async () => {
+  it('brackets the station\'s own local today and tomorrow, whatever its offset from UTC', async () => {
+    // The dates in the request are read by NOAA in the station's local time (time_zone=lst_ldt)
+    // but the only clock available to build them from is UTC. A window of "today UTC" onwards
+    // therefore misses the local day entirely for part of every day west of Greenwich -- which
+    // is the whole of NOAA's network. So the property to hold is not a particular pair of
+    // dates, it is that the window always contains the local day being looked at.
+    const OFFSETS = [10, 0, -4, -5, -6, -7, -8, -9, -10, -11]; // Guam through American Samoa
+    const dateAt = (instant, offsetHours) =>
+      new Date(instant.getTime() + offsetHours * 3600e3).toISOString().slice(0, 10).replace(/-/g, '');
+
+    for (let utcHour = 0; utcHour < 24; utcHour++) {
+      let seenUrl = '';
+      const fetchImpl = vi.fn(async (url) => { seenUrl = String(url); return new Response('{"predictions":[]}', { status: 200 }); });
+      const now = new Date(Date.UTC(2026, 8, 8, utcHour, 30));
+      await loadPredictions(makeEnv(), station, { fetchImpl, now });
+      const begin = seenUrl.match(/begin_date=(\d{8})/)[1];
+      const end = seenUrl.match(/end_date=(\d{8})/)[1];
+      for (const off of OFFSETS) {
+        const today = dateAt(now, off);
+        const tomorrow = dateAt(new Date(now.getTime() + 24 * 3600e3), off);
+        expect(begin <= today && today <= end).toBe(true);
+        expect(begin <= tomorrow && tomorrow <= end).toBe(true);
+      }
+    }
+  });
+
+  it('sends the station and the fixed prediction parameters', async () => {
     let seenUrl = '';
     const fetchImpl = vi.fn(async (url) => { seenUrl = String(url); return new Response('{"predictions":[]}', { status: 200 }); });
-    const now = new Date('2026-09-08T23:30:00Z'); // near UTC midnight, where a naive one-day window would miss local evening hours west of it
-    await loadPredictions(makeEnv(), station, { fetchImpl, now });
-    expect(seenUrl).toContain('begin_date=20260908');
-    expect(seenUrl).toContain('end_date=20260909');
+    await loadPredictions(makeEnv(), station, { fetchImpl, now: new Date('2026-09-08T12:00:00Z') });
     expect(seenUrl).toContain('station=9410230');
+    expect(seenUrl).toContain('datum=MLLW');
+    expect(seenUrl).toContain('time_zone=lst_ldt');
+    expect(seenUrl).toContain('interval=h');
   });
 
   it('drops a row with a non-numeric height rather than passing NaN through', async () => {

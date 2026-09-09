@@ -37,6 +37,26 @@ export function leadTimeLabel(lt) {
   if (lt === '2d') return '2 days before';
   return '3 days before';
 }
+// Replaces missing points with the nearest known one, so a gap in a series draws as a flat
+// run rather than a spike.
+//
+// linePath min/max-scales whatever array it is handed, so a stand-in value has to be a height
+// the series could actually have had. Substituting zero was harmless while every tide was
+// modeled on mean sea level and zero meant mid-tide; on a chart datum, where the whole curve
+// is positive and zero is the lowest water there has ever been, it drags the floor of the
+// chart down and flattens the real tide into the top of it.
+export function fillGaps(values) {
+  const out = values.slice();
+  let last = null;
+  for (let i = 0; i < out.length; i++) {
+    if (out[i] == null) out[i] = last;
+    else last = out[i];
+  }
+  // Anything still missing is a run at the very start, before the first known value.
+  const first = out.find((v) => v != null);
+  return out.map((v) => (v == null ? (first == null ? 0 : first) : v));
+}
+
 export function linePath(values, width, height, pad) {
   const min = Math.min(...values), max = Math.max(...values);
   const range = max - min || 1;
