@@ -8,6 +8,7 @@ import { verifyFacebookAccessToken } from './facebookAuth.js';
 import { createSessionToken, verifySessionToken } from './session.js';
 import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
+import { loadTideStations, nearestTideStation, loadPredictions } from './noaaTide.js';
 import { loadGrid } from './waveGrid.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
@@ -63,6 +64,29 @@ async function handleBuoy(request, env) {
   } catch {
     // Every source being down must never take the app's own endpoints with it.
     return json({ observation: null }, env);
+  }
+}
+
+// Real, harmonic tide predictions where NOAA has a station nearby — see noaaTide.js. Always a
+// 200: no station in range, an upstream failure, or a malformed response all come back as
+// `{ predictions: null }` rather than an error, because this is a pure enhancement over the
+// modeled tide curve every spot already has. Nothing about the spot page depends on it.
+async function handleTide(request, env) {
+  const coords = readCoords(new URL(request.url));
+  if (!coords) return json({ error: 'lat and lon required' }, env, 400);
+  const { lat, lon } = coords;
+  try {
+    const stations = await loadTideStations(env);
+    const nearest = nearestTideStation(stations, lat, lon);
+    if (!nearest) return json({ predictions: null }, env);
+    const predictions = await loadPredictions(env, nearest);
+    if (!predictions.length) return json({ predictions: null }, env);
+    return json({
+      station: { id: nearest.id, name: nearest.name, km: Math.round(nearest.km * 10) / 10 },
+      predictions,
+    }, env);
+  } catch {
+    return json({ predictions: null }, env);
   }
 }
 
@@ -338,6 +362,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/me') return handleGetMe(request, env);
     if (request.method === 'PUT' && url.pathname === '/me/data') return handlePutMeData(request, env);
     if (request.method === 'GET' && url.pathname === '/buoy') return handleBuoy(request, env);
+    if (request.method === 'GET' && url.pathname === '/tide') return handleTide(request, env);
     if (request.method === 'GET' && url.pathname === '/forecast') return handleForecast(request, env);
     if (request.method === 'GET' && url.pathname === '/conditions') return handleConditions(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
