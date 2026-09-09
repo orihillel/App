@@ -11,9 +11,13 @@
 // any of its models on request (`&models=`) and the disagreement between two independent ones
 // is a usable proxy for how settled the forecast is.
 
-// Two genuinely independent global models: the ECMWF and NOAA's GFS. Agreement between two
-// different centres' physics means something; two runs of the same model would not.
-export const CONFIDENCE_MODELS = ['ecmwf_ifs025', 'gfs_seamless'];
+// The actual model identifiers, and the candidate list this asks for by name, live in
+// forecast.js's CONFIDENCE_MODEL_PAIRS. They used to be duplicated here as CONFIDENCE_MODELS,
+// unused everywhere except this file and pointing at two atmospheric model names rather than
+// marine ones — `ecmwf_ifs025`/`gfs_seamless` answer "what will the weather be", not "what will
+// the sea be doing", so even fixed up this was never going to answer the question a wave-height
+// comparison needs. Removed rather than corrected in place, since the real list already lives
+// where the request is actually made.
 
 // Spread is measured relative to the wave height itself, because half a foot of disagreement
 // means something very different on a 1ft day than on a 10ft one.

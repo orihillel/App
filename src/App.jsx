@@ -5,7 +5,8 @@ import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
 import { fetchSpotForecast, fetchNowForSpots, fetchNowViaWorker, fetchModelAgreement, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
-import { addSample, calibration } from './lib/calibration.js';
+import { addSample, calibration, recalibrateHours, recalibrateContinuous } from './lib/calibration.js';
+import { bestWindow } from './lib/bestwindow.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg } from './lib/format.js';
 import { nextTideEvent, tideState } from './lib/tides.js';
@@ -654,8 +655,17 @@ export default function App() {
   // real data with nothing to tell them apart. The card said "Live data didn't load for this
   // spot" directly beneath numbers it had invented. In a weather app that is bad; in a surf
   // app someone drives to the coast on it.
-  const hourData = (spotForecast && spotForecast.hours && spotForecast.hours.length) ? spotForecast.hours : null;
-  const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length) ? spotForecast.continuous : null;
+  // Calibrated before anything else reads it. `forecast[activeId]` itself stays raw — the
+  // buoy-comparison effect below pairs it against a live reading to build the very samples
+  // this depends on, and calibrating that stored copy would have it comparing an already
+  // corrected number against the buoy, forever measuring "no bias" no matter what the true
+  // bias is. So the correction is applied once, here, to what gets derived for display —
+  // never to what gets kept.
+  const spotCalibration = calibration(calSamples[activeId]);
+  const hourData = (spotForecast && spotForecast.hours && spotForecast.hours.length)
+    ? recalibrateHours(spotForecast.hours, spotCalibration, spot) : null;
+  const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length)
+    ? recalibrateContinuous(spotForecast.continuous, spotCalibration) : null;
   const contWaveLine = contData ? linePath(contData.map((p) => p.waveFt), 300, 70, 10) : null;
   const contTideLine = contData ? linePath(contData.map((p) => (p.tideFt != null ? p.tideFt : 0)), 300, 70, 10) : null;
   const contWindLine = contData ? linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10) : null;
@@ -665,7 +675,11 @@ export default function App() {
   const safeHourIdx = hourData ? Math.min(hourIdx, hourData.length - 1) : 0;
   const h = hourData ? hourData[safeHourIdx] : null;
   const isGoTo = activeId === goToId;
-  const spotCalibration = calibration(calSamples[activeId]);
+  // Recomputed from the calibrated hours rather than read off spotForecast.best, which was
+  // picked out at fetch time from the *raw* ones — reading it straight through would have the
+  // "best today" window pointing at hours whose ratings the rest of the page no longer agrees
+  // with, once a correction is applied.
+  const best = hourData ? bestWindow(hourData) : null;
   const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : null;
   const tideNext = (h && spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : null;
   // What it is doing at the hour on screen, as opposed to what it does next.
@@ -854,7 +868,7 @@ export default function App() {
             h={h} dataState={dataState} fetchedAt={spotForecast ? spotForecast.fetchedAt : null} retry={() => loadSpotData(activeId, spot)}
             errorReason={errorReasons[activeId]}
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
-            best={spotForecast ? spotForecast.best : null}
+            best={best}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}

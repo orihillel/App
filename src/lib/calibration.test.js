@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import {
   addSample, freshSamples, calibration, applyCalibration, calibrationLabel,
+  recalibrateHours, recalibrateContinuous,
   MIN_SAMPLES, MAX_SAMPLES, MAX_SAMPLE_AGE_MS,
 } from './calibration.js';
+import { conditionsScore, scoreToRating } from './rating.js';
 
 const HOUR = 60 * 60 * 1000;
 // n paired readings, one an hour apart, where the buoy reads `factor` times the forecast.
@@ -151,5 +153,129 @@ describe('calibrationLabel', () => {
   });
   it('says how much evidence it is based on', () => {
     expect(calibrationLabel(calibration(samples(20, 1.3)))).toMatch(/20 checks/);
+  });
+});
+
+describe('recalibrateHours', () => {
+  const SPOT = { offshoreDeg: 60 };
+
+  // Shaped the way fetchSpotForecast actually builds an hour, including the fields it stores
+  // purely so this function can read them back: waveFt, tidePosition, windMph. Fields taken
+  // from `given` first, so an override actually feeds the score/wave it derives rather than
+  // being spread on top of values computed from the defaults instead of it.
+  function hour(given = {}) {
+    const waveFt = given.waveFt ?? 3;
+    const windMph = given.windMph ?? 8;
+    const type = given.type ?? 'offshore';
+    const period = given.period ?? 11;
+    const swellDeg = given.swellDeg ?? 220;
+    const tidePosition = given.tidePosition ?? 0.4;
+    const trains = given.trains ?? [{ heightFt: 2.6, period: 13, deg: 210, dir: 'SSW', kind: 'groundswell' }];
+    const dominant = trains[0] || null;
+    const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
+    const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : swellDeg;
+    const score = conditionsScore(waveFt, windMph, type, scorePeriod, scoreSwellDeg, SPOT.offshoreDeg, tidePosition, SPOT);
+    const base = Math.max(1, Math.round(waveFt));
+    return {
+      t: '7a', hour: 7, wave: Math.max(1, base - 1) + '-' + (base + 1), period, swellDir: 'SW', swellDeg,
+      windSpd: Math.round(windMph), windDir: 'ENE', windDeg: 60, type, score, rating: scoreToRating(score),
+      trains, waveFt, tidePosition, windMph,
+      ...given,
+    };
+  }
+
+  it('is a no-op when calibration is not ready', () => {
+    const hours = [hour()];
+    expect(recalibrateHours(hours, { ready: false }, SPOT)).toBe(hours);
+    expect(recalibrateHours(hours, null, SPOT)).toBe(hours);
+  });
+
+  it('reproduces every field exactly at ratio 1 -- the property that makes trusting this safe', () => {
+    const original = hour();
+    const [out] = recalibrateHours([original], { ready: true, ratio: 1 }, SPOT);
+    expect(out.waveFt).toBe(original.waveFt);
+    expect(out.wave).toBe(original.wave);
+    expect(out.score).toBe(original.score);
+    expect(out.rating).toBe(original.rating);
+  });
+
+  it('scales the wave height and range string by the ratio', () => {
+    const [out] = recalibrateHours([hour({ waveFt: 3 })], { ready: true, ratio: 1.5 }, SPOT);
+    expect(out.waveFt).toBeCloseTo(4.5, 5);
+    expect(out.wave).toBe('4-6'); // 4.5 rounds up to a 5ft base, displayed as the foot either side
+  });
+
+  it('raises the rating when the correction pushes wave height into a bigger bucket', () => {
+    // 2.4ft scores nothing for size; 1.5x makes it 3.6ft, which crosses the >=2.5 threshold.
+    const small = hour({ waveFt: 2.4 });
+    const boosted = recalibrateHours([small], { ready: true, ratio: 1.5 }, SPOT)[0];
+    expect(boosted.score).toBeGreaterThan(small.score);
+  });
+
+  it('lowers the rating when the correction shrinks a spot that runs smaller than forecast', () => {
+    const big = hour({ waveFt: 5 });
+    const shrunk = recalibrateHours([big], { ready: true, ratio: 0.5 }, SPOT)[0];
+    expect(shrunk.score).toBeLessThan(big.score);
+  });
+
+  it("scores against the dominant train's period and direction, not the hour's raw ones", () => {
+    // Raw period/swellDeg say short-period wind chop from due north; the stored dominant train
+    // says long-period groundswell from the SSW. The score at fetch time used the train --
+    // recompute must keep doing that, or a calibrated hour would rate differently from how the
+    // same numbers were rated the first time, for a reason with nothing to do with calibration.
+    const h = hour({
+      period: 6, swellDeg: 0,
+      trains: [{ heightFt: 2.6, period: 14, deg: 210, dir: 'SSW', kind: 'groundswell' }],
+    });
+    const [out] = recalibrateHours([h], { ready: true, ratio: 1 }, SPOT);
+    expect(out.score).toBe(h.score); // both built from the train, so ratio 1 must still match
+    const viaRaw = conditionsScore(h.waveFt, h.windMph, h.type, h.period, h.swellDeg, SPOT.offshoreDeg, h.tidePosition, SPOT);
+    expect(out.score).not.toBe(viaRaw); // and the raw fields would have scored it differently
+  });
+
+  it('uses the unrounded wind speed, not windSpd, so a threshold-straddling hour recomputes identically', () => {
+    // 10.3mph is "still offshore but past the light-wind bonus" (<=10 fails); rounded to
+    // windSpd=10 it would wrongly pass that check on recompute.
+    const h = hour({ windMph: 10.3, windSpd: 10 });
+    const [out] = recalibrateHours([h], { ready: true, ratio: 1 }, SPOT);
+    expect(out.score).toBe(h.score);
+  });
+
+  it('keeps rating in step with the recomputed score, not the original one', () => {
+    // The mutation this catches: score updates but rating is copied from the input hour, so a
+    // corrected wave height sits next to a badge computed from the number underneath it -- the
+    // exact inconsistency calibration existed to fix, reintroduced one field over.
+    const small = hour({ waveFt: 2.4 });
+    const [out] = recalibrateHours([small], { ready: true, ratio: 1.5 }, SPOT);
+    expect(out.rating).toBe(scoreToRating(out.score));
+    expect(out.rating).not.toBe(small.rating);
+  });
+
+  it('leaves an hour with no raw wave height untouched', () => {
+    const placeholder = { hour: 9, wave: '—', score: null, rating: 'LOADING', waveFt: null };
+    const [out] = recalibrateHours([placeholder], { ready: true, ratio: 1.4 }, SPOT);
+    expect(out).toBe(placeholder);
+  });
+});
+
+describe('recalibrateContinuous', () => {
+  it('is a no-op when calibration is not ready', () => {
+    const points = [{ waveFt: 3, score: 5, rating: 'GOOD' }];
+    expect(recalibrateContinuous(points, { ready: false })).toBe(points);
+  });
+
+  it('scales waveFt and leaves every other field, including score and rating, untouched', () => {
+    const point = { waveFt: 2, tideFt: 0.4, windSpd: 8, score: 5, rating: 'GOOD', day: 'Tue', hour: 7 };
+    const [out] = recalibrateContinuous([point], { ready: true, ratio: 1.25 });
+    expect(out.waveFt).toBeCloseTo(2.5, 5);
+    expect(out.tideFt).toBe(point.tideFt);
+    expect(out.score).toBe(point.score); // nothing on screen reads this; recomputing it is not the job
+    expect(out.rating).toBe(point.rating);
+  });
+
+  it('leaves a point with no wave height untouched', () => {
+    const point = { waveFt: null, tideFt: 0.2 };
+    const [out] = recalibrateContinuous([point], { ready: true, ratio: 1.5 });
+    expect(out).toBe(point);
   });
 });

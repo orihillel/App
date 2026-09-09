@@ -1,3 +1,5 @@
+import { conditionsScore, scoreToRating } from './rating.js';
+
 // Correcting the forecast at a spot from what the buoy actually measured there.
 //
 // A forecast cannot be made exact. Every number in this app is the output of a numerical model
@@ -82,4 +84,48 @@ export function calibrationLabel(cal) {
   if (!cal || !cal.ready || Math.abs(cal.percent) < 8) return null;
   const dir = cal.percent > 0 ? 'bigger' : 'smaller';
   return 'Runs ' + Math.abs(cal.percent) + '% ' + dir + ' than forecast here (' + cal.samples + ' checks)';
+}
+
+// Corrects a day's sampled hours from a settled calibration -- the part that was missing.
+// applyCalibration existed and calibrationLabel said "runs 15% bigger than forecast here", and
+// between them nothing actually made the wave height, the rating badge, or the best-window pick
+// reflect it. A spot the app had already proven runs consistently big kept scoring itself
+// against the uncorrected number everywhere except one footnote.
+//
+// Recomputes wave, score and rating from the calibrated height using the exact inputs
+// fetchSpotForecast scored the hour with the first time -- the dominant swell train's period
+// and direction, not the raw ones, which the score has always been built from (see the
+// "against the *dominant* train" comment in forecast.js). Diverging from that here would swap
+// one inconsistency (a corrected number next to an uncorrected rating) for a subtler one (a
+// rating computed a different way than every other hour's).
+//
+// A ratio of 1 -- no calibration, or none ready -- must reproduce every field unchanged. That
+// is the whole basis for trusting this instead of re-deriving the score independently: it is
+// provably a no-op until there is real evidence of a bias, not a second scoring path that
+// might quietly disagree with the first.
+export function recalibrateHours(hours, cal, spot) {
+  if (!Array.isArray(hours) || !cal || !cal.ready) return hours;
+  return hours.map((h) => {
+    if (h.waveFt == null) return h;
+    const waveFt = applyCalibration(h.waveFt, cal);
+    const dominant = (h.trains && h.trains[0]) || null;
+    const scorePeriod = dominant && dominant.period != null ? dominant.period : h.period;
+    const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : h.swellDeg;
+    const score = conditionsScore(
+      waveFt, h.windMph, h.type, scorePeriod, scoreSwellDeg,
+      spot && spot.offshoreDeg, h.tidePosition, spot,
+    );
+    const base = Math.max(1, Math.round(waveFt));
+    return { ...h, waveFt, wave: Math.max(1, base - 1) + '-' + (base + 1), score, rating: scoreToRating(score) };
+  });
+}
+
+// The week-ahead chart's points, calibrated the same way -- but score and rating are left
+// alone rather than recomputed. Nothing reads them: the chart draws waveFt, tideFt and windSpd
+// directly, and the tapped-time line below it shows the same three. Recomputing a score no
+// screen shows would be work standing in for nothing, and every field this function does not
+// touch is copied through unchanged rather than silently dropped.
+export function recalibrateContinuous(continuous, cal) {
+  if (!Array.isArray(continuous) || !cal || !cal.ready) return continuous;
+  return continuous.map((p) => (p.waveFt == null ? p : { ...p, waveFt: applyCalibration(p.waveFt, cal) }));
 }
