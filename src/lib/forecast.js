@@ -78,8 +78,60 @@ async function fetchRaw(spot) {
   return fetchDirect(spot);
 }
 
+// A real, harmonic tide prediction for this spot, from the Worker's NOAA proxy -- see
+// worker/src/noaaTide.js for why that is worth having and worker/src/index.js's /tide for
+// where it comes from. Never thrown from: no Worker configured, no station nearby (NOAA's
+// coverage is the US and its territories), or the request simply failing all come back the
+// same way, as "nothing real to use here," which is the signal to keep the modeled curve.
+async function fetchRealTide(spot, { fetchImpl = fetch } = {}) {
+  const base = import.meta.env.VITE_PUSH_API_URL;
+  if (!base || !spot) return null;
+  try {
+    const res = await fetchImpl(base + '/tide?lat=' + spot.lat + '&lon=' + spot.lon);
+    if (!res.ok) return null;
+    const body = await res.json().catch(() => null);
+    return body && Array.isArray(body.predictions) && body.predictions.length ? body : null;
+  } catch {
+    return null;
+  }
+}
+
+// Builds the function fetchSpotForecast actually reads tide heights through, from whatever
+// fetchRealTide came back with (or nothing).
+//
+// Both sources are looked up by the same key -- an ISO local timestamp truncated to the hour
+// ("2026-09-08T14:00" and NOAA's own "2026-09-08 14:00" both become "2026-09-08 14") -- rather
+// than by array index, because the two are on different clocks: Open-Meteo indexes a 7-day
+// array from hour zero of its own local day, NOAA answers with whatever hours its predictions
+// endpoint chose to return. Matching by index would quietly pair the wrong hour together the
+// moment those two disagreed about where a day starts.
+function realTideLookup(realTide) {
+  const byHour = new Map();
+  if (realTide && Array.isArray(realTide.predictions)) {
+    for (const p of realTide.predictions) {
+      if (typeof p.t !== 'string' || !Number.isFinite(p.ft)) continue;
+      byHour.set(p.t.replace('T', ' ').slice(0, 13), p.ft);
+    }
+  }
+  return (isoLocalTime, modeledMetres, idx) => {
+    if (typeof isoLocalTime === 'string') {
+      const real = byHour.get(isoLocalTime.replace('T', ' ').slice(0, 13));
+      if (real != null) return real;
+    }
+    const modeled = modeledMetres ? modeledMetres[idx] : null;
+    return modeled != null ? modeled * 3.28084 : null;
+  };
+}
+
 export async function fetchSpotForecast(spot) {
-  const { marine, wind } = await fetchRaw(spot);
+  // Run alongside the main fetch, not after it: real tide is a pure bonus over the modeled
+  // curve every spot already gets, on the same footing as the buoy panel and the model
+  // agreement badge -- never allowed to slow the page down or fail it. No extra .catch here:
+  // fetchRealTide's own body is entirely inside its own try/catch and cannot throw, which a
+  // mutation test confirmed by proving an outer one was never actually reachable -- rather than
+  // keep it as reassurance nothing exercises, the guarantee is fetchRealTide's contract instead.
+  const [{ marine, wind }, realTide] = await Promise.all([fetchRaw(spot), fetchRealTide(spot)]);
+  const tideFtAt = realTideLookup(realTide);
 
   // Which hours to sample, from this spot's own sunrise and sunset rather than a fixed
   // 5am-7pm list — see lib/daylight.js for why that fixed list was actively wrong at the
@@ -99,7 +151,6 @@ export async function fetchSpotForecast(spot) {
   // day and seven good days behind them. An hour with no reading is dropped instead, which
   // is not the same as inventing one; the day simply has fewer points, exactly as it already
   // does for a short winter day (see lib/daylight.js).
-  const mhForTide = marine.hourly || {};
   const hourIndices = sampledHours.filter((idx) => {
     const mh = marine.hourly || {};
     const whh = wind.hourly || {};
@@ -112,7 +163,14 @@ export async function fetchSpotForecast(spot) {
 
   // Today's tide range, computed up front so each hour can be scored by how close it sits
   // to today's own mid-tide (see conditionsScore) — not an absolute tide height.
-  const seaToday = hourIndices.map((idx) => (mhForTide.sea_level_height_msl ? mhForTide.sea_level_height_msl[idx] : null));
+  //
+  // In feet from here on, real tide or modeled: real arrives from NOAA already in feet, and
+  // this is the one number in the whole hour that would otherwise be built from two different
+  // units depending on which source answered a given hour -- min/max-scaling a mix of feet and
+  // metres against each other would corrupt tidePosition for every hour in the day, not just
+  // the ones a real reading covers.
+  const timesAllForTide = (marine.hourly || {}).time || [];
+  const seaToday = hourIndices.map((idx) => tideFtAt(timesAllForTide[idx], (marine.hourly || {}).sea_level_height_msl, idx));
   const validTidesToday = seaToday.filter((v) => v != null);
   const tMin = validTidesToday.length ? Math.min(...validTidesToday) : null;
   const tMax = validTidesToday.length ? Math.max(...validTidesToday) : null;
@@ -188,9 +246,13 @@ export async function fetchSpotForecast(spot) {
   const windAllH = wind.hourly || {};
   const windSpeedAll = windAllH.wind_speed_10m || [];
   const windDirAll = windAllH.wind_direction_10m || [];
-  // Live sea-level curve from the same marine call — this is a modeled tide (referenced to
-  // global mean sea level, not a nautical chart datum), so heights won't match an official
-  // tide table exactly, but the rise/fall shape and high/low timing are real.
+  // Live sea-level curve from the same marine call — a modeled tide (referenced to global mean
+  // sea level, not a nautical chart datum), so heights won't match an official tide table
+  // exactly, but the rise/fall shape and high/low timing are real. Where a real NOAA prediction
+  // covers a hour (US spots, today and tomorrow, see fetchRealTide) tideFtAt reads that instead
+  // — a tide is astronomically deterministic, so a proper harmonic prediction is strictly more
+  // accurate for the timing of highs and lows than pulling one from the same model as the wave
+  // and wind numbers. Everywhere else, this is exactly what it always was.
   const seaAll = hAll.sea_level_height_msl || [];
   const continuous = [];
   for (let idx = 0; idx < timesAll.length; idx += 3) {
@@ -208,7 +270,7 @@ export async function fetchSpotForecast(spot) {
     const cScore = cWindMph != null ? conditionsScore(cWaveFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot) : null;
     continuous.push({
       waveFt: cWaveFt,
-      tideFt: seaAll[idx] != null ? seaAll[idx] * 3.28084 : null,
+      tideFt: tideFtAt(timesAll[idx], seaAll, idx),
       windSpd: cWindMph != null ? Math.round(cWindMph) : null,
       windDeg: cWindDeg,
       score: cScore,
@@ -219,11 +281,12 @@ export async function fetchSpotForecast(spot) {
     });
   }
 
-  const tideToday = hourIndices.map((idx) => (seaAll[idx] != null ? seaAll[idx] * 3.28084 : null));
+  const tideToday = hourIndices.map((idx) => tideFtAt(timesAll[idx], seaAll, idx));
   const tideFine = [];
   for (let i = 0; i < Math.min(24, timesAll.length); i++) {
-    if (seaAll[i] == null) continue;
-    tideFine.push({ hour: i, ft: seaAll[i] * 3.28084 });
+    const ft = tideFtAt(timesAll[i], seaAll, i);
+    if (ft == null) continue;
+    tideFine.push({ hour: i, ft });
   }
 
   // Water temperature: one more hourly variable from the same marine call, and the answer to

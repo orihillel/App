@@ -558,3 +558,65 @@ describe('GET /conditions', () => {
     expect((await res.json()).spots).toEqual({});
   });
 });
+
+// The endpoint that exists so a US spot's tide square can read a real harmonic prediction
+// instead of the modeled sea-level curve everywhere else -- see noaaTide.js.
+describe('GET /tide', () => {
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  function upstream({ stationLat = 32.87, stationLon = -117.26 } = {}) {
+    return vi.fn(async (url) => {
+      const u = String(url);
+      if (u.includes('mdapi')) {
+        return new Response(JSON.stringify({
+          stations: [{ id: '9410230', name: 'La Jolla', lat: stationLat, lng: stationLon }],
+        }), { status: 200 });
+      }
+      return new Response(JSON.stringify({
+        predictions: [{ t: '2026-09-08 07:00', v: '1.2' }, { t: '2026-09-08 08:00', v: '1.6' }],
+      }), { status: 200 });
+    });
+  }
+
+  it('returns real predictions and the station used, for a spot near a real station', async () => {
+    vi.stubGlobal('fetch', upstream());
+    const res = await worker.fetch(new Request('https://worker.example/tide?lat=32.86&lon=-117.25'), makeEnv());
+    expect(res.status).toBe(200);
+    const body = await res.json();
+    expect(body.station.id).toBe('9410230');
+    expect(body.predictions).toHaveLength(2);
+    expect(body.predictions[0]).toEqual({ t: '2026-09-08 07:00', ft: 1.2 });
+  });
+
+  it('answers null, not an error, for a spot nowhere near a NOAA station', async () => {
+    vi.stubGlobal('fetch', upstream()); // the only station is in San Diego
+    const res = await worker.fetch(new Request('https://worker.example/tide?lat=-33.9&lon=151.2'), makeEnv()); // Sydney
+    expect(res.status).toBe(200);
+    expect((await res.json()).predictions).toBeNull();
+  });
+
+  it('answers null when the nearest station has no usable predictions', async () => {
+    const fetchImpl = vi.fn(async (url) => (String(url).includes('mdapi')
+      ? new Response(JSON.stringify({ stations: [{ id: '1', name: 'X', lat: 32.87, lng: -117.26 }] }), { status: 200 })
+      : new Response('{"predictions":[]}', { status: 200 })));
+    vi.stubGlobal('fetch', fetchImpl);
+    const res = await worker.fetch(new Request('https://worker.example/tide?lat=32.86&lon=-117.25'), makeEnv());
+    expect(res.status).toBe(200);
+    expect((await res.json()).predictions).toBeNull();
+  });
+
+  it('answers null rather than throwing when NOAA is unreachable', async () => {
+    vi.stubGlobal('fetch', vi.fn(async () => { throw new TypeError('offline'); }));
+    const res = await worker.fetch(new Request('https://worker.example/tide?lat=32.86&lon=-117.25'), makeEnv());
+    expect(res.status).toBe(200);
+    expect((await res.json()).predictions).toBeNull();
+  });
+
+  it('rejects coordinates it cannot use', async () => {
+    const spy = upstream();
+    vi.stubGlobal('fetch', spy);
+    const res = await worker.fetch(new Request('https://worker.example/tide?lat=&lon=-117.25'), makeEnv());
+    expect(res.status).toBe(400);
+    expect(spy).not.toHaveBeenCalled();
+  });
+});

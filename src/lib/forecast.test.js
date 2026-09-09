@@ -133,6 +133,115 @@ describe('fetchSpotForecast', () => {
       expect(result.hours[i].score).toBeGreaterThanOrEqual(peak - 1);
     }
   });
+
+  describe('with a real NOAA tide prediction available', () => {
+    afterEach(() => { vi.unstubAllEnvs(); });
+
+    // Real predictions for two of the eight sampled hours (5a, 20 aka 8p), each a very
+    // different height from what the modeled sine curve would give for the same hour --
+    // reading ~3.2ft and ~2.5ft respectively -- so a test that reads the wrong source is
+    // immediately obvious rather than accidentally close.
+    function realTideBody() {
+      return {
+        station: { id: '9999', name: 'Test Station', km: 4.2 },
+        predictions: [
+          { t: '2026-09-01 05:00', ft: 0.5 },
+          { t: '2026-09-01 20:00', ft: 6.0 },
+        ],
+      };
+    }
+    function serveWithRealTide() {
+      vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes('worker.example/tide')) return Promise.resolve(mockFetchOnce(realTideBody()));
+        return Promise.resolve(mockFetchOnce(u.includes('marine-api') ? makeMarineResponse() : makeWindResponse()));
+      });
+    }
+
+    it('uses the real reading for an hour it covers, in tideToday', async () => {
+      serveWithRealTide();
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.hours[0].hour).toBe(5);
+      expect(result.tideToday[0]).toBe(0.5); // not ~3.17, what the modeled curve gives hour 5
+      const lastIdx = result.hours.length - 1;
+      expect(result.hours[lastIdx].hour).toBe(20);
+      expect(result.tideToday[lastIdx]).toBe(6.0);
+    });
+
+    it('falls back to the modeled curve for hours no real prediction covers', async () => {
+      serveWithRealTide(); // only covers hours 5 and 20
+      const result = await fetchSpotForecast(SPOT);
+      const midday = result.hours.find((h) => h.hour === 14); // one of the sampled hours; not 5 or 20
+      const modeledFt = Math.sin((14 / 24) * Math.PI * 2) * 3.28084;
+      expect(result.tideToday[result.hours.indexOf(midday)]).toBeCloseTo(modeledFt, 5);
+    });
+
+    it('reflects the real reading in tideFine, which the tide-state arrow reads', async () => {
+      serveWithRealTide();
+      const result = await fetchSpotForecast(SPOT);
+      const at5 = result.tideFine.find((p) => p.hour === 5);
+      expect(at5.ft).toBe(0.5);
+    });
+
+    it('carries the real reading into the continuous week chart where it is in range', async () => {
+      serveWithRealTide();
+      const result = await fetchSpotForecast(SPOT);
+      const at5 = result.continuous.find((p) => p.hour === 5 && p.dayStart === false);
+      // continuous samples every third hour starting at index 0, so hour 5 may or may not
+      // land on a kept index depending on the fixture -- only assert if it does.
+      if (at5) expect(at5.tideFt).toBe(0.5);
+    });
+
+    it('keeps every hour on the same unit, so a real-feet reading cannot corrupt tidePosition\'s min/max scaling', async () => {
+      // Before this, seaToday mixed units by construction whenever some hours were real
+      // (already feet) and others modeled (still metres) -- min/max taken across a mix of the
+      // two would have compressed or blown out every hour's score, not just the real ones'.
+      serveWithRealTide();
+      const result = await fetchSpotForecast(SPOT);
+      for (const h of result.hours) {
+        expect(h.tidePosition == null || (h.tidePosition >= 0 && h.tidePosition <= 1)).toBe(true);
+      }
+    });
+
+    it('is unaffected when the Worker has no tide data for this spot', async () => {
+      vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes('worker.example/tide')) return Promise.resolve(mockFetchOnce({ predictions: null }));
+        return Promise.resolve(mockFetchOnce(u.includes('marine-api') ? makeMarineResponse() : makeWindResponse()));
+      });
+      const result = await fetchSpotForecast(SPOT);
+      const modeledFt = Math.sin((5 / 24) * Math.PI * 2) * 3.28084;
+      expect(result.tideToday[0]).toBeCloseTo(modeledFt, 5);
+    });
+
+    it('is unaffected when the tide response is not valid JSON', async () => {
+      vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes('worker.example/tide')) {
+          return Promise.resolve({ ok: true, json: async () => { throw new SyntaxError('bad json'); } });
+        }
+        return Promise.resolve(mockFetchOnce(u.includes('marine-api') ? makeMarineResponse() : makeWindResponse()));
+      });
+      const result = await fetchSpotForecast(SPOT);
+      const modeledFt = Math.sin((5 / 24) * Math.PI * 2) * 3.28084;
+      expect(result.tideToday[0]).toBeCloseTo(modeledFt, 5);
+    });
+
+    it('is unaffected when the tide request fails outright', async () => {
+      vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes('worker.example/tide')) return Promise.reject(new TypeError('offline'));
+        return Promise.resolve(mockFetchOnce(u.includes('marine-api') ? makeMarineResponse() : makeWindResponse()));
+      });
+      const result = await fetchSpotForecast(SPOT);
+      const modeledFt = Math.sin((5 / 24) * Math.PI * 2) * 3.28084;
+      expect(result.tideToday[0]).toBeCloseTo(modeledFt, 5);
+    });
+  });
 });
 
 describe('geocodePlace', () => {
@@ -241,11 +350,16 @@ describe('fetchSpotForecast routing', () => {
     const calls = [];
     globalThis.fetch = vi.fn(async (url) => {
       calls.push(String(url));
+      // Answered the same way regardless of path: /forecast's shape satisfies fetchRaw, and
+      // /tide's defensive `Array.isArray(body.predictions)` check simply finds none here and
+      // falls back to the modeled curve, same as if the Worker had no /tide endpoint at all.
       return new Response(JSON.stringify(workerBody()), { status: 200 });
     });
     await fetchSpotForecast(SPOT2);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toContain('worker.example/forecast');
+    // The forecast and the (best-effort, optional) real-tide lookup both go to the Worker;
+    // neither goes anywhere near Open-Meteo directly.
+    expect(calls.filter((u) => u.includes('worker.example/forecast'))).toHaveLength(1);
+    expect(calls.filter((u) => u.includes('worker.example/tide'))).toHaveLength(1);
     expect(calls.some((u) => u.includes('open-meteo.com'))).toBe(false);
   });
 
