@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError, fetchNowViaWorker } from './forecast.js';
+import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError, fetchNowViaWorker, fetchModelAgreement } from './forecast.js';
 
 const SPOT = { lat: 33.38, lon: -117.6, offshoreDeg: 60 };
 
@@ -395,5 +395,58 @@ describe('fetchNowViaWorker', () => {
     globalThis.fetch = spy;
     expect(await fetchNowViaWorker([])).toBeNull();
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('fetchModelAgreement', () => {
+  function twoSeriesResponse(suffixA, suffixB, valuesA, valuesB) {
+    return new Response(JSON.stringify({
+      hourly: { ['wave_height_' + suffixA]: valuesA, ['wave_height_' + suffixB]: valuesB },
+    }), { status: 200 });
+  }
+
+  it('tries the corrected pairing first, and succeeds on it', async () => {
+    const calls = [];
+    const fetchImpl = vi.fn(async (url) => {
+      calls.push(String(url));
+      return twoSeriesResponse('ecmwf_wam025', 'ncep_gfswave025', [1, 1.1, 1], [1, 1.1, 1]);
+    });
+    const result = await fetchModelAgreement({ lat: 1, lon: 2 }, [0, 1, 2], { fetchImpl });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toContain('models=ecmwf_wam025,ncep_gfswave025');
+    expect(result.level).toBe('high');
+  });
+
+  it('falls through to the next candidate when a pair returns only one usable series', async () => {
+    let call = 0;
+    const fetchImpl = vi.fn(async () => {
+      call++;
+      if (call === 1) {
+        // One valid model key, one that never came back -- a half-wrong guess.
+        return new Response(JSON.stringify({ hourly: { wave_height_ecmwf_wam025: [1, 1, 1] } }), { status: 200 });
+      }
+      return twoSeriesResponse('dwd_ewam', 'dwd_gwam', [2, 2, 2], [2, 2, 2]);
+    });
+    const result = await fetchModelAgreement({ lat: 1, lon: 2 }, [0, 1, 2], { fetchImpl });
+    expect(call).toBe(2);
+    expect(result.level).toBe('high');
+  });
+
+  it('reads per-model series by key shape, not by the exact name guessed', async () => {
+    // If Open-Meteo's naming has moved again since this was last checked, a key that merely
+    // starts with wave_height_ must still be picked up.
+    const fetchImpl = vi.fn(async () => twoSeriesResponse('some_future_model_v3', 'another_one', [3, 5, 3], [3, 3, 3]));
+    const result = await fetchModelAgreement({ lat: 1, lon: 2 }, [0, 1, 2], { fetchImpl });
+    expect(result).not.toBeNull();
+  });
+
+  it('resolves to null, not a throw, when every candidate fails', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{}', { status: 400 }));
+    await expect(fetchModelAgreement({ lat: 1, lon: 2 }, [0], { fetchImpl })).resolves.toBeNull();
+  });
+
+  it('resolves to null when the network itself is unreachable', async () => {
+    const fetchImpl = vi.fn(async () => { throw new TypeError('Failed to fetch'); });
+    await expect(fetchModelAgreement({ lat: 1, lon: 2 }, [0], { fetchImpl })).resolves.toBeNull();
   });
 });

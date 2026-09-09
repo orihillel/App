@@ -156,6 +156,18 @@ export async function fetchSpotForecast(spot) {
       t: hourLabel12(idx), hour: idx, wave: Math.max(1, base - 1) + '-' + (base + 1), period,
       swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
       windDir: degToCompass(wdd), windDeg: wdd, type, score, rating: scoreToRating(score), trains,
+      // The raw values the two above were built from. Nothing downstream should ever need to
+      // reparse "3-5" back into a float or re-derive tide position from a different curve —
+      // that already happened once, correctly, right here. See lib/calibration.js, which reads
+      // these to recompute a corrected wave/score/rating without repeating this function.
+      //
+      // windMph alongside the already-rounded windSpd, not instead of it: conditionsScore's
+      // thresholds are whole numbers, and rounding first would round some hours across a
+      // threshold the raw value never crossed (10.3mph rounds to 10 and passes "<=10"; 10.3
+      // itself does not). A recompute built on windSpd would occasionally rate the same hour
+      // differently from how it was rated the first time, for a reason that has nothing to do
+      // with calibration.
+      waveFt, tidePosition, windMph,
     };
   });
 
@@ -235,14 +247,31 @@ export async function fetchSpotForecast(spot) {
 // than depend on getting a name right, this tries a few candidate pairs and reads whatever
 // per-model keys come back, by pattern rather than by name. If none of them work the whole
 // feature simply does not render: a wrong guess costs one failed request and nothing else.
-const CONFIDENCE_MODEL_PAIRS = ['ecmwf_wam025,gfs_wave025', 'ewam,gwam', 'ecmwf_wam,gfs_wave'];
+//
+// The original three guesses were checked later, by searching Open-Meteo's own docs rather
+// than calling the API (still blocked here). None of them survive: `gfs_wave025` and bare
+// `ewam`/`gwam` are not real identifiers, and `ecmwf_wam,gfs_wave` is missing the suffix every
+// real one carries -- so this most likely never rendered the badge at all, on any spot,
+// silently, exactly as it was built to fail. The two front candidates below come from that
+// same search and are two independently-run centres (NOAA and ECMWF; then MeteoFrance and
+// ECMWF), which is the pairing the badge is meant to compare in the first place. The old
+// guesses stay on the end rather than being deleted -- Open-Meteo's own docs disagree with
+// each other on some of these across pages, which reads as identifiers that have moved before,
+// so a candidate that is wrong today costs nothing kept and might be right on some future
+// deploy that broke a newer one.
+const CONFIDENCE_MODEL_PAIRS = [
+  'ecmwf_wam025,ncep_gfswave025',
+  'dwd_ewam,dwd_gwam',
+  'meteofrance_wave,ecmwf_wam025',
+  'ecmwf_wam025,gfs_wave025', 'ewam,gwam', 'ecmwf_wam,gfs_wave',
+];
 
-export async function fetchModelAgreement(spot, hourIndices) {
+export async function fetchModelAgreement(spot, hourIndices, { fetchImpl = fetch } = {}) {
   for (const pair of CONFIDENCE_MODEL_PAIRS) {
     try {
       const url = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat +
         '&longitude=' + spot.lon + '&hourly=wave_height&timezone=auto&forecast_days=3&models=' + pair;
-      const res = await fetch(url);
+      const res = await fetchImpl(url);
       if (!res.ok) continue;
       const json = await res.json();
       const hourly = json.hourly || {};
