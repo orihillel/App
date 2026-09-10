@@ -1478,8 +1478,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             ? 'Spot colour = live conditions right now'
             : liveCount === 0
               ? 'No live conditions yet — every marker is grey until readings arrive'
-              : 'Spot colour = live conditions right now, for ' + liveCount + ' of ' + order.length + ' spots'
-                + (liveCount < order.length ? '. Grey markers have no reading yet.' : '')}
+              : 'Spot colour = live conditions right now, loaded for ' + liveCount + ' of ' + order.length + ' spots'
+                /* Not a ceiling, which the old wording ("for 120 of 540 spots") read as. Readings
+                   are fetched for what is on screen and cached per spot, so the count climbs as
+                   you travel rather than stopping where it started. */
+                + (liveCount < order.length ? '. Keep rotating and the rest fill in.' : '')}
         </div>
         <div style={{ fontSize: 11, color: COLORS.foamDim, marginTop: 5, textAlign: 'center', lineHeight: 1.45, opacity: 0.85 }}>
           A numbered marker is a group of spots — tap it to open it up. Its colour is the best of them.

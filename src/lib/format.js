@@ -45,6 +45,38 @@ export function leadTimeLabel(lt) {
 // modeled on mean sea level and zero meant mid-tide; on a chart datum, where the whole curve
 // is positive and zero is the lowest water there has ever been, it drags the floor of the
 // chart down and flattens the real tide into the top of it.
+// How old a forecast is, in the words a person would use, plus whether that age is worth
+// flagging.
+//
+// A forecast app that cannot say when it last spoke to the server is asking to be trusted on
+// nothing. It matters most exactly when the app is least able to tell you itself: opened from
+// the Home Screen with no signal, the service worker serves the last forecast it cached, and
+// six hours later it still renders as confidently as it did when it was fetched.
+//
+// `stale` at an hour because the underlying models publish on roughly that cadence -- past it,
+// there is likely a newer forecast that this screen is not showing.
+export const STALE_AFTER_MS = 60 * 60 * 1000;
+
+export function freshnessLabel(fetchedAt, now = Date.now()) {
+  if (!Number.isFinite(fetchedAt)) return null;
+  // A clock that has gone backwards (a device correcting its time, a cached entry written by a
+  // faster clock) should read as current rather than as a negative age.
+  const ms = Math.max(0, now - fetchedAt);
+  const mins = Math.floor(ms / 60000);
+  let text;
+  if (mins < 1) text = 'Updated just now';
+  else if (mins < 60) text = 'Updated ' + mins + ' min ago';
+  else {
+    const hours = Math.floor(mins / 60);
+    if (hours < 24) text = 'Updated ' + hours + (hours === 1 ? ' hour ago' : ' hours ago');
+    else {
+      const days = Math.floor(hours / 24);
+      text = 'Updated ' + days + (days === 1 ? ' day ago' : ' days ago');
+    }
+  }
+  return { text, stale: ms >= STALE_AFTER_MS };
+}
+
 export function fillGaps(values) {
   const out = values.slice();
   let last = null;

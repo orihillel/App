@@ -11,8 +11,9 @@ import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg, fillGaps } from './lib/format.js';
 import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
+import { shouldRefetchOnResume } from './lib/refresh.js';
 import { checkAlertMatch } from './lib/alerts.js';
-import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
+import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
 import { OnboardingView } from './components/OnboardingView.jsx';
 import { HomeView } from './components/HomeView.jsx';
@@ -102,6 +103,11 @@ function GlobeLoading() {
     </div>
   );
 }
+
+// How often the spot on screen is refetched -- on a timer while the app is open, and on the way
+// back in when it has been away longer than this. The wave model behind it runs four times a
+// day, so this is already far more often than the numbers actually change.
+const REFRESH_MS = 15 * 60 * 1000;
 
 export default function App() {
   // Seeded, not the full catalog. The 400-spot list is 30KB gzipped -- 27% of everything the
@@ -628,8 +634,41 @@ export default function App() {
     const interval = setInterval(() => {
       const id = activeIdRef.current;
       if (id && dataRef.current.spots[id]) loadSpotData(id, dataRef.current.spots[id]);
-    }, 15 * 60 * 1000);
+    }, REFRESH_MS);
     return () => clearInterval(interval);
+  }, [loadSpotData]);
+
+  // ...and the same refresh when the app comes back, which the timer above cannot do.
+  //
+  // That interval only runs while the page is alive. This is a PWA whose whole point is being
+  // opened from a phone's Home Screen, and a backgrounded tab has its timers throttled and then
+  // suspended -- so checking the surf in the morning, locking the phone, and opening it again
+  // that afternoon showed the morning's forecast, rated and labelled exactly as confidently as
+  // it had been when it was fetched. Nothing refetched, and nothing said how old it was.
+  //
+  // Only when it is actually out of date: coming back after thirty seconds should cost nothing,
+  // and the same threshold as the timer keeps "how often this refreshes" a single answer.
+  useEffect(() => {
+    function onVisible() {
+      const id = activeIdRef.current;
+      const spot = id && dataRef.current.spots[id];
+      if (!spot) return;
+      const current = dataRef.current.forecast[id];
+      if (!shouldRefetchOnResume({
+        visibilityState: document.visibilityState,
+        fetchedAt: current && current.fetchedAt,
+        maxAgeMs: REFRESH_MS,
+      })) return;
+      loadSpotData(id, spot);
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    // Safari restoring a page from its back/forward cache fires neither a load nor a
+    // visibilitychange, only this.
+    window.addEventListener('pageshow', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+    };
   }, [loadSpotData]);
 
   // Whether each arrow has anywhere to go. With a full catalog both sides are always occupied,
@@ -856,7 +895,7 @@ export default function App() {
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
           <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
-            pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
+            pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
             session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast}
             sessions={sessions} deleteSession={deleteSession} />
         ) : (

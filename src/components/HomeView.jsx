@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
@@ -6,7 +6,7 @@ import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
 import { calibrationLabel } from '../lib/calibration.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
-import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg } from '../lib/format.js';
+import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -36,6 +36,17 @@ export function HomeView({
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
+  // A label reading "Updated 1 min ago" is only true for a minute. Nothing else on this screen
+  // changes between refreshes, so without a tick of its own the age would freeze at whatever it
+  // was when the forecast landed and quietly become the most wrong thing on the card. Throttled
+  // to nothing while the tab is in the background, which is exactly when nobody is reading it.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+  const freshness = freshnessLabel(fetchedAt, nowTick);
+
   // Local to this view: the log panel is a transient bit of UI, not app state worth lifting.
   const [logging, setLogging] = useState(false);
   const [stars, setStars] = useState(3);
@@ -109,11 +120,22 @@ export function HomeView({
               {stale ? (
                 <StaleHeader fetchedAt={fetchedAt} retry={retry} />
               ) : (
-                <div className="flex items-center" style={{ gap: 8 }}>
-                  <span style={{ background: ratingBg(h.rating), color: ratingText(h.rating), fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', padding: '4px 9px', borderRadius: 4 }}>
-                    {h.rating}
-                  </span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foamDim }}>AT {h.t.toUpperCase()}</span>
+                <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                  <div className="flex items-center" style={{ gap: 8 }}>
+                    <span style={{ background: ratingBg(h.rating), color: ratingText(h.rating), fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', padding: '4px 9px', borderRadius: 4 }}>
+                      {h.rating}
+                    </span>
+                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foamDim }}>AT {h.t.toUpperCase()}</span>
+                  </div>
+                  {/* The age of the numbers, in the good case too -- not only once a refetch has
+                      failed and the card falls back to LAST KNOWN. A forecast that arrived four
+                      hours ago is not wrong, but it is not the same claim as one from a minute
+                      ago, and only one of them was being labelled. */}
+                  {freshness ? (
+                    <span style={{ fontSize: 10.5, color: freshness.stale ? COLORS.gold : COLORS.foamDim, whiteSpace: 'nowrap' }}>
+                      {freshness.text}
+                    </span>
+                  ) : null}
                 </div>
               )}
 
