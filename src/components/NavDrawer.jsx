@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { X, Search, Globe2, Bell, User, MapPin, Plus, Star } from 'lucide-react';
+import { X, Search, Globe2, Bell, User, MapPin, Plus, Star, Compass } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER } from '../lib/spots.js';
 
@@ -94,6 +94,11 @@ export function NavDrawer({
           <Row icon={<Plus size={15} color={COLORS.tealBright} />} label="Add a spot" onClick={go(openSearch)} />
 
           <Heading>EXPLORE</Heading>
+          <Row
+            icon={<Compass size={15} color={COLORS.tealBright} />}
+            label="Best nearby" sub="Rank the spots around you, right now"
+            onClick={go(() => onNavigate('nearby'))}
+          />
           <Row icon={<Search size={15} color={COLORS.foamDim} />} label="Search spots" onClick={go(openSearch)} />
           <Row
             icon={<Globe2 size={15} color={COLORS.foamDim} />}

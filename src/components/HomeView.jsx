@@ -1,12 +1,13 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
 import { calibrationLabel } from '../lib/calibration.js';
+import { swellTrend } from '../lib/swelltrend.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
-import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg } from '../lib/format.js';
+import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -36,6 +37,17 @@ export function HomeView({
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
+  // A label reading "Updated 1 min ago" is only true for a minute. Nothing else on this screen
+  // changes between refreshes, so without a tick of its own the age would freeze at whatever it
+  // was when the forecast landed and quietly become the most wrong thing on the card. Throttled
+  // to nothing while the tab is in the background, which is exactly when nobody is reading it.
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  useEffect(() => {
+    const t = setInterval(() => setNowTick(Date.now()), 60000);
+    return () => clearInterval(t);
+  }, []);
+  const freshness = freshnessLabel(fetchedAt, nowTick);
+
   // Local to this view: the log panel is a transient bit of UI, not app state worth lifting.
   const [logging, setLogging] = useState(false);
   const [stars, setStars] = useState(3);
@@ -109,11 +121,22 @@ export function HomeView({
               {stale ? (
                 <StaleHeader fetchedAt={fetchedAt} retry={retry} />
               ) : (
-                <div className="flex items-center" style={{ gap: 8 }}>
-                  <span style={{ background: ratingBg(h.rating), color: ratingText(h.rating), fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', padding: '4px 9px', borderRadius: 4 }}>
-                    {h.rating}
-                  </span>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foamDim }}>AT {h.t.toUpperCase()}</span>
+                <div className="flex items-center justify-between" style={{ gap: 8 }}>
+                  <div className="flex items-center" style={{ gap: 8 }}>
+                    <span style={{ background: ratingBg(h.rating), color: ratingText(h.rating), fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 12, letterSpacing: '0.08em', padding: '4px 9px', borderRadius: 4 }}>
+                      {h.rating}
+                    </span>
+                    <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foamDim }}>AT {h.t.toUpperCase()}</span>
+                  </div>
+                  {/* The age of the numbers, in the good case too -- not only once a refetch has
+                      failed and the card falls back to LAST KNOWN. A forecast that arrived four
+                      hours ago is not wrong, but it is not the same claim as one from a minute
+                      ago, and only one of them was being labelled. */}
+                  {freshness ? (
+                    <span style={{ fontSize: 10.5, color: freshness.stale ? COLORS.gold : COLORS.foamDim, whiteSpace: 'nowrap' }}>
+                      {freshness.text}
+                    </span>
+                  ) : null}
                 </div>
               )}
 
@@ -381,7 +404,8 @@ export function HomeView({
       ) : null}
 
       <div className="grid grid-cols-3 px-4" style={{ gap: 8, marginTop: 14, paddingBottom: 14 }}>
-        <Stat label="SWELL" value={h ? formatWaveRange(h.wave, units) + heightUnit(units) : null} sub={h ? h.period + 's ' + h.swellDir : null} />
+        <Stat label="SWELL" value={h ? formatWaveRange(h.wave, units) + heightUnit(units) : null} sub={h ? h.period + 's ' + h.swellDir : null}
+          trend={swellTrend(hourData, hourIdx)} />
         <Stat label="WIND" value={h ? formatSpeed(h.windSpd, units) + speedUnit(units) : null} sub={h ? h.windDir + ' · ' + h.type : null} subColor={h ? windColor(h.type) : null} />
         <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 11px' }}>
           <div style={{ fontSize: 11.5, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>TIDE</div>
@@ -413,14 +437,40 @@ export function HomeView({
   );
 }
 
-function Stat({ label, value, sub, subColor }) {
+function Stat({ label, value, sub, subColor, trend }) {
   return (
     <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 11px' }}>
       <div style={{ fontSize: 11.5, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>{label}</div>
       <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 18, color: value ? COLORS.foam : COLORS.foamDim, marginTop: 5 }}>{value || '—'}</div>
       {sub ? <div style={{ fontSize: 11.5, color: subColor || COLORS.foamDim, marginTop: 2, fontWeight: subColor ? 600 : 400 }}>{sub}</div> : null}
+      {/* Its own line rather than beside the period, for the reason the tide's state is on one:
+          this column is a third of a 390px screen and a second phrase does not fit next to the
+          first. */}
+      {trend ? (
+        <div style={{ fontSize: 11.5, fontWeight: 600, color: swellTrendColor(trend), letterSpacing: '0.02em', marginTop: 1 }}>
+          {swellTrendArrow(trend)}{trend}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+// Building is the direction worth acting on, so it takes the same teal the tide's directions do;
+// dropping takes the gold the tide's turns take -- a "look at this" rather than an alarm. Steady
+// is not news and stays in the dim foam every other sub-line uses.
+function swellTrendColor(trend) {
+  if (trend === 'Building') return COLORS.tealBright;
+  if (trend === 'Dropping') return COLORS.gold;
+  return COLORS.foamDim;
+}
+
+// Unlike the tide, every state here has a direction to point -- steady included, where a flat
+// arrow says "holding" rather than leaving the reader to wonder if the arrow failed to render.
+function swellTrendArrow(trend) {
+  if (trend === 'Building') return '\u2191\u2009';
+  if (trend === 'Dropping') return '\u2193\u2009';
+  if (trend === 'Steady') return '\u2192\u2009';
+  return '';
 }
 
 // Nothing has arrived yet. Bars where the numbers will land, so the layout does not jump when

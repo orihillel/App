@@ -8,11 +8,15 @@ import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration, recalibrateHours, recalibrateContinuous } from './lib/calibration.js';
 import { bestWindow } from './lib/bestwindow.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
-import { linePath, waveAvg } from './lib/format.js';
+import { linePath, waveAvg, fillGaps } from './lib/format.js';
 import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
+import { shouldRefetchOnResume } from './lib/refresh.js';
+import { parseHash, buildHash } from './lib/router.js';
+import { nearestSpots, rankNearby, DEFAULT_MAX_KM } from './lib/nearby.js';
+import { locate } from './lib/geolocate.js';
 import { checkAlertMatch } from './lib/alerts.js';
-import { isPushSupported, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
+import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
 import { OnboardingView } from './components/OnboardingView.jsx';
 import { HomeView } from './components/HomeView.jsx';
@@ -22,6 +26,7 @@ import { SearchSheet } from './components/SearchSheet.jsx';
 import { AlertSheet } from './components/AlertSheet.jsx';
 import { BottomNav } from './components/BottomNav.jsx';
 import { NavDrawer } from './components/NavDrawer.jsx';
+import { NearbyView } from './components/NearbyView.jsx';
 
 const GLOBAL_CSS = `
 /* The font @import used to live here, and that was the problem: this string only becomes a
@@ -103,6 +108,11 @@ function GlobeLoading() {
   );
 }
 
+// How often the spot on screen is refetched -- on a timer while the app is open, and on the way
+// back in when it has been away longer than this. The wave model behind it runs four times a
+// day, so this is already far more often than the numbers actually change.
+const REFRESH_MS = 15 * 60 * 1000;
+
 export default function App() {
   // Seeded, not the full catalog. The 400-spot list is 30KB gzipped -- 27% of everything the
   // browser downloaded before the app could start -- to render a screen that shows one spot,
@@ -145,6 +155,10 @@ export default function App() {
   // reach it" -- see describeForecastError.
   const [errorReasons, setErrorReasons] = useState({});
   const [view, setView] = useState('home');
+  // "Best nearby": where the phone is, and how that request went. Held here rather than in the
+  // view so leaving and coming back does not ask for the location again.
+  const [here, setHere] = useState(null);
+  const [locating, setLocating] = useState(null); // null | 'locating' | { reason, message }
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [onboarded, setOnboarded] = useState(true);
@@ -391,7 +405,13 @@ export default function App() {
       if (result && result.waveFt != null && nowHour) {
         setCalSamples((prev) => {
           const next = { ...prev, [activeId]: addSample(prev[activeId], {
-            forecastFt: waveAvg(nowHour.wave), observedFt: result.waveFt,
+            // The hour's *offshore* significant height, which is the quantity the buoy is also
+            // reporting. Not waveAvg(nowHour.wave): that string is now the breaking height, so
+            // pairing it against an offshore buoy reading would teach the correction to cancel
+            // out the surf transform rather than measure the model's bias. (It was also
+            // needlessly lossy -- a value reparsed out of a rounded display range when the exact
+            // one was sitting on the hour.)
+            forecastFt: nowHour.waveFt, observedFt: result.waveFt,
           }) };
           storage.set('surf-calibration', JSON.stringify(next)).catch(() => {});
           return next;
@@ -457,6 +477,11 @@ export default function App() {
       } catch { /* nothing saved yet */ }
     })();
     (async () => {
+      // A link naming a spot is already the answer onboarding asks for. Someone who taps a
+      // shared #/spot/<id> should see that spot, not "pick your go-to spot" -- the deep link
+      // works and then immediately does not, which is the worst of both. They can still set a
+      // go-to from the star on the spot page, so nothing is lost by not asking here.
+      if (typeof window !== 'undefined' && parseHash(window.location.hash).spotId) return;
       try {
         const res = await storage.get('surf-onboarded');
         if (!res || res.value !== 'true') setOnboarded(false);
@@ -628,9 +653,62 @@ export default function App() {
     const interval = setInterval(() => {
       const id = activeIdRef.current;
       if (id && dataRef.current.spots[id]) loadSpotData(id, dataRef.current.spots[id]);
-    }, 15 * 60 * 1000);
+    }, REFRESH_MS);
     return () => clearInterval(interval);
   }, [loadSpotData]);
+
+  // ...and the same refresh when the app comes back, which the timer above cannot do.
+  //
+  // That interval only runs while the page is alive. This is a PWA whose whole point is being
+  // opened from a phone's Home Screen, and a backgrounded tab has its timers throttled and then
+  // suspended -- so checking the surf in the morning, locking the phone, and opening it again
+  // that afternoon showed the morning's forecast, rated and labelled exactly as confidently as
+  // it had been when it was fetched. Nothing refetched, and nothing said how old it was.
+  //
+  // Only when it is actually out of date: coming back after thirty seconds should cost nothing,
+  // and the same threshold as the timer keeps "how often this refreshes" a single answer.
+  useEffect(() => {
+    function onVisible() {
+      const id = activeIdRef.current;
+      const spot = id && dataRef.current.spots[id];
+      if (!spot) return;
+      const current = dataRef.current.forecast[id];
+      if (!shouldRefetchOnResume({
+        visibilityState: document.visibilityState,
+        fetchedAt: current && current.fetchedAt,
+        maxAgeMs: REFRESH_MS,
+      })) return;
+      loadSpotData(id, spot);
+    }
+    document.addEventListener('visibilitychange', onVisible);
+    // Safari restoring a page from its back/forward cache fires neither a load nor a
+    // visibilitychange, only this.
+    window.addEventListener('pageshow', onVisible);
+    return () => {
+      document.removeEventListener('visibilitychange', onVisible);
+      window.removeEventListener('pageshow', onVisible);
+    };
+  }, [loadSpotData]);
+
+  // Arrivals from outside the app: the phone's back button, a bookmark, a shared link, a tapped
+  // notification. Runs on mount too, so a cold open at #/spot/<id> lands on that spot instead of
+  // the go-to one.
+  //
+  // Only this listener reads the hash; the handlers above only write it. Setting state here does
+  // not write the hash back, so the two cannot chase each other.
+  useEffect(() => {
+    function applyHash() {
+      const { view: nextView, spotId } = parseHash(window.location.hash);
+      setView(nextView);
+      // An id from a link can name a spot this build does not have -- a retired one, a typo, or
+      // one the catalog has not finished loading. Leaving the current spot alone is better than
+      // rendering an empty page, and once the catalog lands this effect runs again.
+      if (spotId && dataRef.current.spots[spotId]) { setActiveId(spotId); setHourIdx(1); }
+    }
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, [catalogReady]);
 
   // Whether each arrow has anywhere to go. With a full catalog both sides are always occupied,
   // but a list of one spot -- or one where everything happens to lie the same way -- would
@@ -667,7 +745,7 @@ export default function App() {
   const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length)
     ? recalibrateContinuous(spotForecast.continuous, spotCalibration) : null;
   const contWaveLine = contData ? linePath(contData.map((p) => p.waveFt), 300, 70, 10) : null;
-  const contTideLine = contData ? linePath(contData.map((p) => (p.tideFt != null ? p.tideFt : 0)), 300, 70, 10) : null;
+  const contTideLine = contData ? linePath(fillGaps(contData.map((p) => p.tideFt)), 300, 70, 10) : null;
   const contWindLine = contData ? linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10) : null;
   const contSelected = contData && contSelectedIdx != null ? contData[contSelectedIdx] : null;
   // The sampled hours are no longer a fixed list of eight — a short winter day at a
@@ -680,6 +758,56 @@ export default function App() {
   // "best today" window pointing at hours whose ratings the rest of the page no longer agrees
   // with, once a correction is applied.
   const best = hourData ? bestWindow(hourData) : null;
+  // "Best nearby", derived rather than stored: the candidates come from where the phone is, and
+  // their ranking from whatever readings have arrived so far, so the list re-sorts itself as the
+  // answers land instead of needing a refresh.
+  // Asks the browser where we are, once, unless a previous answer is already good enough.
+  //
+  // Kept out of the view so the prompt is not re-triggered every time the screen mounts, and so
+  // a refusal is remembered for the session rather than asked again on each visit -- being asked
+  // repeatedly for a permission you have declined is the fastest way to make someone decline it
+  // permanently.
+  const askLocation = useCallback(async (force = false) => {
+    if (!force && here) return;
+    setLocating('locating');
+    const result = await locate();
+    if (result.ok) { setHere({ lat: result.lat, lon: result.lon }); setLocating(null); }
+    else setLocating({ reason: result.reason, message: result.message });
+  }, [here]);
+
+  const nowHourTick = view === 'nearby' ? new Date().getHours() : null;
+  const nearbyCandidates = useMemo(
+    () => (here ? nearestSpots(spots, order, here) : []),
+    [here, spots, order],
+  );
+  // Ranked at the hour it actually is, not at whatever hour the scrubber on the home spot is
+  // parked at. "Which of these should I drive to" is a question about now; the device's own
+  // clock is the right one, since every spot in the list is near the device by construction.
+  const nearbyRows = useMemo(
+    () => rankNearby(nearbyCandidates, forecast, nowHourTick),
+    [nearbyCandidates, forecast, nowHourTick],
+  );
+
+  // Both of these sit below the values they depend on rather than beside the other effects.
+  // A dependency array is evaluated during render, so an effect placed above a `const` it names
+  // reads that binding in its temporal dead zone -- which is not a warning but a hard
+  // ReferenceError that blanks the whole app, and only in the built bundle.
+  //
+  // The nearby list needs a current reading per spot to rank at all, and gets it through exactly
+  // the path the globe uses: the Worker, cached per spot, so a spot the globe has already
+  // coloured costs nothing here and vice versa.
+  useEffect(() => {
+    if (view !== 'nearby' || !nearbyCandidates.length) return;
+    loadConditionsFor(nearbyCandidates.map((c) => c.id));
+  }, [view, nearbyCandidates, loadConditionsFor]);
+
+  // Landing on #/nearby directly -- a bookmark, or the back button -- goes through the hash
+  // listener rather than handleNav, so the location has to be asked for here as well or the
+  // screen sits on "finding your location" having never asked.
+  useEffect(() => {
+    if (view === 'nearby') askLocation();
+  }, [view, askLocation]);
+
   const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : null;
   const tideNext = (h && spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : null;
   // What it is doing at the hour on screen, as opposed to what it does next.
@@ -694,11 +822,26 @@ export default function App() {
 
   function makeGoTo() { if (!isGoTo) { setGoToId(activeId); setToast(spot.name + ' set as your go-to spot'); } }
   function openSearch() { setSearchOpen(true); }
+  // Writes the current screen into the address bar. State is still set directly by the handlers
+  // below -- this only records where they went, so the hash is a description of the app rather
+  // than the thing driving it. The listener under it handles arrivals from outside: the back
+  // button, a bookmark, a shared link, a tapped notification.
+  //
+  // Guarded against writing the hash it already has, because assigning an identical hash still
+  // pushes a duplicate history entry, and the back button would then need two presses to leave
+  // a screen you only entered once.
+  const route = useCallback((nextView, spotId) => {
+    if (typeof window === 'undefined') return;
+    const next = buildHash({ view: nextView, spotId });
+    if (window.location.hash !== next) window.location.hash = next;
+  }, []);
+
   function handleNav(label) {
-    if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); }
-    else if (label === 'map') { setView('globe'); }
-    else if (label === 'alerts') { setView('alerts'); }
-    else if (label === 'profile') { setView('profile'); }
+    if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); route('home', goToId); }
+    else if (label === 'map') { setView('globe'); route('globe'); }
+    else if (label === 'nearby') { setView('nearby'); route('nearby'); askLocation(); }
+    else if (label === 'alerts') { setView('alerts'); route('alerts'); }
+    else if (label === 'profile') { setView('profile'); route('profile'); }
     else { setToast('Part of the full app — not in this preview'); }
   }
   // Jump straight to a specific spot's page — from tapping a spot in Profile's list or a
@@ -708,6 +851,7 @@ export default function App() {
     setActiveId(id);
     setView('home');
     setHourIdx(1);
+    route('home', id);
   }
   // Prev/Next arrows on a spot's own page, for walking along a coast without leaving Home.
   // Doesn't reset the hour, so stepping through spots at (say) "9a" keeps comparing all of
@@ -718,7 +862,7 @@ export default function App() {
   // you is the one you came from when you head back west. See lib/spotnav.js.
   function stepSpot(delta) {
     const next = stepDirection(spots, order, activeId, delta);
-    if (next) setActiveId(next);
+    if (next) { setActiveId(next); route('home', next); }
   }
 
   function openNewAlert() {
@@ -852,11 +996,19 @@ export default function App() {
           <Suspense fallback={<GlobeLoading />}>
             <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} units={units} onVisibleSpots={loadConditionsFor} />
           </Suspense>
+        ) : view === 'nearby' ? (
+          <NearbyView
+            rows={nearbyRows} spots={spots} units={units}
+            status={locating === 'locating' ? 'locating' : locating ? 'error' : (!here ? 'locating' : (nearbyRows.length ? 'ready' : 'empty'))}
+            message={locating && locating.message} onRetry={() => askLocation(true)}
+            radiusLabel={units === 'metric' ? DEFAULT_MAX_KM + ' km' : Math.round(DEFAULT_MAX_KM * 0.621371) + ' mi'}
+            onSelectSpot={viewSpot} onClose={() => handleNav('home')}
+          />
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
           <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
-            pushSupported={isPushSupported()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
+            pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
             session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast}
             sessions={sessions} deleteSession={deleteSession} />
         ) : (

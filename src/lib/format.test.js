@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   formatWaveRange, formatWaveNum, formatHeight, formatSpeed,
   waveUnit, heightUnit, speedUnit, leadTimeLabel,
-  barHeight, hourLabel12, waveAvg, linePath,
+  barHeight, hourLabel12, waveAvg, linePath, fillGaps, freshnessLabel,
 } from './format.js';
 
 describe('formatWaveRange', () => {
@@ -92,5 +92,57 @@ describe('linePath', () => {
   it('does not divide by zero when every value is identical', () => {
     const { pts } = linePath([5, 5, 5], 100, 50, 10);
     expect(pts.every((p) => Number.isFinite(p[1]))).toBe(true);
+  });
+});
+
+describe('fillGaps', () => {
+  it('leaves a complete series alone', () => {
+    expect(fillGaps([1, 2, 3])).toEqual([1, 2, 3]);
+  });
+
+  it('carries the last known value across a gap, not the first in the series', () => {
+    expect(fillGaps([1, 2, null, null, 5])).toEqual([1, 2, 2, 2, 5]);
+  });
+
+  it('back-fills a gap at the start from the first known value', () => {
+    expect(fillGaps([null, null, 5, 6])).toEqual([5, 5, 5, 6]);
+  });
+
+  it('does not invent a low point that would drag a chart\'s floor down', () => {
+    // The whole reason this exists: on a chart datum every tide height is positive, and
+    // standing a missing hour in as 0 made linePath scale the real curve against a low water
+    // that never happened.
+    const filled = fillGaps([3.2, null, 4.1]);
+    expect(Math.min(...filled)).toBe(3.2);
+  });
+
+  it('gives back a usable series when it has nothing to go on', () => {
+    expect(fillGaps([null, null])).toEqual([0, 0]);
+    expect(fillGaps([])).toEqual([]);
+  });
+});
+
+describe('freshnessLabel', () => {
+  const T = 1_800_000_000_000;
+  it('reads as current inside the first minute', () => {
+    expect(freshnessLabel(T, T + 30_000)).toEqual({ text: 'Updated just now', stale: false });
+  });
+  it('counts minutes, then hours, then days', () => {
+    expect(freshnessLabel(T, T + 5 * 60_000).text).toBe('Updated 5 min ago');
+    expect(freshnessLabel(T, T + 60 * 60_000).text).toBe('Updated 1 hour ago');
+    expect(freshnessLabel(T, T + 5 * 60 * 60_000).text).toBe('Updated 5 hours ago');
+    expect(freshnessLabel(T, T + 24 * 60 * 60_000).text).toBe('Updated 1 day ago');
+    expect(freshnessLabel(T, T + 3 * 24 * 60 * 60_000).text).toBe('Updated 3 days ago');
+  });
+  it('flags stale only once an hour has passed, which is about how often the models publish', () => {
+    expect(freshnessLabel(T, T + 59 * 60_000).stale).toBe(false);
+    expect(freshnessLabel(T, T + 60 * 60_000).stale).toBe(true);
+  });
+  it('does not report a negative age when the clock has gone backwards', () => {
+    // A device correcting its time, or an entry cached by a clock running fast.
+    expect(freshnessLabel(T, T - 90_000)).toEqual({ text: 'Updated just now', stale: false });
+  });
+  it('returns null rather than a label for a missing or nonsense timestamp', () => {
+    for (const bad of [undefined, null, NaN, 'yesterday']) expect(freshnessLabel(bad, T)).toBeNull();
   });
 });

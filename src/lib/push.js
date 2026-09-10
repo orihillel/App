@@ -18,6 +18,46 @@ export function isPushSupported() {
   return isPushConfigured() && 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
 }
 
+// iPadOS 13 and later report themselves as a Mac. Touch points are what give an iPad away --
+// no desktop Safari has them.
+function isIos(nav) {
+  if (!nav) return false;
+  if (/iPad|iPhone|iPod/.test(nav.userAgent || '')) return true;
+  return nav.platform === 'MacIntel' && (nav.maxTouchPoints || 0) > 1;
+}
+
+// Running from the Home Screen rather than a Safari tab. `navigator.standalone` is Apple's own
+// flag and predates the standard; the media query is what everyone else answers to.
+function isStandalone(nav, win) {
+  if (nav && nav.standalone === true) return true;
+  if (win && typeof win.matchMedia === 'function') {
+    try { return win.matchMedia('(display-mode: standalone)').matches; } catch { return false; }
+  }
+  return false;
+}
+
+// Why push is or isn't available, as one of four answers rather than a boolean.
+//
+// The boolean above collapses three unrelated situations into one, and the screen built on it
+// told an iPhone user "not available in this browser, or the notification backend isn't
+// configured" -- two guesses, both wrong, neither actionable. On iOS, `PushManager` does not
+// exist in a Safari tab at all: Apple only exposes it to a web app that has been added to the
+// Home Screen (iOS 16.4+). So the single most common reason a real user sees "unavailable" is
+// not a missing feature, it is a step they have not been told about.
+//
+// Order matters. `ready` is checked first, because an installed iOS web app has PushManager and
+// must not be sent to install instructions it has already followed. An iOS device still without
+// it after installing is genuinely too old, and correctly falls through to `unsupported`.
+export function pushAvailability({
+  nav = typeof navigator !== 'undefined' ? navigator : null,
+  win = typeof window !== 'undefined' ? window : null,
+} = {}) {
+  if (!isPushConfigured()) return 'unconfigured';
+  if (nav && win && 'serviceWorker' in nav && 'PushManager' in win && 'Notification' in win) return 'ready';
+  if (isIos(nav) && !isStandalone(nav, win)) return 'ios-needs-install';
+  return 'unsupported';
+}
+
 // A PushManager applicationServerKey wants raw bytes, not the base64url string the VAPID key
 // is generated/stored as — this is the standard conversion (same one every Web Push guide
 // uses, there's no built-in for it).

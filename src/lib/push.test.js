@@ -123,3 +123,62 @@ describe('subscribeToPush / unsubscribeFromPush / syncAlertsToPush', () => {
     await expect(subscribeToPush(ALERTS, SPOTS)).resolves.toBe(fakeSubscription);
   });
 });
+
+describe('pushAvailability', () => {
+  afterEach(() => { vi.unstubAllEnvs(); vi.unstubAllGlobals(); });
+
+  async function configured() {
+    vi.stubEnv('VITE_VAPID_PUBLIC_KEY', 'BKEY');
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    return loadPushModule();
+  }
+  const IPHONE = { userAgent: 'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 Version/17.5 Mobile/15E148 Safari/604.1' };
+  const IPAD13 = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 5 };
+  const DESKTOP_MAC = { userAgent: 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)', platform: 'MacIntel', maxTouchPoints: 0 };
+  const pushWin = { PushManager: function () {}, Notification: function () {} };
+  const swNav = (base) => ({ ...base, serviceWorker: {} });
+
+  it('says unconfigured when the backend env vars are missing, whatever the browser can do', async () => {
+    vi.stubEnv('VITE_VAPID_PUBLIC_KEY', '');
+    vi.stubEnv('VITE_PUSH_API_URL', '');
+    const { pushAvailability } = await loadPushModule();
+    expect(pushAvailability({ nav: swNav(DESKTOP_MAC), win: pushWin })).toBe('unconfigured');
+  });
+
+  it('says ready when the browser has the APIs', async () => {
+    const { pushAvailability } = await configured();
+    expect(pushAvailability({ nav: swNav(DESKTOP_MAC), win: pushWin })).toBe('ready');
+  });
+
+  it('tells an iPhone in a Safari tab to install, rather than calling it unsupported', async () => {
+    // The whole point: on iOS, PushManager is absent until the web app is on the Home Screen.
+    const { pushAvailability } = await configured();
+    expect(pushAvailability({ nav: swNav(IPHONE), win: { matchMedia: () => ({ matches: false }) } }))
+      .toBe('ios-needs-install');
+  });
+
+  it('recognises an iPad on iPadOS 13+, which claims to be a Mac', async () => {
+    const { pushAvailability } = await configured();
+    expect(pushAvailability({ nav: swNav(IPAD13), win: { matchMedia: () => ({ matches: false }) } }))
+      .toBe('ios-needs-install');
+    // A real desktop Mac has no touch points and is simply unsupported, not un-installed.
+    expect(pushAvailability({ nav: swNav(DESKTOP_MAC), win: { matchMedia: () => ({ matches: false }) } }))
+      .toBe('unsupported');
+  });
+
+  it('does not tell an already-installed iOS app to install itself', async () => {
+    const { pushAvailability } = await configured();
+    // Too old for push (no PushManager) but already on the Home Screen: genuinely unsupported.
+    expect(pushAvailability({ nav: { ...swNav(IPHONE), standalone: true }, win: {} })).toBe('unsupported');
+    expect(pushAvailability({ nav: swNav(IPHONE), win: { matchMedia: () => ({ matches: true }) } })).toBe('unsupported');
+    // And once it does have push, it is ready — not sent back to instructions it has followed.
+    expect(pushAvailability({ nav: { ...swNav(IPHONE), standalone: true }, win: pushWin })).toBe('ready');
+  });
+
+  it('survives a browser whose matchMedia throws, and missing nav/win entirely', async () => {
+    const { pushAvailability } = await configured();
+    expect(pushAvailability({ nav: swNav(IPHONE), win: { matchMedia: () => { throw new Error('nope'); } } }))
+      .toBe('ios-needs-install');
+    expect(pushAvailability({ nav: null, win: null })).toBe('unsupported');
+  });
+});

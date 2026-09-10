@@ -1,5 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError, fetchNowViaWorker, fetchModelAgreement } from './forecast.js';
+import { nextTideEvent } from './tides.js';
+import { breakingHeightFt, surfRange } from './surf.js';
+import { conditionsScore } from './rating.js';
 
 const SPOT = { lat: 33.38, lon: -117.6, offshoreDeg: 60 };
 
@@ -134,27 +137,159 @@ describe('fetchSpotForecast', () => {
     }
   });
 
+  describe('surf height rather than offshore significant height', () => {
+    function serveWith({ waveM = 1.5, periodS = 11 } = {}) {
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        marine.hourly.wave_height = hourly(24, () => waveM);
+        marine.hourly.swell_wave_height = hourly(24, () => waveM * 0.8);
+        marine.hourly.swell_wave_peak_period = hourly(24, () => periodS);
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+    }
+
+    it('shows the breaking height, not the model\'s offshore number', async () => {
+      serveWith({ waveM: 1.5, periodS: 11 });
+      const { hours } = await fetchSpotForecast(SPOT);
+      const offshoreFt = 1.5 * 3.28084;
+      expect(hours[0].wave).toBe(surfRange(breakingHeightFt(offshoreFt, 11)));
+      expect(hours[0].wave).not.toBe('4-6'); // what the raw offshore height used to render as
+    });
+
+    it('keeps waveFt as the offshore height, which is what calibration pairs against a buoy', async () => {
+      // If this ever becomes the breaking height, the buoy comparison starts measuring the
+      // transform instead of the model's bias and the correction learns to cancel it out.
+      serveWith({ waveM: 1.5, periodS: 11 });
+      const { hours } = await fetchSpotForecast(SPOT);
+      expect(hours[0].waveFt).toBeCloseTo(1.5 * 3.28084, 5);
+      expect(hours[0].surfFt).toBeGreaterThan(hours[0].waveFt);
+    });
+
+    it('separates two days the app used to show as identical', async () => {
+      // Same offshore height, different period. This is the distinction the app could not
+      // express in the height at all -- both of these rendered as one number.
+      serveWith({ waveM: 1.5, periodS: 6 });
+      const short = (await fetchSpotForecast(SPOT)).hours[0];
+      serveWith({ waveM: 1.5, periodS: 16 });
+      const long = (await fetchSpotForecast(SPOT)).hours[0];
+      expect(short.waveFt).toBeCloseTo(long.waveFt, 5);   // identical offshore
+      expect(long.surfFt).toBeGreaterThan(short.surfFt * 1.3); // materially different surf
+      expect(long.wave).not.toBe(short.wave);
+    });
+
+    it('scores on the breaking height, so the badge agrees with the number beside it', async () => {
+      // 0.9m at 16s is deliberately chosen to straddle: 2.95ft offshore scores as small surf and
+      // is held below FIRING by the size cap, while the 4.5ft that actually breaks is neither.
+      // At a size where both land in the same bucket this assertion cannot tell them apart.
+      serveWith({ waveM: 0.9, periodS: 16 });
+      const { hours } = await fetchSpotForecast(SPOT);
+      const h = hours[0];
+      const args = [h.windMph, h.type, h.trains[0].period, h.trains[0].deg, SPOT.offshoreDeg, h.tidePosition, SPOT];
+      expect(h.score).toBe(conditionsScore(h.surfFt, ...args));
+      expect(h.score).not.toBe(conditionsScore(h.waveFt, ...args));
+    });
+
+    it('carries surf height and period into the week chart, which calibration re-derives from', async () => {
+      serveWith({ waveM: 1.5, periodS: 16 });
+      const { continuous } = await fetchSpotForecast(SPOT);
+      expect(continuous[0].surfFt).toBeGreaterThan(continuous[0].waveFt);
+      expect(continuous[0].period).toBe(16);
+    });
+
+    it('leaves the height alone when there is no period to transform with', async () => {
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        delete marine.hourly.swell_wave_period;
+        delete marine.hourly.wave_period;
+        delete marine.hourly.swell_wave_height;
+        delete marine.hourly.wind_wave_height;
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+      const { hours } = await fetchSpotForecast(SPOT);
+      expect(hours[0].surfFt).toBeCloseTo(hours[0].waveFt, 5);
+    });
+  });
+
+  describe('peak period', () => {
+    // The app's own thresholds are peak-period numbers: conditionsScore gives its groundswell
+    // bonus at 12s and classifyTrain calls 12s groundswell. Feeding them a mean period
+    // withholds that bonus on days that genuinely have it -- a mean 11s is a peak 13.2s.
+    function serveWith(extra) {
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        marine.hourly.swell_wave_period = hourly(24, () => 11);   // mean
+        Object.assign(marine.hourly, extra);
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+    }
+
+    it('scores and labels from peak period when the upstream supplies it', async () => {
+      serveWith({ swell_wave_peak_period: hourly(24, () => 13) });
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.hours[0].period).toBe(13);
+      expect(result.hours[0].trains[0].kind).toBe('groundswell'); // 13s clears the 12s line
+    });
+
+    it('falls back to mean period where no peak value came back', async () => {
+      serveWith({});
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.hours[0].period).toBe(11);
+    });
+
+    it('falls back per hour, not all-or-nothing', async () => {
+      // A series present but with holes in it is the shape that would otherwise yield a null
+      // period for those hours while the mean sat right there unused.
+      serveWith({ swell_wave_peak_period: hourly(24, (i) => (i === 5 ? null : 13)) });
+      const result = await fetchSpotForecast(SPOT);
+      const at5 = result.hours.find((h) => h.hour === 5);
+      const at7 = result.hours.find((h) => h.hour === 7);
+      expect(at5.period).toBe(11);
+      expect(at7.period).toBe(13);
+    });
+
+    it('uses peak period for the week chart too, so it does not rate the same day two ways', async () => {
+      // continuous carries no period field, so the observable difference is the score:
+      // conditionsScore gives +2 at 12s and only +1 at 9s, and 11 vs 13 straddles that.
+      serveWith({});
+      const mean = (await fetchSpotForecast(SPOT)).continuous[0].score;
+      serveWith({ swell_wave_peak_period: hourly(24, () => 13) });
+      const peak = (await fetchSpotForecast(SPOT)).continuous[0].score;
+      expect(peak).toBe(mean + 1);
+    });
+  });
+
   describe('with a real NOAA tide prediction available', () => {
     afterEach(() => { vi.unstubAllEnvs(); });
 
-    // Real predictions for two of the eight sampled hours (5a, 20 aka 8p), each a very
-    // different height from what the modeled sine curve would give for the same hour --
-    // reading ~3.2ft and ~2.5ft respectively -- so a test that reads the wrong source is
-    // immediately obvious rather than accidentally close.
-    function realTideBody() {
+    // NOAA answers hourly for a whole day at a time, on MLLW -- the chart datum, sitting a
+    // few feet below the MSL zero the modeled curve swings around. The fixture mirrors that:
+    // the same physical water as makeMarineResponse's sine curve, read off a floor
+    // DATUM_FT lower, for the first COVERED hours of the day and no further.
+    const DATUM_FT = 3.5;
+    const COVERED = 18;
+    const modeledMsl = (i) => Math.sin((i / 24) * Math.PI * 2); // metres, as the marine fixture
+    const realMllw = (i) => modeledMsl(i) * 3.28084 + DATUM_FT;
+
+    function realTideBody(hours = COVERED) {
       return {
         station: { id: '9999', name: 'Test Station', km: 4.2 },
-        predictions: [
-          { t: '2026-09-01 05:00', ft: 0.5 },
-          { t: '2026-09-01 20:00', ft: 6.0 },
-        ],
+        predictions: Array.from({ length: hours }, (_, i) => ({
+          t: `2026-09-01 ${String(i).padStart(2, '0')}:00`,
+          ft: realMllw(i),
+        })),
       };
     }
-    function serveWithRealTide() {
+    function serveWithRealTide(body = realTideBody()) {
       vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
       fetch.mockImplementation((url) => {
         const u = String(url);
-        if (u.includes('worker.example/tide')) return Promise.resolve(mockFetchOnce(realTideBody()));
+        if (u.includes('worker.example/tide')) return Promise.resolve(mockFetchOnce(body));
         return Promise.resolve(mockFetchOnce(u.includes('marine-api') ? makeMarineResponse() : makeWindResponse()));
       });
     }
@@ -163,45 +298,104 @@ describe('fetchSpotForecast', () => {
       serveWithRealTide();
       const result = await fetchSpotForecast(SPOT);
       expect(result.hours[0].hour).toBe(5);
-      expect(result.tideToday[0]).toBe(0.5); // not ~3.17, what the modeled curve gives hour 5
+      expect(result.tideToday[0]).toBeCloseTo(realMllw(5), 5); // not ~3.17, the modeled curve's own hour 5
+    });
+
+    it('lifts the modeled curve onto the real datum for hours no prediction covers', async () => {
+      serveWithRealTide(); // covers hours 0..17; hour 20 is past the end
+      const result = await fetchSpotForecast(SPOT);
       const lastIdx = result.hours.length - 1;
       expect(result.hours[lastIdx].hour).toBe(20);
-      expect(result.tideToday[lastIdx]).toBe(6.0);
+      // Still the modeled shape, but measured from the same floor as the hours around it --
+      // which for this fixture, where both curves describe the same water, is the real height.
+      expect(result.tideToday[lastIdx]).toBeCloseTo(realMllw(20), 5);
     });
 
-    it('falls back to the modeled curve for hours no real prediction covers', async () => {
-      serveWithRealTide(); // only covers hours 5 and 20
-      const result = await fetchSpotForecast(SPOT);
-      const midday = result.hours.find((h) => h.hour === 14); // one of the sampled hours; not 5 or 20
-      const modeledFt = Math.sin((14 / 24) * Math.PI * 2) * 3.28084;
-      expect(result.tideToday[result.hours.indexOf(midday)]).toBeCloseTo(modeledFt, 5);
-    });
-
-    it('reflects the real reading in tideFine, which the tide-state arrow reads', async () => {
+    it('leaves no cliff at the edge of NOAA\'s coverage', async () => {
+      // The bug this replaced: hour by hour substitution across two datums put a 3.4ft step
+      // into a curve whose steepest real hour moves 0.85ft.
       serveWithRealTide();
       const result = await fetchSpotForecast(SPOT);
-      const at5 = result.tideFine.find((p) => p.hour === 5);
-      expect(at5.ft).toBe(0.5);
-    });
-
-    it('carries the real reading into the continuous week chart where it is in range', async () => {
-      serveWithRealTide();
-      const result = await fetchSpotForecast(SPOT);
-      const at5 = result.continuous.find((p) => p.hour === 5 && p.dayStart === false);
-      // continuous samples every third hour starting at index 0, so hour 5 may or may not
-      // land on a kept index depending on the fixture -- only assert if it does.
-      if (at5) expect(at5.tideFt).toBe(0.5);
-    });
-
-    it('keeps every hour on the same unit, so a real-feet reading cannot corrupt tidePosition\'s min/max scaling', async () => {
-      // Before this, seaToday mixed units by construction whenever some hours were real
-      // (already feet) and others modeled (still metres) -- min/max taken across a mix of the
-      // two would have compressed or blown out every hour's score, not just the real ones'.
-      serveWithRealTide();
-      const result = await fetchSpotForecast(SPOT);
-      for (const h of result.hours) {
-        expect(h.tidePosition == null || (h.tidePosition >= 0 && h.tidePosition <= 1)).toBe(true);
+      let worst = 0;
+      for (let i = 1; i < result.tideFine.length; i++) {
+        worst = Math.max(worst, Math.abs(result.tideFine[i].ft - result.tideFine[i - 1].ft));
       }
+      expect(worst).toBeLessThan(1);
+    });
+
+    it('does not invent a high or low tide where the coverage ends', async () => {
+      // A step on a rising limb reads as a peak. With the fixture's high at hour 6 and
+      // coverage ending at 11, nextTideEvent used to report a high tide at 11am.
+      serveWithRealTide(realTideBody(12));
+      const result = await fetchSpotForecast(SPOT);
+      expect(nextTideEvent(result.tideFine, 8)).toEqual({ type: 'Low', hour: 18 });
+    });
+
+    it('keeps the whole week chart on one datum, not just the days NOAA reaches', async () => {
+      serveWithRealTide();
+      const result = await fetchSpotForecast(SPOT);
+      const tides = result.continuous.map((p) => p.tideFt).filter((v) => v != null);
+      expect(tides.length).toBeGreaterThan(0);
+      // Every point sits in the real curve's range, none in the modeled curve's own -3.3..3.3.
+      for (const ft of tides) expect(ft).toBeGreaterThan(0);
+    });
+
+    it('declines to substitute when too few hours overlap to fix the datum', async () => {
+      // Two isolated readings cannot tell a datum offset from a model error, and guessing one
+      // wrong is worse than not substituting: the modeled curve is at least self-consistent.
+      serveWithRealTide({ station: { id: '9999', name: 'Test Station', km: 4.2 }, predictions: [
+        { t: '2026-09-01 05:00', ft: realMllw(5) }, { t: '2026-09-01 20:00', ft: realMllw(20) },
+      ] });
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.tideToday[0]).toBeCloseTo(modeledMsl(5) * 3.28084, 5);
+    });
+
+    it('uses the real series alone when the marine call returned no sea level at all', async () => {
+      vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (u.includes('worker.example/tide')) return Promise.resolve(mockFetchOnce(realTideBody()));
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        delete marine.hourly.sea_level_height_msl;
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.tideToday[0]).toBeCloseTo(realMllw(5), 5);
+    });
+
+    it('keeps every hour on one scale, so tidePosition means the same thing all day', async () => {
+      serveWithRealTide();
+      const result = await fetchSpotForecast(SPOT);
+      const positions = result.hours.map((h) => h.tidePosition);
+      for (const p of positions) expect(p == null || (p >= 0 && p <= 1)).toBe(true);
+      // The fixture's day peaks at hour 6 and bottoms at 18, and the sampled hours run
+      // 5..20 -- so position has to fall across them, which a mixed datum would scramble.
+      const at = (hr) => positions[result.hours.findIndex((h) => h.hour === hr)];
+      expect(at(5)).toBeGreaterThan(at(11));
+      expect(at(11)).toBeGreaterThan(at(16));
+      expect(at(18)).toBeLessThan(at(16));
+    });
+
+    it('scales tidePosition against the whole day, not just the hours it samples', async () => {
+      // A diurnal tide: one low at 02:00, one high at 14:00. The low never falls inside the
+      // sampled window, so a range taken from the sampled hours alone cannot see it -- and
+      // used to report the 5am hour as dead low when the sea was already 15% of the way up.
+      const sea = (i) => Math.sin(((i - 8) / 24) * Math.PI * 2);
+      fetch.mockImplementation((url) => {
+        if (!String(url).includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        marine.hourly.sea_level_height_msl = hourly(24, sea);
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+      const result = await fetchSpotForecast(SPOT);
+      const all = hourly(24, sea);
+      const min = Math.min(...all), max = Math.max(...all);
+      for (const h of result.hours) {
+        expect(h.tidePosition).toBeCloseTo((sea(h.hour) - min) / (max - min), 5);
+      }
+      expect(result.hours[0].hour).toBe(5);
+      expect(result.hours[0].tidePosition).toBeGreaterThan(0.1); // not 0 -- 5am is not the low
     });
 
     it('is unaffected when the Worker has no tide data for this spot', async () => {

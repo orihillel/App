@@ -13,7 +13,7 @@ const TAP = {
   flexShrink: 0,
 };
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushSupported, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
@@ -136,13 +136,30 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
         </button>
 
         <Heading>PUSH NOTIFICATIONS</Heading>
-        {pushSupported ? (
+        {pushState === 'ready' ? (
           <button className="tl-btn" onClick={togglePush} disabled={pushBusy}
             style={{ width: '100%', background: pushSubscribed ? COLORS.tealBright : COLORS.navyCard, color: pushSubscribed ? COLORS.navy : COLORS.foam, border: '1px solid ' + (pushSubscribed ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 10, padding: '11px 13px', fontSize: 13, fontWeight: 600, marginBottom: 4, opacity: pushBusy ? 0.6 : 1 }}>
             {pushBusy ? 'Working…' : pushSubscribed ? 'On — get alerted even when the app is closed' : 'Off — turn on to get alerted when the app is closed'}
           </button>
+        ) : pushState === 'ios-needs-install' ? (
+          /* Not a failure, a missing step -- and the one an iPhone user hits. iOS keeps push
+             away from a Safari tab entirely and hands it only to a web app on the Home Screen,
+             so the honest answer here is instructions, not an apology. See lib/push.js. */
+          <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '11px 13px', marginBottom: 4 }}>
+            <div style={{ fontSize: 12.5, fontWeight: 600, color: COLORS.foam, marginBottom: 6 }}>
+              Add Surfcast to your Home Screen first
+            </div>
+            <div style={{ fontSize: 11.5, color: COLORS.foamDim, lineHeight: 1.5 }}>
+              iOS only allows notifications for apps on the Home Screen, not in a Safari tab.
+              Tap <strong style={{ color: COLORS.foam }}>Share</strong> at the bottom of Safari, then{' '}
+              <strong style={{ color: COLORS.foam }}>Add to Home Screen</strong>. Open Surfcast from
+              there and this turns on.
+            </div>
+          </div>
+        ) : pushState === 'unconfigured' ? (
+          <div style={{ fontSize: 11, color: COLORS.foamDim, marginBottom: 4, lineHeight: 1.5 }}>The notification backend isn't configured for this build.</div>
         ) : (
-          <div style={{ fontSize: 11, color: COLORS.foamDim, marginBottom: 4, lineHeight: 1.5 }}>Not available in this browser, or the notification backend isn't configured.</div>
+          <div style={{ fontSize: 11, color: COLORS.foamDim, marginBottom: 4, lineHeight: 1.5 }}>This browser doesn't support push notifications.</div>
         )}
         <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.4 }}>
           When on, your alerts are also checked in the background and pushed to this device — not just while the app is open.
@@ -229,7 +246,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
 
         <Heading>DATA</Heading>
         <div style={{ fontSize: 11, color: COLORS.foamDim, lineHeight: 1.6, paddingBottom: 20 }}>
-          Wave, swell, wind, and tide data from Open-Meteo's Marine and Weather APIs. Tide is modeled sea-level height, not an official chart-datum tide table — timing is a good guide, but exact heights may not match a nautical almanac.
+          Wave, swell, wind, and tide data from Open-Meteo's Marine and Weather APIs. Near a NOAA tide station — the US and its territories — tide comes from that station's own harmonic predictions, on the same chart datum as a printed tide table. Everywhere else it is Open-Meteo's modeled sea level: good for the timing of highs and lows, not for an exact height.
         </div>
       </div>
     </div>

@@ -22,9 +22,12 @@ export function checkAlertMatch(alert, spotForecast) {
   }
   // Wave height threshold still has to be met, but now it also has to not be blown out —
   // a big number on an onshore-trashed day isn't actually a session worth an alert for.
-  const hit = daySamples.find((p) => p.waveFt >= alert.minWaveFt && p.rating && p.rating !== 'POOR');
+  // surfFt, not waveFt: an alert is set in the numbers the app shows, which are breaking
+  // heights. Falls back to waveFt for a forecast cached by a build that predates the transform.
+  const heightOf = (p) => (p.surfFt != null ? p.surfFt : p.waveFt);
+  const hit = daySamples.find((p) => heightOf(p) >= alert.minWaveFt && p.rating && p.rating !== 'POOR');
   if (hit) return { hit: true, text: 'Matches ' + hit.day + ' — ' + hit.rating.toLowerCase() + ' conditions' };
-  const bigButBlownOut = daySamples.find((p) => p.waveFt >= alert.minWaveFt);
+  const bigButBlownOut = daySamples.find((p) => heightOf(p) >= alert.minWaveFt);
   if (bigButBlownOut) return { hit: false, text: bigButBlownOut.day + ' has the size but wind looks poor' };
   return { hit: false, text: 'No match ' + daySamples[0].day + ' yet' };
 }

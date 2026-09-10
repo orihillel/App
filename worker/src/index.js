@@ -1,6 +1,7 @@
 import { fetchSpotForecast, fetchNowForSpots } from '../../src/lib/forecast.js';
 import { CATALOG } from '../../src/lib/spots.catalog.js';
 import { checkAlertMatch } from '../../src/lib/alerts.js';
+import { fetchMarine } from '../../src/lib/marine.js';
 import { putSubscription, deleteSubscription, listSubscriptions } from './store.js';
 import { sendPushNotification, buildNotificationPayload } from './push.js';
 import { verifyGoogleIdToken } from './googleAuth.js';
@@ -117,15 +118,13 @@ async function handleForecast(request, env) {
   const hit = await cache.match(cacheKey);
   if (hit) return hit;
 
-  const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + lat + '&longitude=' + lon +
-    '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
   const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + lat + '&longitude=' + lon +
     '&hourly=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto&forecast_days=7';
 
   let marineRes;
   let windRes;
   try {
-    [marineRes, windRes] = await Promise.all([fetch(marineUrl), fetch(windUrl)]);
+    [marineRes, windRes] = await Promise.all([fetchMarine(lat, lon), fetch(windUrl)]);
   } catch {
     return json({ error: 'upstream unreachable' }, env, 502);
   }
