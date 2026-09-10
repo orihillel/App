@@ -31,17 +31,30 @@ export const GRID_MAX_LAT = 75;
 // fine one that never loads.
 export const GRID_LAT_STEP = 10;
 
+// The coarser grid the week-long animation is built on, and it is set by the same arithmetic
+// that set the one above -- the budget, not taste.
+//
+// Open-Meteo bills by values returned: locations times timesteps. A week of 6-hourly frames is
+// 28 timesteps, and 28 frames of the 406-cell live grid is 11,368 units against a daily
+// allowance of roughly 10,000. The whole week, in one build, would not fit in a day. At 15
+// degrees the grid is 186 cells and the same week costs 5,208 -- affordable once a day, which
+// is the cadence the animation is rebuilt at.
+//
+// The visible cost is smaller than it sounds: the overlay is interpolated to a 720x360 texture
+// before it is drawn, so this is detail in the swell field rather than blocks on the screen.
+export const FRAME_LAT_STEP = 15;
+
 // Rows are spaced evenly in latitude, but the number of cells in a row scales with cos(lat) so
 // that cells stay roughly equal *area* rather than equal *degrees*. A 5-degree lon cell at 70N
 // is a third the width of one at the equator, so a uniform grid spends a third of its budget
 // on the two thinnest slivers of the map. This keeps the sampling even where it is visible and
 // costs about 35% fewer points, which is the difference between fitting in a free API's daily
 // budget and not.
-export function gridRows() {
+export function gridRows(step = GRID_LAT_STEP) {
   const rows = [];
-  for (let lat = -GRID_MAX_LAT; lat <= GRID_MAX_LAT; lat += GRID_LAT_STEP) {
+  for (let lat = -GRID_MAX_LAT; lat <= GRID_MAX_LAT; lat += step) {
     const shrink = Math.cos((lat * Math.PI) / 180);
-    const count = Math.max(8, Math.round((360 / GRID_LAT_STEP) * shrink));
+    const count = Math.max(8, Math.round((360 / step) * shrink));
     rows.push({ lat, count, step: 360 / count });
   }
   return rows;
@@ -49,9 +62,9 @@ export function gridRows() {
 
 // Every cell centre, in the order their bytes are stored. Callers must not re-sort this: the
 // index *is* the addressing scheme.
-export function gridCells() {
+export function gridCells(step = GRID_LAT_STEP) {
   const cells = [];
-  for (const row of gridRows()) {
+  for (const row of gridRows(step)) {
     for (let i = 0; i < row.count; i++) {
       cells.push({ lat: row.lat, lon: -180 + (i + 0.5) * row.step });
     }
@@ -59,9 +72,9 @@ export function gridCells() {
   return cells;
 }
 
-export function gridCellCount() {
+export function gridCellCount(step = GRID_LAT_STEP) {
   let n = 0;
-  for (const row of gridRows()) n += row.count;
+  for (const row of gridRows(step)) n += row.count;
   return n;
 }
 
@@ -109,13 +122,13 @@ export function base64ToBytes(b64) {
 //
 // Returns null over land and outside the grid's latitude range, which the overlay renders as
 // "draw nothing here" rather than as calm water.
-export function sampleGrid(heights, lat, lon) {
+export function sampleGrid(heights, lat, lon, step = GRID_LAT_STEP) {
   if (!heights || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (lat < -GRID_MAX_LAT - GRID_LAT_STEP / 2 || lat > GRID_MAX_LAT + GRID_LAT_STEP / 2) return null;
-  const rows = gridRows();
+  if (lat < -GRID_MAX_LAT - step / 2 || lat > GRID_MAX_LAT + step / 2) return null;
+  const rows = gridRows(step);
   // Nearest row, then nearest cell within it. Rows are evenly spaced, so this is arithmetic
   // rather than a search.
-  let r = Math.round((lat + GRID_MAX_LAT) / GRID_LAT_STEP);
+  let r = Math.round((lat + GRID_MAX_LAT) / step);
   r = Math.max(0, Math.min(rows.length - 1, r));
   let offset = 0;
   for (let i = 0; i < r; i++) offset += rows[i].count;
@@ -133,10 +146,10 @@ export function sampleGrid(heights, lat, lon) {
 // as though it were 0m would drag a band of false calm out along every coast — exactly where
 // people are looking. Instead only the neighbours that have data contribute, reweighted, so
 // the field fades out at the coast rather than dipping.
-export function sampleGridSmooth(heights, lat, lon) {
+export function sampleGridSmooth(heights, lat, lon, step = GRID_LAT_STEP) {
   if (!heights || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  const rows = gridRows();
-  const fr = (lat + GRID_MAX_LAT) / GRID_LAT_STEP;
+  const rows = gridRows(step);
+  const fr = (lat + GRID_MAX_LAT) / step;
   const r0 = Math.floor(fr);
   const tLat = fr - r0;
   let total = 0;
@@ -180,9 +193,9 @@ export function sampleGridSmooth(heights, lat, lon) {
 // the ones a coastal *texel* interpolates from, and those are at most a cell or two from open
 // water. Spreading further would carry a swell height across a continent and paint it on an
 // inland sea, which is a claim about the world rather than a way of reaching the coast.
-export function fillGridGaps(heights, rounds = 2) {
+export function fillGridGaps(heights, rounds = 2, step = GRID_LAT_STEP) {
   if (!Array.isArray(heights)) return heights;
-  const rows = gridRows();
+  const rows = gridRows(step);
   const offsets = [];
   let acc = 0;
   for (const row of rows) { offsets.push(acc); acc += row.count; }
@@ -255,10 +268,10 @@ export function decodeDirections(bytes) {
 //
 // Null-aware in the same way as sampleGridSmooth: only cells that have a reading contribute, so
 // a coastal cell with no data does not drag the arrow toward zero.
-export function sampleDirectionSmooth(directions, lat, lon) {
+export function sampleDirectionSmooth(directions, lat, lon, step = GRID_LAT_STEP) {
   if (!directions || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  const rows = gridRows();
-  const fr = (lat + GRID_MAX_LAT) / GRID_LAT_STEP;
+  const rows = gridRows(step);
+  const fr = (lat + GRID_MAX_LAT) / step;
   const r0 = Math.floor(fr);
   const tLat = fr - r0;
   const offsets = [];

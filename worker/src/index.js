@@ -11,6 +11,7 @@ import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
 import { loadTideStations, nearestTideStation, loadPredictions } from './noaaTide.js';
 import { loadGrid } from './waveGrid.js';
+import { loadFrames } from './waveFrames.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -234,6 +235,31 @@ async function handleWaveGrid(request, env) {
   }
 }
 
+// The animated week. Separate from /wavegrid rather than folded into it: the two are built on
+// different grids at different cadences, and an app that only wants the live overlay should not
+// have to download 28 frames to get it.
+async function handleWaveFrames(request, env) {
+  try {
+    const { frames, build } = await loadFrames(env);
+    if (!frames) return json({ frames: null, build }, env);
+    return json({
+      generatedAt: frames.generatedAt,
+      cells: frames.cells,
+      latStep: frames.latStep,
+      stepHours: frames.stepHours,
+      // Named individually rather than spread, the same way /wavegrid learned to: adding a
+      // field to the build does not add it to the wire, and the last time that was forgotten
+      // the globe drew no arrows and looked like every other reason for no arrows.
+      frames: frames.frames,
+      stale: !!frames.stale,
+      coverage: frames.coverage ?? null,
+      build,
+    }, env);
+  } catch (e) {
+    return json({ frames: null, build: { lastError: String((e && e.message) || e) } }, env);
+  }
+}
+
 async function handleSubscribe(request, env) {
   const { subscription, alerts } = await request.json();
   if (!subscription || !subscription.endpoint) return json({ error: 'Missing subscription' }, env, 400);
@@ -365,6 +391,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/forecast') return handleForecast(request, env);
     if (request.method === 'GET' && url.pathname === '/conditions') return handleConditions(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
+    if (request.method === 'GET' && url.pathname === '/wavegrid/frames') return handleWaveFrames(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
   },

@@ -1,9 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps,
-  encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth,
-  encodeDirections, decodeDirections, sampleDirectionSmooth,
-  GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR,
+  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP,
 } from './wavegrid.js';
 
 describe('the grid itself', () => {
@@ -360,5 +357,62 @@ describe('sampleDirectionSmooth', () => {
       expect(sampleDirectionSmooth(junk, 0, 0)).toBeNull();
     }
     expect(sampleDirectionSmooth(flat(90), NaN, 0)).toBeNull();
+  });
+});
+
+describe('a second, coarser grid for the animation', () => {
+  it('keeps the live grid exactly as it was when no step is given', () => {
+    expect(gridCellCount()).toBe(406);
+    expect(gridCellCount(GRID_LAT_STEP)).toBe(406);
+    expect(gridCells().length).toBe(406);
+  });
+
+  it('is small enough that a week of 6-hourly frames fits a day of the free allowance', () => {
+    // Open-Meteo bills locations x timesteps. This is the arithmetic that chose 15 degrees, so
+    // it is worth failing loudly if the grid ever grows back past what the budget allows.
+    const cost = gridCellCount(FRAME_LAT_STEP) * 28;
+    expect(gridCellCount(FRAME_LAT_STEP)).toBe(186);
+    expect(cost).toBeLessThan(10000);
+    // And the live grid at the same span genuinely does not fit, which is why there are two.
+    expect(gridCellCount(GRID_LAT_STEP) * 28).toBeGreaterThan(10000);
+  });
+
+  it('round-trips heights through the coarse grid', () => {
+    const cells = gridCells(FRAME_LAT_STEP);
+    const metres = cells.map((_, i) => 1 + (i % 20) / 10);
+    const back = decodeHeights(encodeHeights(metres));
+    expect(back).toHaveLength(cells.length);
+    for (let i = 0; i < cells.length; i++) expect(back[i]).toBeCloseTo(metres[i], 1);
+  });
+
+  it('samples the coarse grid at its own cell centres, not the live grid\'s', () => {
+    const cells = gridCells(FRAME_LAT_STEP);
+    const metres = cells.map((_, i) => 1 + (i % 20) / 10);
+    const heights = decodeHeights(encodeHeights(metres));
+    for (const i of [0, 37, 90, cells.length - 1]) {
+      expect(sampleGrid(heights, cells[i].lat, cells[i].lon, FRAME_LAT_STEP)).toBeCloseTo(metres[i], 1);
+    }
+  });
+
+  it('reads the wrong ocean if the step is forgotten, which is why it is threaded through', () => {
+    // The failure this guards against does not throw: a coarse array read with the live grid's
+    // addressing paints one part of the sea with another part's swell.
+    const cells = gridCells(FRAME_LAT_STEP);
+    const metres = cells.map((_, i) => (i % 2 ? 4 : 0.5));
+    const heights = decodeHeights(encodeHeights(metres));
+    const c = cells[91];
+    const right = sampleGrid(heights, c.lat, c.lon, FRAME_LAT_STEP);
+    const wrong = sampleGrid(heights, c.lat, c.lon); // defaulted to the live step
+    expect(right).toBeCloseTo(metres[91], 1);
+    expect(wrong).not.toBe(right);
+  });
+
+  it('smooth-samples and gap-fills on the coarse grid too', () => {
+    const cells = gridCells(FRAME_LAT_STEP);
+    const heights = cells.map(() => 2);
+    expect(sampleGridSmooth(heights, 0, 0, FRAME_LAT_STEP)).toBeCloseTo(2, 5);
+    const holey = cells.map((_, i) => (i === 40 ? null : 2));
+    const filled = fillGridGaps(holey, 2, FRAME_LAT_STEP);
+    expect(filled[40]).not.toBeNull();
   });
 });

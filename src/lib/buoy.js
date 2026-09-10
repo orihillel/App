@@ -67,6 +67,40 @@ export function compareLabel(comparison) {
 // Lives here rather than beside the grid maths in wavegrid.js because that module is shared
 // with the Worker, where `import.meta.env` and this app's Worker URL mean nothing. This is the
 // browser's half.
+// The animated week behind the overlay's play control: 28 frames, six hours apart, on their
+// own coarser grid. Separate request from fetchWaveGrid because it is a separate build at a
+// separate cadence, and a globe that is not animating should not download 28 frames to draw one.
+export async function fetchWaveFrames() {
+  const base = workerBase();
+  if (!base) return null;
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/wavegrid/frames');
+    if (!res.ok) return null;
+    const data = await res.json();
+    // Same contract as the grid above: diagnostics come back either way, so the UI can say why
+    // there is no animation rather than only that there isn't one.
+    if (!data || !Array.isArray(data.frames) || data.frames.length < 2) {
+      return { frames: null, build: data && data.build };
+    }
+    const frames = data.frames.filter((f) => f && typeof f.data === 'string');
+    if (frames.length < 2) return { frames: null, build: data.build };
+    return {
+      frames,
+      cells: data.cells,
+      // The step the frames were sampled on. Read from the response rather than assumed: the
+      // frames are a coarser grid than the live overlay, and decoding one with the other's
+      // addressing does not throw, it paints one ocean's swell onto another.
+      latStep: data.latStep,
+      stepHours: data.stepHours,
+      generatedAt: data.generatedAt,
+      stale: !!data.stale,
+      build: data.build || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchWaveGrid() {
   const base = workerBase();
   // No Worker configured: no overlay, and no toggle offered for one. The globe is unaffected.
