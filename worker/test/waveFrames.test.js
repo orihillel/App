@@ -5,10 +5,9 @@ import {
   FRAMES_REFRESH_MS, UNITS_PER_PASS, UNITS_PER_MINUTE, FRAMES_KEY, FRAMES_PARTIAL_KEY,
 } from '../src/waveFrames.js';
 import { createFakeKv } from './fakeKv.js';
-import { gridCells, FRAME_LAT_STEP, base64ToBytes, decodeHeights } from '../../src/lib/wavegrid.js';
+import { gridCells, FRAME_LAT_STEP } from '../../src/lib/wavegrid.js';
 
 const CELLS = gridCells(FRAME_LAT_STEP);
-const noSleep = () => Promise.resolve();
 
 // One well-formed location object carrying exactly one hour.
 const loc = (h, d) => ({ hourly: { time: ['2026-09-10T00:00'], wave_height: [h], wave_direction: [d] } });
