@@ -673,4 +673,87 @@ export const CATALOG = {
   tamri: { name: 'Tamri', region: 'Morocco', blurb: 'Exposed river-mouth beach north of Taghazout, picking up the most swell on the coast.', lat: 30.7, lon: -9.85, offshoreDeg: 90 },
   trespalmas: { name: 'Tres Palmas', region: 'Rincón, Puerto Rico', blurb: 'Big-wave right over a reef in a marine reserve, breaking only on serious north swell.', lat: 18.35, lon: -67.265, offshoreDeg: 100 },
   domespr: { name: 'Domes', region: 'Rincón, Puerto Rico', blurb: "Right reef named for the decommissioned nuclear dome behind it, Rincón's contest wave.", lat: 18.362, lon: -67.268, offshoreDeg: 100 },
+
+  // ---------------------------------------------------------------------------------------
+  // Batch of 53, aimed at depth rather than new flags: the catalog already reached 119 regions,
+  // so these fill in places whose surf population is large and whose coverage was not -- the US
+  // Pacific Northwest had two spots for the entire coast from Cape Mendocino to Canada, and
+  // Japan had ten for a country that surfs as much as it does.
+  //
+  // Same provenance caveat as every batch before it: these are well-known, well-documented
+  // breaks placed from real knowledge of where they are, then checked against the 10m coastline
+  // by scripts/check-spots.mjs -- which catches a spot in the wrong ocean or on the wrong side
+  // of a headland, and cannot catch one on the wrong beach of the right bay. None carries an
+  // explicit swellWindow: that is a claim about which swells actually reach a spot, and a guess
+  // dressed as one is worse than the derived arc it would replace. See the note at the top.
+
+  // --- US Pacific Northwest: two spots covered the whole coast from Cape Mendocino to Canada.
+  pacificcity: { name: 'Pacific City', region: 'Oregon, USA', blurb: 'Beach break in the lee of Cape Kiwanda, where the dory boats launch straight off the sand.', lat: 45.2003, lon: -123.9700, offshoreDeg: 90 },
+  otterrock: { name: 'Otter Rock', region: 'Oregon, USA', blurb: 'Sheltered cove at Devils Punchbowl, the gentlest wave on a coast that rarely is.', lat: 44.7500, lon: -124.0640, offshoreDeg: 90 },
+  agatebeach: { name: 'Agate Beach', region: 'Newport, Oregon, USA', blurb: 'Long exposed strand north of Yaquina Head, picking up any swell in the water.', lat: 44.6540, lon: -124.0620, offshoreDeg: 90 },
+  seasideor: { name: 'Seaside Cove', region: 'Oregon, USA', blurb: 'Point at the south end of the promenade, wrapping in under Tillamook Head.', lat: 45.9820, lon: -123.9350, offshoreDeg: 90 },
+  bastendorff: { name: 'Bastendorff Beach', region: 'Coos Bay, Oregon, USA', blurb: 'Crescent beach tucked behind the jetty, the most consistent bank on the south coast.', lat: 43.3400, lon: -124.3400, offshoreDeg: 90 },
+  lapush: { name: 'La Push', region: 'Washington, USA', blurb: 'First Beach on the Quileute coast, sea stacks offshore and rainforest behind.', lat: 47.9100, lon: -124.6370, offshoreDeg: 90 },
+  hobuck: { name: 'Hobuck Beach', region: 'Neah Bay, Washington, USA', blurb: 'Wide sandy bay at the far northwest corner of the contiguous US, on Makah land.', lat: 48.3300, lon: -124.6800, offshoreDeg: 90 },
+  longbeachwa: { name: 'Long Beach Peninsula', region: 'Washington, USA', blurb: 'Twenty-eight miles of open beach north of the Columbia mouth. Wind decides everything.', lat: 46.3520, lon: -124.0540, offshoreDeg: 90 },
+
+  // --- Japan: a large surf population on ten spots.
+  kugenuma: { name: 'Kugenuma', region: 'Kanagawa, Japan', blurb: 'Sagami Bay beach break an hour from Tokyo, and the busiest stretch of sand in Japan.', lat: 35.3130, lon: 139.4780, offshoreDeg: 0 },
+  yuigahama: { name: 'Yuigahama', region: 'Kamakura, Japan', blurb: 'Gentle bay beach below the old capital, where most of Tokyo learns to surf.', lat: 35.3070, lon: 139.5450, offshoreDeg: 0 },
+  hebara: { name: 'Hebara', region: 'Chiba, Japan', blurb: 'Sheltered bay on the Boso east coast, holding shape when the open beaches close out.', lat: 35.1500, lon: 140.3400, offshoreDeg: 270 },
+  choshi: { name: 'Choshi', region: 'Chiba, Japan', blurb: 'The easternmost point of Honshu, first to pick up a typhoon swell in the water.', lat: 35.7000, lon: 140.8700, offshoreDeg: 270 },
+  oarai: { name: 'Oarai', region: 'Ibaraki, Japan', blurb: 'Jetty-fed banks north of Chiba, less crowded and often a foot bigger.', lat: 36.3160, lon: 140.5900, offshoreDeg: 270 },
+  omaezaki: { name: 'Omaezaki', region: 'Shizuoka, Japan', blurb: 'Cape catching swell from either side, so something is usually breaking somewhere.', lat: 34.5980, lon: 138.2280, offshoreDeg: 0 },
+  kaifu: { name: 'Kaifu', region: 'Tokushima, Japan', blurb: 'River-mouth right on Shikoku, one of the best sand-bottom points in the country.', lat: 33.6000, lon: 134.3400, offshoreDeg: 315 },
+  hyuga: { name: 'Hyuga', region: 'Miyazaki, Japan', blurb: 'Okuragahama point, a long right that has held international contests.', lat: 32.4300, lon: 131.6600, offshoreDeg: 270 },
+  aoshima: { name: 'Aoshima', region: 'Miyazaki, Japan', blurb: 'Palm-lined beach beside the shrine island, the friendliest wave on the Miyazaki coast.', lat: 31.8000, lon: 131.4700, offshoreDeg: 270 },
+  tanegashima: { name: 'Tanegashima', region: 'Kagoshima, Japan', blurb: 'Subtropical island south of Kyushu with reefs and beaches on every aspect.', lat: 30.4600, lon: 130.9800, offshoreDeg: 270 },
+
+  // --- UK and Ireland.
+  sennen: { name: 'Sennen Cove', region: 'Cornwall, England', blurb: 'The most westerly beach in England, catching swell nothing else in Cornwall can see.', lat: 50.0770, lon: -5.6900, offshoreDeg: 90 },
+  perranporth: { name: 'Perranporth', region: 'Cornwall, England', blurb: 'Three miles of open sand with banks that shift all winter. Works on almost any swell.', lat: 50.3450, lon: -5.1560, offshoreDeg: 90 },
+  polzeath: { name: 'Polzeath', region: 'Cornwall, England', blurb: 'Wide, forgiving bay on the north coast, sheltered enough to work in a southwesterly.', lat: 50.5720, lon: -4.9160, offshoreDeg: 90 },
+  bude: { name: 'Summerleaze', region: 'Bude, Cornwall, England', blurb: 'Beach break beside the sea pool, the pick of the north Cornwall banks at mid tide.', lat: 50.8290, lon: -4.5590, offshoreDeg: 90 },
+  constantinebay: { name: 'Constantine Bay', region: 'Cornwall, England', blurb: 'Reefy-cornered beach near Padstow, punchier than its neighbours on a clean swell.', lat: 50.5330, lon: -5.0170, offshoreDeg: 90 },
+  freshwaterwest: { name: 'Freshwater West', region: 'Pembrokeshire, Wales', blurb: 'The most consistent beach in Wales, wide open to the Atlantic and rarely flat.', lat: 51.6600, lon: -5.0570, offshoreDeg: 45 },
+  llangennith: { name: 'Llangennith', region: 'Gower, Wales', blurb: 'Three miles of Gower sand under Rhossili Down, the default when everywhere else is small.', lat: 51.6000, lon: -4.2900, offshoreDeg: 45 },
+  tynemouth: { name: 'Tynemouth Longsands', region: 'Tyne and Wear, England', blurb: 'North East beach break with a proper local scene, best on a clean North Sea swell.', lat: 55.0170, lon: -1.4200, offshoreDeg: 270 },
+  scarborough: { name: 'Scarborough South Bay', region: 'North Yorkshire, England', blurb: 'Sheltered bay under the castle headland, working when the open coast is blown out.', lat: 54.2790, lon: -0.3960, offshoreDeg: 315 },
+  garrettstown: { name: 'Garrettstown', region: 'County Cork, Ireland', blurb: 'South-coast beach near Kinsale, picking up the swells that miss the west.', lat: 51.6300, lon: -8.5400, offshoreDeg: 0 },
+  rossnowlagh: { name: 'Rossnowlagh', region: 'County Donegal, Ireland', blurb: 'Long, gentle strand in Donegal Bay — the birthplace of Irish surfing.', lat: 54.5500, lon: -8.2100, offshoreDeg: 90 },
+
+  // --- New Zealand.
+  lyallbay: { name: 'Lyall Bay', region: 'Wellington, New Zealand', blurb: "Wellington's home beach, right under the airport approach and windy more often than not.", lat: -41.3300, lon: 174.7950, offshoreDeg: 0 },
+  papamoa: { name: 'Papamoa', region: 'Bay of Plenty, New Zealand', blurb: 'Long open beach east of Mount Maunganui, with room to find your own peak.', lat: -37.7000, lon: 176.3000, offshoreDeg: 180 },
+  ohope: { name: 'Ohope Beach', region: 'Bay of Plenty, New Zealand', blurb: 'Eleven kilometres of sand facing north into the Bay of Plenty swell window.', lat: -37.9800, lon: 177.0700, offshoreDeg: 180 },
+  kaikoura: { name: 'Kaikoura', region: 'Canterbury, New Zealand', blurb: 'Peninsula points below the Seaward Kaikouras, with a deep canyon just offshore.', lat: -42.4100, lon: 173.6800, offshoreDeg: 270 },
+  newbrighton: { name: 'New Brighton', region: 'Christchurch, New Zealand', blurb: 'Pier-side banks on the Canterbury bight, Christchurch’s most surfed beach.', lat: -43.5070, lon: 172.7300, offshoreDeg: 270 },
+
+  // --- Canada.
+  coxbay: { name: 'Cox Bay', region: 'Tofino, Canada', blurb: 'The most consistent bay on Vancouver Island, and where the Canadian nationals are held.', lat: 49.1030, lon: -125.8830, offshoreDeg: 90 },
+  chesterman: { name: 'Chesterman Beach', region: 'Tofino, Canada', blurb: 'Two crescents either side of a tombolo, gentler than Cox and good at most sizes.', lat: 49.1330, lon: -125.8930, offshoreDeg: 90 },
+  martiniquens: { name: 'Martinique Beach', region: 'Nova Scotia, Canada', blurb: 'Long Atlantic beach east of Halifax, at its best on a late-season hurricane swell.', lat: 44.6300, lon: -63.1500, offshoreDeg: 315 },
+
+  // --- India.
+  mahabalipuram: { name: 'Mahabalipuram', region: 'Tamil Nadu, India', blurb: 'Beach break beside the shore temples, the centre of surfing on the Coromandel coast.', lat: 12.6200, lon: 80.1930, offshoreDeg: 270 },
+  gokarna: { name: 'Gokarna', region: 'Karnataka, India', blurb: 'String of small headland-separated beaches on the Karnataka coast, best in the shoulder season.', lat: 14.5480, lon: 74.3170, offshoreDeg: 90 },
+  puri: { name: 'Puri', region: 'Odisha, India', blurb: 'Wide Bay of Bengal beach that hosts India’s longest-running surf festival.', lat: 19.7950, lon: 85.8300, offshoreDeg: 330 },
+
+  // --- Scandinavia and the cold-water edge.
+  borestranden: { name: 'Borestranden', region: 'Jæren, Norway', blurb: 'The main beach on the Jæren coast, exposed to everything the North Sea sends.', lat: 58.8830, lon: 5.5330, offshoreDeg: 90 },
+  vikiceland: { name: 'Vík', region: 'Iceland', blurb: 'Black-sand beach under Reynisfjall, as raw and cold as surfing gets.', lat: 63.4180, lon: -19.0060, offshoreDeg: 0 },
+
+  // --- South America.
+  topocalma: { name: 'Punta Topocalma', region: 'Chile', blurb: 'Remote left point down a long dirt road, one of the longest waves in Chile.', lat: -34.1300, lon: -71.9700, offshoreDeg: 90 },
+  concon: { name: 'Concón', region: 'Valparaíso, Chile', blurb: 'Ritoque and Concón banks north of Viña, the everyday wave of central Chile.', lat: -32.9200, lon: -71.5300, offshoreDeg: 90 },
+
+  // --- US East Coast and Gulf gaps.
+  rehoboth: { name: 'Rehoboth Beach', region: 'Delaware, USA', blurb: 'Mid-Atlantic beach break that comes alive on a hurricane swell and sleeps otherwise.', lat: 38.7160, lon: -75.0760, offshoreDeg: 270 },
+  assateague: { name: 'Assateague', region: 'Maryland, USA', blurb: 'Undeveloped barrier island with wild ponies on the dunes and empty peaks along it.', lat: 38.2450, lon: -75.1400, offshoreDeg: 270 },
+  tybee: { name: 'Tybee Island', region: 'Georgia, USA', blurb: 'Gentle, shallow banks off Savannah — small most days, and friendly when it breaks.', lat: 32.0000, lon: -80.8400, offshoreDeg: 270 },
+  southpadre: { name: 'South Padre Island', region: 'Texas, USA', blurb: 'Gulf beach break at the bottom of Texas, best on a tropical system in the Gulf.', lat: 26.1000, lon: -97.1600, offshoreDeg: 270 },
+  galveston: { name: 'Galveston', region: 'Texas, USA', blurb: 'Jetty banks an hour from Houston. Short-period Gulf wind swell, and a devoted crew.', lat: 29.2800, lon: -94.7800, offshoreDeg: 330 },
+  pensacola: { name: 'Pensacola Beach', region: 'Florida, USA', blurb: 'Sugar-white Panhandle sand, waist-high and glassy far more often than it is big.', lat: 30.3300, lon: -87.1600, offshoreDeg: 0 },
+  hamptonnh: { name: 'Hampton Beach', region: 'New Hampshire, USA', blurb: 'The whole of New Hampshire’s short coastline in one beach, busiest in a nor’easter.', lat: 42.9000, lon: -70.8100, offshoreDeg: 270 },
+  longsandsme: { name: 'Long Sands', region: 'York, Maine, USA', blurb: 'Wide beach below the Nubble light, working through the winter for those who will.', lat: 43.1620, lon: -70.6100, offshoreDeg: 270 },
 };

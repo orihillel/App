@@ -102,6 +102,13 @@ export const ORDER = [
   'barratijuca', 'prainharj', 'mole', 'nagshead', 'jacksonvillebeach', 'melbournebeach', 'gilgobeach',
   'ruggles', 'nauset', 'higginsbeach', 'pismobeach', 'morrobay', 'jalama', 'doheny', 'boilers', 'bananapoint',
   'tamri', 'trespalmas', 'domespr',
+  'pacificcity', 'otterrock', 'agatebeach', 'seasideor', 'bastendorff', 'lapush', 'hobuck', 'longbeachwa',
+  'kugenuma', 'yuigahama', 'hebara', 'choshi', 'oarai', 'omaezaki', 'kaifu', 'hyuga',
+  'aoshima', 'tanegashima', 'sennen', 'perranporth', 'polzeath', 'bude', 'constantinebay', 'freshwaterwest',
+  'llangennith', 'tynemouth', 'scarborough', 'garrettstown', 'rossnowlagh', 'lyallbay', 'papamoa', 'ohope',
+  'kaikoura', 'newbrighton', 'coxbay', 'chesterman', 'martiniquens', 'mahabalipuram', 'gokarna', 'puri',
+  'borestranden', 'vikiceland', 'topocalma', 'concon', 'rehoboth', 'assateague', 'tybee',
+  'southpadre', 'galveston', 'pensacola', 'hamptonnh', 'longsandsme',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
