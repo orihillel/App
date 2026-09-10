@@ -5,6 +5,7 @@ import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
 import { calibrationLabel } from '../lib/calibration.js';
+import { swellTrend } from '../lib/swelltrend.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
 
@@ -403,7 +404,8 @@ export function HomeView({
       ) : null}
 
       <div className="grid grid-cols-3 px-4" style={{ gap: 8, marginTop: 14, paddingBottom: 14 }}>
-        <Stat label="SWELL" value={h ? formatWaveRange(h.wave, units) + heightUnit(units) : null} sub={h ? h.period + 's ' + h.swellDir : null} />
+        <Stat label="SWELL" value={h ? formatWaveRange(h.wave, units) + heightUnit(units) : null} sub={h ? h.period + 's ' + h.swellDir : null}
+          trend={swellTrend(hourData, hourIdx)} />
         <Stat label="WIND" value={h ? formatSpeed(h.windSpd, units) + speedUnit(units) : null} sub={h ? h.windDir + ' · ' + h.type : null} subColor={h ? windColor(h.type) : null} />
         <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 11px' }}>
           <div style={{ fontSize: 11.5, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>TIDE</div>
@@ -435,14 +437,40 @@ export function HomeView({
   );
 }
 
-function Stat({ label, value, sub, subColor }) {
+function Stat({ label, value, sub, subColor, trend }) {
   return (
     <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 11px' }}>
       <div style={{ fontSize: 11.5, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>{label}</div>
       <div style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 600, fontSize: 18, color: value ? COLORS.foam : COLORS.foamDim, marginTop: 5 }}>{value || '—'}</div>
       {sub ? <div style={{ fontSize: 11.5, color: subColor || COLORS.foamDim, marginTop: 2, fontWeight: subColor ? 600 : 400 }}>{sub}</div> : null}
+      {/* Its own line rather than beside the period, for the reason the tide's state is on one:
+          this column is a third of a 390px screen and a second phrase does not fit next to the
+          first. */}
+      {trend ? (
+        <div style={{ fontSize: 11.5, fontWeight: 600, color: swellTrendColor(trend), letterSpacing: '0.02em', marginTop: 1 }}>
+          {swellTrendArrow(trend)}{trend}
+        </div>
+      ) : null}
     </div>
   );
+}
+
+// Building is the direction worth acting on, so it takes the same teal the tide's directions do;
+// dropping takes the gold the tide's turns take -- a "look at this" rather than an alarm. Steady
+// is not news and stays in the dim foam every other sub-line uses.
+function swellTrendColor(trend) {
+  if (trend === 'Building') return COLORS.tealBright;
+  if (trend === 'Dropping') return COLORS.gold;
+  return COLORS.foamDim;
+}
+
+// Unlike the tide, every state here has a direction to point -- steady included, where a flat
+// arrow says "holding" rather than leaving the reader to wonder if the arrow failed to render.
+function swellTrendArrow(trend) {
+  if (trend === 'Building') return '\u2191\u2009';
+  if (trend === 'Dropping') return '\u2193\u2009';
+  if (trend === 'Steady') return '\u2192\u2009';
+  return '';
 }
 
 // Nothing has arrived yet. Bars where the numbers will land, so the layout does not jump when
