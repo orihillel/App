@@ -13,6 +13,8 @@ import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
 import { shouldRefetchOnResume } from './lib/refresh.js';
 import { parseHash, buildHash } from './lib/router.js';
+import { nearestSpots, rankNearby, DEFAULT_MAX_KM } from './lib/nearby.js';
+import { locate } from './lib/geolocate.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
@@ -24,6 +26,7 @@ import { SearchSheet } from './components/SearchSheet.jsx';
 import { AlertSheet } from './components/AlertSheet.jsx';
 import { BottomNav } from './components/BottomNav.jsx';
 import { NavDrawer } from './components/NavDrawer.jsx';
+import { NearbyView } from './components/NearbyView.jsx';
 
 const GLOBAL_CSS = `
 /* The font @import used to live here, and that was the problem: this string only becomes a
@@ -152,6 +155,10 @@ export default function App() {
   // reach it" -- see describeForecastError.
   const [errorReasons, setErrorReasons] = useState({});
   const [view, setView] = useState('home');
+  // "Best nearby": where the phone is, and how that request went. Held here rather than in the
+  // view so leaving and coming back does not ask for the location again.
+  const [here, setHere] = useState(null);
+  const [locating, setLocating] = useState(null); // null | 'locating' | { reason, message }
 
   const [searchOpen, setSearchOpen] = useState(false);
   const [onboarded, setOnboarded] = useState(true);
@@ -745,6 +752,56 @@ export default function App() {
   // "best today" window pointing at hours whose ratings the rest of the page no longer agrees
   // with, once a correction is applied.
   const best = hourData ? bestWindow(hourData) : null;
+  // "Best nearby", derived rather than stored: the candidates come from where the phone is, and
+  // their ranking from whatever readings have arrived so far, so the list re-sorts itself as the
+  // answers land instead of needing a refresh.
+  // Asks the browser where we are, once, unless a previous answer is already good enough.
+  //
+  // Kept out of the view so the prompt is not re-triggered every time the screen mounts, and so
+  // a refusal is remembered for the session rather than asked again on each visit -- being asked
+  // repeatedly for a permission you have declined is the fastest way to make someone decline it
+  // permanently.
+  const askLocation = useCallback(async (force = false) => {
+    if (!force && here) return;
+    setLocating('locating');
+    const result = await locate();
+    if (result.ok) { setHere({ lat: result.lat, lon: result.lon }); setLocating(null); }
+    else setLocating({ reason: result.reason, message: result.message });
+  }, [here]);
+
+  const nowHourTick = view === 'nearby' ? new Date().getHours() : null;
+  const nearbyCandidates = useMemo(
+    () => (here ? nearestSpots(spots, order, here) : []),
+    [here, spots, order],
+  );
+  // Ranked at the hour it actually is, not at whatever hour the scrubber on the home spot is
+  // parked at. "Which of these should I drive to" is a question about now; the device's own
+  // clock is the right one, since every spot in the list is near the device by construction.
+  const nearbyRows = useMemo(
+    () => rankNearby(nearbyCandidates, forecast, nowHourTick),
+    [nearbyCandidates, forecast, nowHourTick],
+  );
+
+  // Both of these sit below the values they depend on rather than beside the other effects.
+  // A dependency array is evaluated during render, so an effect placed above a `const` it names
+  // reads that binding in its temporal dead zone -- which is not a warning but a hard
+  // ReferenceError that blanks the whole app, and only in the built bundle.
+  //
+  // The nearby list needs a current reading per spot to rank at all, and gets it through exactly
+  // the path the globe uses: the Worker, cached per spot, so a spot the globe has already
+  // coloured costs nothing here and vice versa.
+  useEffect(() => {
+    if (view !== 'nearby' || !nearbyCandidates.length) return;
+    loadConditionsFor(nearbyCandidates.map((c) => c.id));
+  }, [view, nearbyCandidates, loadConditionsFor]);
+
+  // Landing on #/nearby directly -- a bookmark, or the back button -- goes through the hash
+  // listener rather than handleNav, so the location has to be asked for here as well or the
+  // screen sits on "finding your location" having never asked.
+  useEffect(() => {
+    if (view === 'nearby') askLocation();
+  }, [view, askLocation]);
+
   const tideToday = (spotForecast && spotForecast.tideToday && spotForecast.tideToday.every((v) => v != null)) ? spotForecast.tideToday : null;
   const tideNext = (h && spotForecast && spotForecast.tideFine && spotForecast.tideFine.length) ? nextTideEvent(spotForecast.tideFine, h.hour) : null;
   // What it is doing at the hour on screen, as opposed to what it does next.
@@ -776,6 +833,7 @@ export default function App() {
   function handleNav(label) {
     if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); route('home', goToId); }
     else if (label === 'map') { setView('globe'); route('globe'); }
+    else if (label === 'nearby') { setView('nearby'); route('nearby'); askLocation(); }
     else if (label === 'alerts') { setView('alerts'); route('alerts'); }
     else if (label === 'profile') { setView('profile'); route('profile'); }
     else { setToast('Part of the full app — not in this preview'); }
@@ -932,6 +990,14 @@ export default function App() {
           <Suspense fallback={<GlobeLoading />}>
             <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} units={units} onVisibleSpots={loadConditionsFor} />
           </Suspense>
+        ) : view === 'nearby' ? (
+          <NearbyView
+            rows={nearbyRows} spots={spots} units={units}
+            status={locating === 'locating' ? 'locating' : locating ? 'error' : (!here ? 'locating' : (nearbyRows.length ? 'ready' : 'empty'))}
+            message={locating && locating.message} onRetry={() => askLocation(true)}
+            radiusLabel={units === 'metric' ? DEFAULT_MAX_KM + ' km' : Math.round(DEFAULT_MAX_KM * 0.621371) + ' mi'}
+            onSelectSpot={viewSpot} onClose={() => handleNav('home')}
+          />
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
