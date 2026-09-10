@@ -40,6 +40,26 @@ export const FRAMES_MIN_COVERAGE = 0.85;
 // All 186 in one request. See the note above on Open-Meteo's 1000-location ceiling.
 export const FRAME_BATCH_SIZE = 200;
 
+// The limit that broke the first version of this, recorded because I priced the daily budget
+// carefully and never checked this one -- in the file that states it.
+//
+// Open-Meteo's free tier allows roughly 600 units a minute as well as ~10,000 a day. A 28-frame
+// week is 5,208 units: it fits the day nine times over and the minute not at all. Fired in one
+// go it got about three frames in before every remaining request was refused, which left a
+// mostly-empty week that the coverage gate correctly declined to serve.
+//
+// So the week is not built in one go. Each pass takes as many frames as a minute affords and
+// appends them to a partial build in KV; the cron tick that already keeps the live grid warm
+// runs the next pass. No pass ever exceeds the per-minute allowance, and a week assembles over
+// a handful of ticks instead of failing in one.
+export const UNITS_PER_MINUTE = 600;
+
+// Deliberately under the limit rather than at it: the live grid's own warm-up runs on the same
+// tick and spends 406 of the same allowance when it refreshes.
+export const UNITS_PER_PASS = 500;
+
+export const FRAMES_PARTIAL_KEY = 'waveframes:partial:v2';
+
 // Kept below Cloudflare's 50 so a build cannot be killed part-way by the platform.
 export const MAX_FETCHES = 45;
 
@@ -133,69 +153,116 @@ export async function fetchFrame(cells, isoHour, { fetchImpl = fetch } = {}) {
   };
 }
 
-// Build the whole week, reporting what happened rather than throwing.
-export async function buildFrames(opts = {}) {
-  const wait = opts.sleep || sleep;
+// How many frames one pass can afford, from the per-minute allowance and the grid's size.
+export function framesPerPass(cellCount, unitsPerPass = UNITS_PER_PASS) {
+  return Math.max(1, Math.floor(unitsPerPass / Math.max(1, cellCount)));
+}
+
+// One pass of the accumulating build: take the partial week from KV, fetch the next few frames,
+// put it back. Returns the partial (or the finished week) and what happened.
+//
+// The frames are keyed by their timestamp rather than their index, so a pass that runs after
+// the six-hourly boundary has moved contributes to the right week instead of silently writing
+// tomorrow's 6am into yesterday's slot 4.
+export async function advanceFrames(env, opts = {}) {
+  const now = opts.now || Date.now();
   const cells = gridCells(FRAME_LAT_STEP);
-  const batchSize = opts.batchSize || FRAME_BATCH_SIZE;
-  const perFrame = Math.ceil(cells.length / batchSize);
+  const times = frameTimes(now, opts.frameCount || FRAME_COUNT);
+  const perPass = opts.framesPerPass || framesPerPass(cells.length, opts.unitsPerPass);
 
-  // Decided before a single request goes out. A build that plans more fetches than the platform
-  // allows does not fail cleanly -- it is killed mid-flight, having already spent the units.
-  const maxFrames = Math.max(1, Math.floor((opts.maxFetches || MAX_FETCHES) / perFrame));
-  const wanted = Math.min(opts.frameCount || FRAME_COUNT, maxFrames);
-  const times = frameTimes(opts.now || Date.now(), wanted);
+  let partial = null;
+  let done = null;
+  try {
+    partial = await env.SUBSCRIPTIONS.get(FRAMES_PARTIAL_KEY, { type: 'json' });
+  } catch { /* KV unreadable: start a fresh partial */ }
+  try {
+    done = await env.SUBSCRIPTIONS.get(FRAMES_KEY, { type: 'json' });
+  } catch { /* no finished week to build on */ }
 
-  const frames = [];
-  let cellsQueried = 0;
+  // A partial whose first frame is no longer the current boundary is describing a week that has
+  // moved on. Its later frames are still wanted -- they are the same instants -- so it is kept
+  // and re-indexed against the new list rather than thrown away, which is what makes the build
+  // converge instead of restarting every six hours.
+  const have = new Map();
+  // The finished week counts as frames already in hand, but only while it is fresh. Inside a
+  // day this makes the week roll forward for the price of the one or two new hours the moving
+  // boundary exposes, rather than re-fetching six days everyone already has. Past a day it is
+  // deliberately ignored, because a frame for Thursday 6am fetched three days ago is a
+  // three-day-old forecast for that hour, and rolling it forever would quietly preserve it.
+  if (done && Array.isArray(done.frames) && Number.isFinite(done.generatedAt)
+      && now - done.generatedAt < (opts.refreshMs ?? FRAMES_REFRESH_MS)) {
+    for (const f of done.frames) if (f && typeof f.t === 'string') have.set(f.t, f);
+  }
+  if (partial && Array.isArray(partial.frames)) {
+    for (const f of partial.frames) if (f && typeof f.t === 'string') have.set(f.t, f);
+  }
+
+  const missing = times.filter((t) => !have.has(t));
+  let fetched = 0;
   let lastStatus = null;
   let lastError = null;
   let aborted = null;
 
-  for (let f = 0; f < times.length && !aborted; f++) {
-    if (f > 0) await wait(opts.gapMs ?? FRAME_GAP_MS);
+  for (const t of missing.slice(0, perPass)) {
+    if (fetched > 0) await (opts.sleep || sleep)(opts.gapMs ?? FRAME_GAP_MS);
     const heights = new Array(cells.length).fill(null);
     const directions = new Array(cells.length).fill(null);
-    for (let start = 0; start < cells.length; start += batchSize) {
-      const batch = cells.slice(start, start + batchSize);
-      const r = await fetchFrame(batch, times[f], opts);
-      if (r.overrun) {
-        // Not a failed frame -- a failed premise. Everything after it would cost the same
-        // multiple, so nothing after it runs.
-        aborted = 'timestep-overrun';
-        lastStatus = r.status;
-        lastError = r.error;
-        break;
-      }
+    let any = false;
+    for (let start = 0; start < cells.length; start += (opts.batchSize || FRAME_BATCH_SIZE)) {
+      const batch = cells.slice(start, start + (opts.batchSize || FRAME_BATCH_SIZE));
+      const r = await fetchFrame(batch, t, opts);
+      if (r.overrun) { aborted = 'timestep-overrun'; lastStatus = r.status; lastError = r.error; break; }
       if (!r.ok) { lastStatus = r.status; lastError = r.error; continue; }
-      cellsQueried += batch.length;
+      any = true;
       for (let i = 0; i < batch.length; i++) {
         heights[start + i] = r.values[i];
         directions[start + i] = r.directions ? r.directions[i] : null;
       }
     }
     if (aborted) break;
-    frames.push({
-      t: times[f],
+    // Only a frame that actually answered is recorded. Storing an empty one would mark it done
+    // and leave a hole in the week for the rest of the day.
+    if (!any) break;
+    have.set(t, {
+      t,
       data: bytesToBase64(encodeHeights(heights)),
       dirs: bytesToBase64(encodeDirections(directions)),
     });
+    fetched++;
   }
 
-  const planned = times.length * cells.length;
-  return {
-    generatedAt: opts.now || Date.now(),
+  // Ordered by the week, not by the order they arrived.
+  const frames = times.filter((t) => have.has(t)).map((t) => have.get(t));
+  const next = {
+    generatedAt: now,
     cells: cells.length,
     latStep: FRAME_LAT_STEP,
     stepHours: FRAME_STEP_H,
     frames,
-    coverage: planned > 0 ? Math.round((cellsQueried / planned) * 1000) / 1000 : 0,
+    wanted: times.length,
+    coverage: times.length ? Math.round((frames.length / times.length) * 1000) / 1000 : 0,
     aborted,
     lastStatus,
     lastError,
-    // What the build would have cost, so the number is visible rather than folklore.
-    units: cellsQueried,
+    units: fetched * cells.length,
   };
+
+  const complete = frames.length >= times.length && !aborted;
+  try {
+    if (complete) {
+      await env.SUBSCRIPTIONS.put(FRAMES_KEY, JSON.stringify(next));
+      await env.SUBSCRIPTIONS.delete(FRAMES_PARTIAL_KEY);
+      await env.SUBSCRIPTIONS.delete(FRAMES_FAIL_KEY);
+    } else if (aborted) {
+      // The premise is wrong, not the pacing. Keep nothing and cool off.
+      await env.SUBSCRIPTIONS.delete(FRAMES_PARTIAL_KEY);
+      await env.SUBSCRIPTIONS.put(FRAMES_FAIL_KEY, JSON.stringify({ at: now, build: { aborted, lastStatus, lastError } }));
+    } else {
+      await env.SUBSCRIPTIONS.put(FRAMES_PARTIAL_KEY, JSON.stringify(next));
+    }
+  } catch { /* the pass still happened; the next one will re-derive from whatever stuck */ }
+
+  return { ...next, complete, fetchedThisPass: fetched, remaining: Math.max(0, times.length - frames.length) };
 }
 
 export function framesAreUsable(entry) {
@@ -206,64 +273,49 @@ export function framesAreUsable(entry) {
     && !entry.aborted;
 }
 
-// The cached week, built on demand and then reused all day.
+// The cached week, and the progress of the one being assembled.
 //
-// Deliberately the same shape as loadGrid in waveGrid.js -- serve a fresh entry, honour a
-// cooldown after a failure, otherwise build -- because the two answer the same question about
-// the same upstream and diverging would mean two sets of rules to reason about.
+// This used to build on demand, and that was the bug: a week is 5,208 units and the per-minute
+// allowance is 600, so pressing the button spent three frames' worth and was refused the rest.
+// The build is paced across cron ticks now (see advanceFrames), so this only ever reads --
+// it never fetches, and therefore can never blow a limit however often it is called.
 //
-// The one difference that matters: an aborted build is never cached and always starts a
-// cooldown, because the thing it aborted on is a property of the upstream rather than a
-// transient, and retrying it on the next request would spend the same units to learn the same
-// thing.
+// A partial week is reported rather than hidden. "Building the week, 9 of 28 hours ready" is a
+// state worth showing; "unavailable" for the same thing is what sent the last round of this
+// feature to guesswork.
 export async function loadFrames(env, opts = {}) {
   const now = opts.now || Date.now();
   let cached = null;
   try {
     cached = await env.SUBSCRIPTIONS.get(FRAMES_KEY, { type: 'json' });
-  } catch { /* KV unavailable: fall through and try a fresh build */ }
+  } catch { /* KV unavailable */ }
 
-  if (framesAreUsable(cached) && now - cached.generatedAt < FRAMES_REFRESH_MS) {
-    return { frames: { ...cached, stale: false }, build: null };
+  if (framesAreUsable(cached)) {
+    const stale = now - cached.generatedAt >= FRAMES_REFRESH_MS;
+    return { frames: { ...cached, stale }, build: null };
   }
+
+  let partial = null;
+  try {
+    partial = await env.SUBSCRIPTIONS.get(FRAMES_PARTIAL_KEY, { type: 'json' });
+  } catch { /* no partial readable */ }
 
   let failure = null;
   try {
     failure = await env.SUBSCRIPTIONS.get(FRAMES_FAIL_KEY, { type: 'json' });
-  } catch { /* no cooldown record readable; proceed to build */ }
-  if (failure && failure.at && now - failure.at < FRAMES_FAIL_COOLDOWN_MS && !opts.ignoreCooldown) {
-    return {
-      frames: framesAreUsable(cached) ? { ...cached, stale: true } : null,
-      build: { ...failure.build, cooling: true, retryInSeconds: Math.round((FRAMES_FAIL_COOLDOWN_MS - (now - failure.at)) / 1000) },
-    };
-  }
+  } catch { /* no cooldown record */ }
 
-  let fresh;
-  try {
-    fresh = await (opts.build ? opts.build(opts) : buildFrames({ ...opts, now }));
-  } catch (e) {
-    fresh = { frames: [], coverage: 0, lastError: String((e && e.message) || e) };
-  }
-
-  const build = {
-    frames: Array.isArray(fresh.frames) ? fresh.frames.length : 0,
-    coverage: fresh.coverage ?? 0,
-    aborted: fresh.aborted ?? null,
-    lastStatus: fresh.lastStatus ?? null,
-    lastError: fresh.lastError ?? null,
-    units: fresh.units ?? 0,
+  const ready = partial && Array.isArray(partial.frames) ? partial.frames.length : 0;
+  const wanted = (partial && partial.wanted) || FRAME_COUNT;
+  return {
+    frames: null,
+    build: {
+      building: !failure,
+      ready,
+      wanted,
+      aborted: failure ? (failure.build && failure.build.aborted) || null : (partial && partial.aborted) || null,
+      lastStatus: failure ? failure.build && failure.build.lastStatus : (partial && partial.lastStatus) || null,
+      lastError: failure ? failure.build && failure.build.lastError : (partial && partial.lastError) || null,
+    },
   };
-
-  if (framesAreUsable(fresh)) {
-    try {
-      await env.SUBSCRIPTIONS.put(FRAMES_KEY, JSON.stringify(fresh));
-      await env.SUBSCRIPTIONS.delete(FRAMES_FAIL_KEY);
-    } catch { /* still worth returning even if it could not be cached */ }
-    return { frames: { ...fresh, stale: false }, build };
-  }
-
-  try {
-    await env.SUBSCRIPTIONS.put(FRAMES_FAIL_KEY, JSON.stringify({ at: now, build }));
-  } catch { /* the cooldown is an optimisation, not a correctness requirement */ }
-  return { frames: framesAreUsable(cached) ? { ...cached, stale: true } : null, build };
 }

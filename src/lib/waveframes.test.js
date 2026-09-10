@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { frameLabel } from './waveframes.js';
+import { frameLabel, frameBuildLabel } from './waveframes.js';
 
 describe('frameLabel', () => {
   it('reads a UTC frame in the viewer\'s own clock', () => {
@@ -23,5 +23,25 @@ describe('frameLabel', () => {
 
   it('answers empty for junk rather than printing NaN', () => {
     for (const bad of ['', null, undefined, 'not a date', 42]) expect(frameLabel(bad)).toBe('');
+  });
+});
+
+describe('frameBuildLabel', () => {
+  it('says how far along the week is, because "not yet" is not "broken"', () => {
+    // The week assembles a couple of frames at a time on a schedule, so this is the normal
+    // state for the first couple of hours after a deploy.
+    expect(frameBuildLabel({ building: true, ready: 9, wanted: 28 }))
+      .toBe('Building the week — 9 of 28 hours ready');
+    expect(frameBuildLabel({ building: true, ready: 0, wanted: 28 }))
+      .toBe('Building the week — no hours ready yet');
+  });
+
+  it('distinguishes a refused request from a build still in progress', () => {
+    expect(frameBuildLabel({ aborted: 'timestep-overrun' })).toMatch(/refused the request/);
+  });
+
+  it('falls back to a plain sentence when it knows nothing', () => {
+    expect(frameBuildLabel(null)).toBe('Animation unavailable right now');
+    expect(frameBuildLabel({})).toBe('Animation unavailable right now');
   });
 });

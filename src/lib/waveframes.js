@@ -26,3 +26,20 @@ export function frameLabel(iso, now = null) {
   }
   return DAYS[d.getDay()] + ' ' + hour;
 }
+
+// What the animation button says when there is no week to play yet.
+//
+// The week is assembled a couple of frames at a time on a schedule, because it cannot be
+// fetched in one go without exceeding the upstream's per-minute allowance -- so "not yet" is
+// the normal state for the first couple of hours after a deploy, and it is a different thing
+// from "broken". Saying which, and how far along, is the difference between waiting and
+// wondering.
+export function frameBuildLabel(build) {
+  if (!build) return 'Animation unavailable right now';
+  if (build.aborted) return 'Animation unavailable — the forecast service refused the request';
+  if (build.building && Number.isFinite(build.ready) && Number.isFinite(build.wanted)) {
+    if (build.ready <= 0) return 'Building the week — no hours ready yet';
+    return 'Building the week — ' + build.ready + ' of ' + build.wanted + ' hours ready';
+  }
+  return 'Animation unavailable right now';
+}

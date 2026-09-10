@@ -11,7 +11,7 @@ import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
 import { loadTideStations, nearestTideStation, loadPredictions } from './noaaTide.js';
 import { loadGrid } from './waveGrid.js';
-import { loadFrames } from './waveFrames.js';
+import { loadFrames, advanceFrames } from './waveFrames.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -408,6 +408,12 @@ export default {
     // pay for the build. It is only a warm-up: /wavegrid builds for itself if this never runs,
     // which is the difference from the version that depended on this firing.
     ctx.waitUntil(loadGrid(env).catch(() => {}));
+    // One pass of the animated week. It cannot be built on demand: 28 frames is 5,208 units
+    // against a per-minute allowance of about 600, so a single build gets three frames in and
+    // is refused the rest. Each tick takes as many frames as a minute affords and appends them,
+    // so the week assembles over a handful of ticks and no pass ever exceeds the limit. A pass
+    // over a week that is already complete and fresh costs nothing.
+    ctx.waitUntil(advanceFrames(env).catch(() => {}));
     for await (const { endpoint, record } of listSubscriptions(env)) {
       ctx.waitUntil(checkSubscription(env, endpoint, record));
     }

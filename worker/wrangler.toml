@@ -13,7 +13,12 @@ compatibility_date = "2025-06-01"
 # notifications arrive while nobody has the app open. Every 30 minutes; see
 # src/index.js's NOTIFY_COOLDOWN_MS for how often a still-matching alert can re-fire.
 [triggers]
-crons = ["*/30 * * * *"]
+# Every ten minutes rather than every half hour. The animated swell week is assembled a few
+# frames per tick (see src/waveFrames.js -- it cannot be built in one go without exceeding
+# Open-Meteo's per-minute allowance), and at half-hourly ticks a week took five hours to come
+# together. At ten it is about an hour and a half. Alert checks ride the same tick and simply
+# become more responsive.
+crons = ["*/10 * * * *"]
 
 # One entry per push subscription — see src/store.js. Also the cache for buoy station data
 # (src/buoySources.js), which is why /buoy needs this binding even with no push subscribers.
