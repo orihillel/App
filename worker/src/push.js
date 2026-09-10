@@ -21,6 +21,13 @@ export function buildNotificationPayload(alert, match) {
     title: alert.spotName,
     body: match.text,
     tag: 'alert-' + alert.id, // replaces a still-unread notification for the same alert
-    url: './',
+    // Straight to the spot the notification is about. This used to be './', so a notification
+    // that had gone to the trouble of naming a firing spot opened the app on whatever spot you
+    // last looked at -- and the more useful the alert, the more annoying that was. Relative to
+    // the service worker's scope, so it works whatever subpath the app is served from.
+    //
+    // The hash has to match lib/router.js's #/spot/<id>. An alert without a spotId (older
+    // stored subscriptions predate this being carried) still opens the app, just not a spot.
+    url: alert.spotId ? './#/spot/' + encodeURIComponent(alert.spotId) : './',
   };
 }

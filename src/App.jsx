@@ -12,6 +12,7 @@ import { linePath, waveAvg, fillGaps } from './lib/format.js';
 import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
 import { shouldRefetchOnResume } from './lib/refresh.js';
+import { parseHash, buildHash } from './lib/router.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
@@ -463,6 +464,11 @@ export default function App() {
       } catch { /* nothing saved yet */ }
     })();
     (async () => {
+      // A link naming a spot is already the answer onboarding asks for. Someone who taps a
+      // shared #/spot/<id> should see that spot, not "pick your go-to spot" -- the deep link
+      // works and then immediately does not, which is the worst of both. They can still set a
+      // go-to from the star on the spot page, so nothing is lost by not asking here.
+      if (typeof window !== 'undefined' && parseHash(window.location.hash).spotId) return;
       try {
         const res = await storage.get('surf-onboarded');
         if (!res || res.value !== 'true') setOnboarded(false);
@@ -671,6 +677,26 @@ export default function App() {
     };
   }, [loadSpotData]);
 
+  // Arrivals from outside the app: the phone's back button, a bookmark, a shared link, a tapped
+  // notification. Runs on mount too, so a cold open at #/spot/<id> lands on that spot instead of
+  // the go-to one.
+  //
+  // Only this listener reads the hash; the handlers above only write it. Setting state here does
+  // not write the hash back, so the two cannot chase each other.
+  useEffect(() => {
+    function applyHash() {
+      const { view: nextView, spotId } = parseHash(window.location.hash);
+      setView(nextView);
+      // An id from a link can name a spot this build does not have -- a retired one, a typo, or
+      // one the catalog has not finished loading. Leaving the current spot alone is better than
+      // rendering an empty page, and once the catalog lands this effect runs again.
+      if (spotId && dataRef.current.spots[spotId]) { setActiveId(spotId); setHourIdx(1); }
+    }
+    applyHash();
+    window.addEventListener('hashchange', applyHash);
+    return () => window.removeEventListener('hashchange', applyHash);
+  }, [catalogReady]);
+
   // Whether each arrow has anywhere to go. With a full catalog both sides are always occupied,
   // but a list of one spot -- or one where everything happens to lie the same way -- would
   // leave an arrow with nothing to do, and it should look unavailable rather than be inert.
@@ -733,11 +759,25 @@ export default function App() {
 
   function makeGoTo() { if (!isGoTo) { setGoToId(activeId); setToast(spot.name + ' set as your go-to spot'); } }
   function openSearch() { setSearchOpen(true); }
+  // Writes the current screen into the address bar. State is still set directly by the handlers
+  // below -- this only records where they went, so the hash is a description of the app rather
+  // than the thing driving it. The listener under it handles arrivals from outside: the back
+  // button, a bookmark, a shared link, a tapped notification.
+  //
+  // Guarded against writing the hash it already has, because assigning an identical hash still
+  // pushes a duplicate history entry, and the back button would then need two presses to leave
+  // a screen you only entered once.
+  const route = useCallback((nextView, spotId) => {
+    if (typeof window === 'undefined') return;
+    const next = buildHash({ view: nextView, spotId });
+    if (window.location.hash !== next) window.location.hash = next;
+  }, []);
+
   function handleNav(label) {
-    if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); }
-    else if (label === 'map') { setView('globe'); }
-    else if (label === 'alerts') { setView('alerts'); }
-    else if (label === 'profile') { setView('profile'); }
+    if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); route('home', goToId); }
+    else if (label === 'map') { setView('globe'); route('globe'); }
+    else if (label === 'alerts') { setView('alerts'); route('alerts'); }
+    else if (label === 'profile') { setView('profile'); route('profile'); }
     else { setToast('Part of the full app — not in this preview'); }
   }
   // Jump straight to a specific spot's page — from tapping a spot in Profile's list or a
@@ -747,6 +787,7 @@ export default function App() {
     setActiveId(id);
     setView('home');
     setHourIdx(1);
+    route('home', id);
   }
   // Prev/Next arrows on a spot's own page, for walking along a coast without leaving Home.
   // Doesn't reset the hour, so stepping through spots at (say) "9a" keeps comparing all of
@@ -757,7 +798,7 @@ export default function App() {
   // you is the one you came from when you head back west. See lib/spotnav.js.
   function stepSpot(delta) {
     const next = stepDirection(spots, order, activeId, delta);
-    if (next) setActiveId(next);
+    if (next) { setActiveId(next); route('home', next); }
   }
 
   function openNewAlert() {

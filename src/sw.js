@@ -98,7 +98,19 @@ self.addEventListener('notificationclick', (event) => {
     (async () => {
       const clientsList = await self.clients.matchAll({ type: 'window', includeUncontrolled: true });
       const existing = clientsList.find((c) => c.url === targetUrl || c.url.startsWith(self.registration.scope));
-      if (existing) { await existing.focus(); return; }
+      if (existing) {
+        // Focusing an already-open window is not enough now that the URL names a spot: the app
+        // would come to the front still showing whatever was on it. Navigating first is what
+        // makes the deep link work in the common case, since the app is usually already open.
+        // Not every browser implements client.navigate, and it rejects across origins, so a
+        // failure falls back to what this did before -- the app, on the wrong spot, rather than
+        // no app at all.
+        if (existing.url !== targetUrl && typeof existing.navigate === 'function') {
+          try { await existing.navigate(targetUrl); } catch { /* focus alone, below */ }
+        }
+        await existing.focus();
+        return;
+      }
       if (self.clients.openWindow) await self.clients.openWindow(targetUrl);
     })()
   );

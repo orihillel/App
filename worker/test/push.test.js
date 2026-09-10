@@ -1,16 +1,32 @@
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import { sendPushNotification, buildNotificationPayload } from '../src/push.js';
+// The app's own parser, so the two halves of the deep link are checked against each other
+// rather than against a string written twice.
+import { parseHash } from '../../src/lib/router.js';
 
 describe('buildNotificationPayload', () => {
+  const match = { hit: true, text: 'Matches Tuesday — good conditions' };
+
   it('builds the shape src/sw.js\'s push listener expects', () => {
-    const alert = { id: 'a1', spotName: 'Lower Trestles' };
-    const match = { hit: true, text: 'Matches Tuesday — good conditions' };
+    const alert = { id: 'a1', spotId: 'trestles', spotName: 'Lower Trestles' };
     expect(buildNotificationPayload(alert, match)).toEqual({
       title: 'Lower Trestles',
       body: 'Matches Tuesday — good conditions',
       tag: 'alert-a1',
-      url: './',
+      url: './#/spot/trestles',
     });
+  });
+
+  it('deep-links to the spot the alert is about, in the form lib/router.js parses', () => {
+    // The hash has to survive the app's own parser, or the notification opens the wrong screen.
+    const alert = { id: 'a2', spotId: 'a/b c', spotName: 'Odd Id' };
+    const url = buildNotificationPayload(alert, match).url;
+    expect(url).toBe('./#/spot/' + encodeURIComponent('a/b c'));
+    expect(parseHash(url.slice(url.indexOf('#')))).toEqual({ view: 'home', spotId: 'a/b c' });
+  });
+
+  it('still opens the app for a stored subscription that predates spotId being carried', () => {
+    expect(buildNotificationPayload({ id: 'a3', spotName: 'Old' }, match).url).toBe('./');
   });
 });
 
