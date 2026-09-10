@@ -8,7 +8,7 @@ function forecastWithContinuous(days) {
   // 8 samples/day, matching the real shape (today = offset 0).
   const continuous = [];
   days.forEach((day, dayIdx) => {
-    for (let i = 0; i < 8; i++) continuous.push({ day: 'Day' + dayIdx, waveFt: day.waveFt, rating: day.rating });
+    for (let i = 0; i < 8; i++) continuous.push({ day: 'Day' + dayIdx, waveFt: day.waveFt, surfFt: day.surfFt, rating: day.rating });
   });
   return { continuous, weekly: days.map((d, i) => ({ day: 'Day' + i, waveFt: d.waveFt })) };
 }
@@ -62,5 +62,35 @@ describe('checkAlertMatch', () => {
       const sf = { continuous: [], weekly: [{ day: 'Today', waveFt: 2 }] }; // no index 1
       expect(checkAlertMatch({ leadTime: '1d', minWaveFt: 4 }, sf)).toBeNull();
     });
+  });
+});
+
+describe('which height an alert is measured against', () => {
+  // An alert is set in the numbers on screen, and those are breaking heights. Matching the
+  // model's offshore height instead would silently hold back alerts on exactly the days the
+  // transform exists for -- long-period swell, where the two differ most.
+  function week(days) {
+    const continuous = [];
+    days.forEach((day, dayIdx) => {
+      for (let i = 0; i < 8; i++) continuous.push({ day: 'Day' + dayIdx, ...day });
+    });
+    return { continuous };
+  }
+
+  it('fires on the breaking height, not the offshore height underneath it', () => {
+    const sf = week([
+      { waveFt: 2, surfFt: 2, rating: 'FAIR' },
+      { waveFt: 3, surfFt: 4.6, rating: 'GOOD' }, // offshore under the threshold, surf over it
+    ]);
+    const match = checkAlertMatch({ id: 'a', spotId: 's', minWaveFt: 4, leadTime: '1d' }, sf);
+    expect(match.hit).toBe(true);
+  });
+
+  it('falls back to the offshore height for a forecast cached before the transform existed', () => {
+    const sf = week([
+      { waveFt: 2, rating: 'FAIR' },
+      { waveFt: 5, rating: 'GOOD' }, // no surfFt at all
+    ]);
+    expect(checkAlertMatch({ id: 'a', spotId: 's', minWaveFt: 4, leadTime: '1d' }, sf).hit).toBe(true);
   });
 });

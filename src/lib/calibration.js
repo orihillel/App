@@ -1,4 +1,5 @@
 import { conditionsScore, scoreToRating } from './rating.js';
+import { breakingHeightFt, surfRange } from './surf.js';
 
 // Correcting the forecast at a spot from what the buoy actually measured there.
 //
@@ -107,17 +108,22 @@ export function recalibrateHours(hours, cal, spot) {
   if (!Array.isArray(hours) || !cal || !cal.ready) return hours;
   return hours.map((h) => {
     if (h.waveFt == null) return h;
+    // The correction is applied to the *offshore* height and the breaking height is then
+    // re-derived from it, in that order. The other order would be wrong twice over: the bias was
+    // measured against a buoy, which reports offshore significant height, so that is the number
+    // the ratio describes -- and the transform is non-linear in height (Hb scales with H0^0.8),
+    // so scaling its output is not the same operation as scaling its input.
     const waveFt = applyCalibration(h.waveFt, cal);
     const dominant = (h.trains && h.trains[0]) || null;
     const scorePeriod = dominant && dominant.period != null ? dominant.period : h.period;
     const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : h.swellDeg;
+    const surfFt = breakingHeightFt(waveFt, scorePeriod);
     const score = conditionsScore(
-      waveFt, h.windMph, h.type, scorePeriod, scoreSwellDeg,
+      surfFt, h.windMph, h.type, scorePeriod, scoreSwellDeg,
       spot && spot.offshoreDeg, h.tidePosition, spot,
     );
-    const base = Math.max(1, Math.round(waveFt));
     return {
-      ...h, waveFt, wave: Math.max(1, base - 1) + '-' + (base + 1), score, rating: scoreToRating(score),
+      ...h, waveFt, surfFt, wave: surfRange(surfFt), score, rating: scoreToRating(score),
       // The trains are on screen directly underneath the corrected height, so leaving them raw
       // showed the correction and contradicted it in the same breath: "4-6ft" over a
       // groundswell line still reading 5.2ft.
@@ -151,5 +157,11 @@ export function recalibrateHours(hours, cal, spot) {
 // Every field this function does not touch is copied through unchanged rather than dropped.
 export function recalibrateContinuous(continuous, cal) {
   if (!Array.isArray(continuous) || !cal || !cal.ready) return continuous;
-  return continuous.map((p) => (p.waveFt == null ? p : { ...p, waveFt: applyCalibration(p.waveFt, cal) }));
+  return continuous.map((p) => {
+    if (p.waveFt == null) return p;
+    const waveFt = applyCalibration(p.waveFt, cal);
+    // Same order as above: correct offshore, then re-derive the breaking height. This is why
+    // continuous carries the period it was built with.
+    return { ...p, waveFt, surfFt: breakingHeightFt(waveFt, p.period) };
+  });
 }

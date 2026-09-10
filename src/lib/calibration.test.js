@@ -5,6 +5,7 @@ import {
   MIN_SAMPLES, MAX_SAMPLES, MAX_SAMPLE_AGE_MS,
 } from './calibration.js';
 import { conditionsScore, scoreToRating } from './rating.js';
+import { breakingHeightFt, surfRange } from './surf.js';
 
 const HOUR = 60 * 60 * 1000;
 // n paired readings, one an hour apart, where the buoy reads `factor` times the forecast.
@@ -174,12 +175,14 @@ describe('recalibrateHours', () => {
     const dominant = trains[0] || null;
     const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
     const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : swellDeg;
-    const score = conditionsScore(waveFt, windMph, type, scorePeriod, scoreSwellDeg, SPOT.offshoreDeg, tidePosition, SPOT);
-    const base = Math.max(1, Math.round(waveFt));
+    // waveFt is the offshore significant height; surfFt the breaking height derived from it,
+    // which is what the card shows and what the score is built on. See lib/surf.js.
+    const surfFt = breakingHeightFt(waveFt, scorePeriod);
+    const score = conditionsScore(surfFt, windMph, type, scorePeriod, scoreSwellDeg, SPOT.offshoreDeg, tidePosition, SPOT);
     return {
-      t: '7a', hour: 7, wave: Math.max(1, base - 1) + '-' + (base + 1), period, swellDir: 'SW', swellDeg,
+      t: '7a', hour: 7, wave: surfRange(surfFt), period, swellDir: 'SW', swellDeg,
       windSpd: Math.round(windMph), windDir: 'ENE', windDeg: 60, type, score, rating: scoreToRating(score),
-      trains, waveFt, tidePosition, windMph,
+      trains, waveFt, surfFt, tidePosition, windMph,
       ...given,
     };
   }
@@ -215,10 +218,22 @@ describe('recalibrateHours', () => {
     expect(recalibrateHours([hour({ trains: undefined })], { ready: true, ratio: 1.5 }, SPOT)[0].trains).toBeUndefined();
   });
 
-  it('scales the wave height and range string by the ratio', () => {
+  it('scales the offshore height by the ratio and re-derives the breaking height from it', () => {
     const [out] = recalibrateHours([hour({ waveFt: 3 })], { ready: true, ratio: 1.5 }, SPOT);
     expect(out.waveFt).toBeCloseTo(4.5, 5);
-    expect(out.wave).toBe('4-6'); // 4.5 rounds up to a 5ft base, displayed as the foot either side
+    // Not 4.5 * anything: the transform is re-run on the corrected offshore height, because it
+    // is non-linear in height and scaling its output would be a different operation.
+    expect(out.surfFt).toBeCloseTo(breakingHeightFt(4.5, 13), 5);
+    expect(out.wave).toBe(surfRange(breakingHeightFt(4.5, 13)));
+  });
+
+  it('re-derives rather than scales, which is measurably not the same thing', () => {
+    // Hb scales with H0^0.8, so correcting the offshore height by 1.5x moves the breaking
+    // height by less than 1.5x. Applying the ratio to the transformed number would overshoot.
+    const original = hour({ waveFt: 3 });
+    const [out] = recalibrateHours([original], { ready: true, ratio: 1.5 }, SPOT);
+    expect(out.surfFt).toBeLessThan(original.surfFt * 1.5);
+    expect(out.surfFt).toBeGreaterThan(original.surfFt);
   });
 
   it('raises the rating when the correction pushes wave height into a bigger bucket', () => {
@@ -261,10 +276,13 @@ describe('recalibrateHours', () => {
     // The mutation this catches: score updates but rating is copied from the input hour, so a
     // corrected wave height sits next to a badge computed from the number underneath it -- the
     // exact inconsistency calibration existed to fix, reintroduced one field over.
-    const small = hour({ waveFt: 2.4 });
+    // 1.5ft offshore at 13s rates GOOD; corrected by 1.5x it rates FIRING. The pair has to
+    // straddle a bucket or a copied rating would be indistinguishable from a recomputed one.
+    const small = hour({ waveFt: 1.5 });
     const [out] = recalibrateHours([small], { ready: true, ratio: 1.5 }, SPOT);
+    expect(small.rating).toBe('GOOD');
+    expect(out.rating).toBe('FIRING');
     expect(out.rating).toBe(scoreToRating(out.score));
-    expect(out.rating).not.toBe(small.rating);
   });
 
   it('leaves an hour with no raw wave height untouched', () => {

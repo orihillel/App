@@ -405,7 +405,13 @@ export default function App() {
       if (result && result.waveFt != null && nowHour) {
         setCalSamples((prev) => {
           const next = { ...prev, [activeId]: addSample(prev[activeId], {
-            forecastFt: waveAvg(nowHour.wave), observedFt: result.waveFt,
+            // The hour's *offshore* significant height, which is the quantity the buoy is also
+            // reporting. Not waveAvg(nowHour.wave): that string is now the breaking height, so
+            // pairing it against an offshore buoy reading would teach the correction to cancel
+            // out the surf transform rather than measure the model's bias. (It was also
+            // needlessly lossy -- a value reparsed out of a rounded display range when the exact
+            // one was sitting on the hour.)
+            forecastFt: nowHour.waveFt, observedFt: result.waveFt,
           }) };
           storage.set('surf-calibration', JSON.stringify(next)).catch(() => {});
           return next;

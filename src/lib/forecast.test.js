@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { fetchSpotForecast, geocodePlace, findOffshoreDirection, describeForecastError, fetchNowViaWorker, fetchModelAgreement } from './forecast.js';
 import { nextTideEvent } from './tides.js';
+import { breakingHeightFt, surfRange } from './surf.js';
+import { conditionsScore } from './rating.js';
 
 const SPOT = { lat: 33.38, lon: -117.6, offshoreDeg: 60 };
 
@@ -133,6 +135,133 @@ describe('fetchSpotForecast', () => {
     for (let i = result.best.startIdx; i <= result.best.endIdx; i++) {
       expect(result.hours[i].score).toBeGreaterThanOrEqual(peak - 1);
     }
+  });
+
+  describe('surf height rather than offshore significant height', () => {
+    function serveWith({ waveM = 1.5, periodS = 11 } = {}) {
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        marine.hourly.wave_height = hourly(24, () => waveM);
+        marine.hourly.swell_wave_height = hourly(24, () => waveM * 0.8);
+        marine.hourly.swell_wave_peak_period = hourly(24, () => periodS);
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+    }
+
+    it('shows the breaking height, not the model\'s offshore number', async () => {
+      serveWith({ waveM: 1.5, periodS: 11 });
+      const { hours } = await fetchSpotForecast(SPOT);
+      const offshoreFt = 1.5 * 3.28084;
+      expect(hours[0].wave).toBe(surfRange(breakingHeightFt(offshoreFt, 11)));
+      expect(hours[0].wave).not.toBe('4-6'); // what the raw offshore height used to render as
+    });
+
+    it('keeps waveFt as the offshore height, which is what calibration pairs against a buoy', async () => {
+      // If this ever becomes the breaking height, the buoy comparison starts measuring the
+      // transform instead of the model's bias and the correction learns to cancel it out.
+      serveWith({ waveM: 1.5, periodS: 11 });
+      const { hours } = await fetchSpotForecast(SPOT);
+      expect(hours[0].waveFt).toBeCloseTo(1.5 * 3.28084, 5);
+      expect(hours[0].surfFt).toBeGreaterThan(hours[0].waveFt);
+    });
+
+    it('separates two days the app used to show as identical', async () => {
+      // Same offshore height, different period. This is the distinction the app could not
+      // express in the height at all -- both of these rendered as one number.
+      serveWith({ waveM: 1.5, periodS: 6 });
+      const short = (await fetchSpotForecast(SPOT)).hours[0];
+      serveWith({ waveM: 1.5, periodS: 16 });
+      const long = (await fetchSpotForecast(SPOT)).hours[0];
+      expect(short.waveFt).toBeCloseTo(long.waveFt, 5);   // identical offshore
+      expect(long.surfFt).toBeGreaterThan(short.surfFt * 1.3); // materially different surf
+      expect(long.wave).not.toBe(short.wave);
+    });
+
+    it('scores on the breaking height, so the badge agrees with the number beside it', async () => {
+      // 0.9m at 16s is deliberately chosen to straddle: 2.95ft offshore scores as small surf and
+      // is held below FIRING by the size cap, while the 4.5ft that actually breaks is neither.
+      // At a size where both land in the same bucket this assertion cannot tell them apart.
+      serveWith({ waveM: 0.9, periodS: 16 });
+      const { hours } = await fetchSpotForecast(SPOT);
+      const h = hours[0];
+      const args = [h.windMph, h.type, h.trains[0].period, h.trains[0].deg, SPOT.offshoreDeg, h.tidePosition, SPOT];
+      expect(h.score).toBe(conditionsScore(h.surfFt, ...args));
+      expect(h.score).not.toBe(conditionsScore(h.waveFt, ...args));
+    });
+
+    it('carries surf height and period into the week chart, which calibration re-derives from', async () => {
+      serveWith({ waveM: 1.5, periodS: 16 });
+      const { continuous } = await fetchSpotForecast(SPOT);
+      expect(continuous[0].surfFt).toBeGreaterThan(continuous[0].waveFt);
+      expect(continuous[0].period).toBe(16);
+    });
+
+    it('leaves the height alone when there is no period to transform with', async () => {
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        delete marine.hourly.swell_wave_period;
+        delete marine.hourly.wave_period;
+        delete marine.hourly.swell_wave_height;
+        delete marine.hourly.wind_wave_height;
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+      const { hours } = await fetchSpotForecast(SPOT);
+      expect(hours[0].surfFt).toBeCloseTo(hours[0].waveFt, 5);
+    });
+  });
+
+  describe('peak period', () => {
+    // The app's own thresholds are peak-period numbers: conditionsScore gives its groundswell
+    // bonus at 12s and classifyTrain calls 12s groundswell. Feeding them a mean period
+    // withholds that bonus on days that genuinely have it -- a mean 11s is a peak 13.2s.
+    function serveWith(extra) {
+      fetch.mockImplementation((url) => {
+        const u = String(url);
+        if (!u.includes('marine-api')) return Promise.resolve(mockFetchOnce(makeWindResponse()));
+        const marine = makeMarineResponse();
+        marine.hourly.swell_wave_period = hourly(24, () => 11);   // mean
+        Object.assign(marine.hourly, extra);
+        return Promise.resolve(mockFetchOnce(marine));
+      });
+    }
+
+    it('scores and labels from peak period when the upstream supplies it', async () => {
+      serveWith({ swell_wave_peak_period: hourly(24, () => 13) });
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.hours[0].period).toBe(13);
+      expect(result.hours[0].trains[0].kind).toBe('groundswell'); // 13s clears the 12s line
+    });
+
+    it('falls back to mean period where no peak value came back', async () => {
+      serveWith({});
+      const result = await fetchSpotForecast(SPOT);
+      expect(result.hours[0].period).toBe(11);
+    });
+
+    it('falls back per hour, not all-or-nothing', async () => {
+      // A series present but with holes in it is the shape that would otherwise yield a null
+      // period for those hours while the mean sat right there unused.
+      serveWith({ swell_wave_peak_period: hourly(24, (i) => (i === 5 ? null : 13)) });
+      const result = await fetchSpotForecast(SPOT);
+      const at5 = result.hours.find((h) => h.hour === 5);
+      const at7 = result.hours.find((h) => h.hour === 7);
+      expect(at5.period).toBe(11);
+      expect(at7.period).toBe(13);
+    });
+
+    it('uses peak period for the week chart too, so it does not rate the same day two ways', async () => {
+      // continuous carries no period field, so the observable difference is the score:
+      // conditionsScore gives +2 at 12s and only +1 at 9s, and 11 vs 13 straddles that.
+      serveWith({});
+      const mean = (await fetchSpotForecast(SPOT)).continuous[0].score;
+      serveWith({ swell_wave_peak_period: hourly(24, () => 13) });
+      const peak = (await fetchSpotForecast(SPOT)).continuous[0].score;
+      expect(peak).toBe(mean + 1);
+    });
   });
 
   describe('with a real NOAA tide prediction available', () => {

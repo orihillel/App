@@ -5,6 +5,8 @@ import { hourLabel12 } from './format.js';
 import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
 import { confidenceForSeries, confidenceLabel } from './confidence.js';
+import { fetchMarine } from './marine.js';
+import { breakingHeightFt, surfRange } from './surf.js';
 
 // What to tell someone when the forecast did not arrive.
 //
@@ -24,12 +26,10 @@ export function describeForecastError(err) {
 
 // Open-Meteo, straight from the browser. The fallback, not the first choice -- see fetchRaw.
 async function fetchDirect(spot) {
-  const marineUrl = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat + '&longitude=' + spot.lon +
-    '&hourly=wave_height,wave_direction,wave_period,swell_wave_height,swell_wave_direction,swell_wave_period,wind_wave_height,wind_wave_direction,wind_wave_period,sea_surface_temperature,sea_level_height_msl&daily=wave_height_max&timezone=auto&forecast_days=7';
   // sunrise/sunset drive which hours get sampled below, per spot and per date.
   const windUrl = 'https://api.open-meteo.com/v1/forecast?latitude=' + spot.lat + '&longitude=' + spot.lon +
     '&hourly=wind_speed_10m,wind_direction_10m&daily=sunrise,sunset&timezone=auto&forecast_days=7';
-  const [marineRes, windRes] = await Promise.all([fetch(marineUrl), fetch(windUrl)]);
+  const [marineRes, windRes] = await Promise.all([fetchMarine(spot.lat, spot.lon), fetch(windUrl)]);
   if (!marineRes.ok || !windRes.ok) {
     // The status travels with the error. Every failure used to arrive at the spot page as the
     // same sentence -- "couldn't reach the forecast service" -- which reads the same whether
@@ -169,6 +169,21 @@ function realTideLookup(realTide, times, modeledMetres) {
   };
 }
 
+// Peak period where the upstream supplied it, mean period where it did not.
+//
+// Both are asked for (see lib/marine.js) because the peak-period variable names could not be
+// verified from here, and because the mean is a genuine fallback rather than dead weight: an
+// hour with no peak value still has a period worth scoring. Every threshold in this app --
+// conditionsScore's groundswell bonus, classifyTrain's labels -- is written for peak period, so
+// this is the accessor they should all be reading through.
+function periodAt(hourly, peakKey, meanKey, idx) {
+  const peak = hourly[peakKey];
+  const v = peak && peak[idx] != null ? peak[idx] : null;
+  if (v != null) return v;
+  const mean = hourly[meanKey];
+  return mean && mean[idx] != null ? mean[idx] : null;
+}
+
 export async function fetchSpotForecast(spot) {
   // Run alongside the main fetch, not after it: real tide is a pure bonus over the modeled
   // curve every spot already gets, on the same footing as the buoy panel and the model
@@ -233,7 +248,7 @@ export async function fetchSpotForecast(spot) {
     const wh = mh.wave_height ? mh.wave_height[idx] : null;
     const wp = mh.wave_period ? mh.wave_period[idx] : null;
     const wdir = mh.wave_direction ? mh.wave_direction[idx] : null;
-    const sp = mh.swell_wave_period ? mh.swell_wave_period[idx] : null;
+    const sp = periodAt(mh, 'swell_wave_peak_period', 'swell_wave_period', idx);
     const sd = mh.swell_wave_direction ? mh.swell_wave_direction[idx] : null;
     const whh = wind.hourly || {};
     const ws = whh.wind_speed_10m ? whh.wind_speed_10m[idx] : null;
@@ -248,7 +263,7 @@ export async function fetchSpotForecast(spot) {
       swellPeriod: sp,
       swellDeg: sd,
       windWaveHeightFt: mh.wind_wave_height && mh.wind_wave_height[idx] != null ? mh.wind_wave_height[idx] * 3.28084 : null,
-      windWavePeriod: mh.wind_wave_period ? mh.wind_wave_period[idx] : null,
+      windWavePeriod: periodAt(mh, 'wind_wave_peak_period', 'wind_wave_period', idx),
       windWaveDeg: mh.wind_wave_direction ? mh.wind_wave_direction[idx] : null,
     });
     const type = windType(wdd, spot.offshoreDeg);
@@ -261,10 +276,13 @@ export async function fetchSpotForecast(spot) {
     const dominant = trains[0] || null;
     const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
     const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : swellDeg;
-    const score = conditionsScore(waveFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition, spot);
-    const base = Math.max(1, Math.round(waveFt));
+    // Offshore significant height becomes breaking height here, and everything the screen shows
+    // or scores is the second. See lib/surf.js -- and note this happens *after* the dominant
+    // train is picked, because the transform depends on the period carrying the energy.
+    const surfFt = breakingHeightFt(waveFt, scorePeriod);
+    const score = conditionsScore(surfFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition, spot);
     return {
-      t: hourLabel12(idx), hour: idx, wave: Math.max(1, base - 1) + '-' + (base + 1), period,
+      t: hourLabel12(idx), hour: idx, wave: surfRange(surfFt), period,
       swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
       windDir: degToCompass(wdd), windDeg: wdd, type, score, rating: scoreToRating(score), trains,
       // The raw values the two above were built from. Nothing downstream should ever need to
@@ -278,7 +296,12 @@ export async function fetchSpotForecast(spot) {
       // itself does not). A recompute built on windSpd would occasionally rate the same hour
       // differently from how it was rated the first time, for a reason that has nothing to do
       // with calibration.
-      waveFt, tidePosition, windMph,
+      //
+      // waveFt stays the *offshore* significant height even though nothing displays it, because
+      // that is the quantity a buoy measures and therefore the only one calibration can honestly
+      // be paired against. Calibrating the breaking height against an offshore buoy reading would
+      // teach the correction to cancel out the transform. surfFt is what the screen shows.
+      waveFt, surfFt, tidePosition, windMph,
     };
   });
 
@@ -294,7 +317,7 @@ export async function fetchSpotForecast(spot) {
   const hAll = marine.hourly || {};
   const timesAll = hAll.time || [];
   const waveAll = hAll.wave_height || [];
-  const periodAll = hAll.swell_wave_period || hAll.wave_period || [];
+  const periodAll = hAll.swell_wave_peak_period || hAll.swell_wave_period || hAll.wave_period || [];
   const swellDirAll = hAll.swell_wave_direction || hAll.wave_direction || [];
   const windAllH = wind.hourly || {};
   const windSpeedAll = windAllH.wind_speed_10m || [];
@@ -318,9 +341,14 @@ export async function fetchSpotForecast(spot) {
     // No per-day tide range computed out here (would mean tracking a min/max per day across
     // the whole week), so this leaves tide out of the week-ahead score — the same score used
     // for today already includes it, just not this longer-range one.
-    const cScore = cWindMph != null ? conditionsScore(cWaveFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot) : null;
+    const cSurfFt = breakingHeightFt(cWaveFt, cPeriod);
+    const cScore = cWindMph != null ? conditionsScore(cSurfFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot) : null;
     continuous.push({
       waveFt: cWaveFt,
+      // The breaking height, and the period it was derived from -- the period so a correction
+      // applied later can redo the transform without re-fetching (see lib/calibration.js).
+      surfFt: cSurfFt,
+      period: cPeriod,
       tideFt: tideFtAt(timesAll[idx], idx),
       windSpd: cWindMph != null ? Math.round(cWindMph) : null,
       windDeg: cWindDeg,
@@ -587,15 +615,16 @@ function nowRow(spot, marine, wind, now) {
   });
   const dominant = trains[0] || null;
   const type = windType(windDeg, spot.offshoreDeg);
+  const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
+  const surfFt = breakingHeightFt(waveFt, scorePeriod);
   const score = conditionsScore(
-    waveFt, windMph, type,
-    dominant && dominant.period != null ? dominant.period : period,
+    surfFt, windMph, type, scorePeriod,
     dominant && dominant.deg != null ? dominant.deg : swellDeg,
     spot.offshoreDeg, tidePositionNow(marine, mc.time), spot,
   );
   const hour = localHour(mc.time, spot.lon, now);
   return {
-    t: hourLabel12(hour), hour, wave: Math.max(1, Math.round(waveFt) - 1) + '-' + (Math.round(waveFt) + 1),
+    t: hourLabel12(hour), hour, wave: surfRange(surfFt), waveFt, surfFt,
     period, swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
     windDir: degToCompass(windDeg), windDeg, type, score, rating: scoreToRating(score), trains,
   };
