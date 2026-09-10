@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
@@ -7,15 +7,25 @@ import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import {
   base64ToBytes, decodeHeights, decodeDirections, fillGridGaps, sampleGridSmooth, sampleDirectionSmooth,
+  GRID_LAT_STEP,
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
-import { fetchWaveGrid } from '../lib/buoy.js';
+import { fetchWaveGrid, fetchWaveFrames } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
+import { frameLabel } from '../lib/waveframes.js';
 import { ConditionScale } from './ConditionScale.jsx';
+
+// How long each frame of the animated week is held on screen.
+//
+// 450ms is a compromise measured rather than chosen: a frame costs a full repaint of the
+// 720x360 overlay texture, and running faster than the repaint takes turns the animation into a
+// backlog. At this cadence the whole week plays in about twelve seconds, which is long enough
+// to follow a swell across an ocean and short enough to watch twice.
+const FRAME_MS = 450;
 
 // Interactive 3D globe of every saved spot, colored by live conditions. Owns its own WebGL
 // lifecycle: mounting this component is equivalent to the parent switching to the globe view,
@@ -33,6 +43,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // that are the point of this screen under a wash of colour.
   const [wavesOn, setWavesOn] = useState(false);
   const [waveMeta, setWaveMeta] = useState(null);
+  // The animated week. `frames` is the decoded set, `frameIdx` which one is drawn, `playing`
+  // whether the timer is advancing it. Held here rather than in the WebGL effect so the
+  // controls can read them; the effect exposes one imperative function to draw a frame.
+  const [frames, setFrames] = useState(null);
+  const [frameIdx, setFrameIdx] = useState(0);
+  const [playing, setPlaying] = useState(false);
+  const [framesState, setFramesState] = useState('idle'); // idle | loading | ready | unavailable
+  const applyFrameRef = useRef(null);
   // The three.js scene is built once in a mount effect, so React state cannot reach it. Same
   // Read through a ref for the same reason dataRef exists: the render loop is set up once, and
   // closing over the prop would pin whichever version of it existed at mount.
@@ -47,6 +65,65 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // it has to say so explicitly or the screen would not update until the next drag.
   const markDirtyRef = useRef(null);
   useEffect(() => { if (markDirtyRef.current) markDirtyRef.current(); }, [wavesOn]);
+
+  // Turning the overlay off ends the animation and rewinds to now. Otherwise "Show live swell"
+  // would bring back whatever hour was last on screen -- a map of Thursday, labelled live.
+  useEffect(() => {
+    if (!wavesOn) { setPlaying(false); setFrameIdx(0); }
+  }, [wavesOn]);
+
+  // Fetch and decode the week, once, the first time the animation is asked for.
+  //
+  // Decoded here rather than in the WebGL effect because it is pure array work with no WebGL in
+  // it, and because doing it once up front means a frame change costs a repaint rather than a
+  // decode. 28 frames of 186 cells is about five thousand numbers -- the whole week is smaller
+  // than one of the textures it paints.
+  const loadFramesOnce = useCallback(async () => {
+    if (framesState === 'loading' || framesState === 'ready') return;
+    setFramesState('loading');
+    const res = await fetchWaveFrames();
+    if (!res || !res.frames) { setFramesState('unavailable'); setFrames(null); return; }
+    const step = res.latStep;
+    // A response without the step it was sampled on cannot be decoded safely, and guessing
+    // would paint the wrong ocean rather than fail.
+    if (!Number.isFinite(step)) { setFramesState('unavailable'); setFrames(null); return; }
+    setFrames({
+      latStep: step,
+      stepHours: res.stepHours,
+      stale: res.stale,
+      list: res.frames.map((f) => ({
+        t: f.t,
+        heights: decodeHeights(base64ToBytes(f.data)),
+        dirs: typeof f.dirs === 'string' ? decodeDirections(base64ToBytes(f.dirs)) : null,
+      })),
+    });
+    setFrameIdx(0);
+    setFramesState('ready');
+  }, [framesState]);
+
+  // Advance while playing, and stop at the end of the week rather than looping: a swell that
+  // jumps back to Monday reads as a glitch, not as a repeat.
+  useEffect(() => {
+    if (!playing || !frames || framesState !== 'ready') return undefined;
+    const timer = setInterval(() => {
+      setFrameIdx((i) => {
+        if (i + 1 >= frames.list.length) return i;
+        return i + 1;
+      });
+    }, FRAME_MS);
+    return () => clearInterval(timer);
+  }, [playing, frames, framesState]);
+
+  useEffect(() => {
+    if (playing && frames && frameIdx + 1 >= frames.list.length) setPlaying(false);
+  }, [playing, frames, frameIdx]);
+
+  // Draw whichever frame is selected. Also the path back to "now" when the animation is turned
+  // off, which redraws frame zero rather than leaving the last frame of the week on screen.
+  useEffect(() => {
+    if (framesState !== 'ready' || !frames || !applyFrameRef.current) return;
+    applyFrameRef.current(frames.list[Math.min(frameIdx, frames.list.length - 1)], frames.latStep);
+  }, [frames, frameIdx, framesState]);
   const [globeError, setGlobeError] = useState(false);
   // How many spots currently have a live reading, so the legend can say what its colour scale
   // actually covers instead of implying it covers everything.
@@ -420,6 +497,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let waveTexture = null;
     let waveMaskTexture = null;
     let waveRequested = false;
+    // Held for the animation: the canvas the overlay's texture wraps, and the land mask the
+    // arrows are culled against. Both are built once with the live overlay and reused by every
+    // frame, so a frame costs a repaint rather than a rebuild.
+    let waveCanvasCtx = null;
+    let waveLand = null;
 
     // The arrows over the colour: which way each patch of swell is travelling.
     //
@@ -433,11 +515,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let arrowPoints = null;
     let arrowScaleAt = 0;
 
-    function buildWaveTexture(heights) {
-      const cv = document.createElement('canvas');
-      cv.width = WAVE_TEX_W;
-      cv.height = WAVE_TEX_H;
-      const ctx = cv.getContext('2d');
+    // Painting and wrapping are separate because the animation repaints the same canvas 28
+    // times. Allocating a texture per frame would hand the GPU 28 uploads and the collector 28
+    // canvases for a picture that is the same size every time.
+    function paintWaveCanvas(ctx, heights, step) {
       const img = ctx.createImageData(WAVE_TEX_W, WAVE_TEX_H);
       const px = img.data;
       for (let y = 0; y < WAVE_TEX_H; y++) {
@@ -446,12 +527,21 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         for (let x = 0; x < WAVE_TEX_W; x++) {
           const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
           const o = (y * WAVE_TEX_W + x) * 4;
-          const c = waveColor(sampleGridSmooth(heights, lat, lon));
+          const c = waveColor(sampleGridSmooth(heights, lat, lon, step));
           if (!c) { px[o + 3] = 0; continue; } // nothing to say here: draw nothing
           px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
         }
       }
       ctx.putImageData(img, 0, 0);
+    }
+
+    function buildWaveTexture(heights, step) {
+      const cv = document.createElement('canvas');
+      cv.width = WAVE_TEX_W;
+      cv.height = WAVE_TEX_H;
+      const ctx = cv.getContext('2d');
+      paintWaveCanvas(ctx, heights, step);
+      waveCanvasCtx = ctx;
       const tex = new THREE.CanvasTexture(cv);
       if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
       tex.wrapS = THREE.RepeatWrapping; // the map joins itself at the antimeridian
@@ -548,11 +638,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Order is preserved from lib/swellarrows.js, whose sequence is arranged so that any prefix
     // still covers the whole globe — that is what lets the draw count follow the zoom without
     // rebuilding anything.
-    function buildArrowField(directions, land) {
+    function buildArrowField(directions, land, step) {
       const points = [];
       for (const p of fibonacciSphere(ARROW_FIELD)) {
         if (land && !isWater(land.mask, land.width, land.height, p.lat, p.lon)) continue;
-        const from = sampleDirectionSmooth(directions, p.lat, p.lon);
+        const from = sampleDirectionSmooth(directions, p.lat, p.lon, step);
         const bearing = swellTravelBearing(from);
         if (bearing == null) continue;
         points.push({ ...p, bearing });
@@ -627,11 +717,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             }
           }
           waveMaskTexture = land ? land.texture : null;
+          waveLand = land;
           const raw = decodeHeights(base64ToBytes(grid.data));
           // Gaps are only filled when there is a mask to stop the fill at the shore. Without
           // one, "no reading" is the only thing marking out land at all, and filling it would
           // paint swell across every continent.
-          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw);
+          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw, GRID_LAT_STEP);
           const material = new THREE.MeshBasicMaterial({
             map: waveTexture, transparent: true, opacity: 0.62, depthWrite: false,
           });
@@ -649,7 +740,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // Directions are optional: a grid cached before the Worker started fetching them has
           // heights and nothing else, and the colours are worth drawing on their own.
           const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
-          arrowPoints = directions ? buildArrowField(directions, land) : [];
+          arrowPoints = directions ? buildArrowField(directions, land, GRID_LAT_STEP) : [];
           if (arrowPoints.length) {
             arrowMesh = new THREE.InstancedMesh(
               arrowGeometry(),
@@ -681,6 +772,34 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         })
         .catch(() => setWaveMeta({ ok: false }));
     }
+
+    // Draw one frame of the animated week.
+    //
+    // Repaints the overlay's existing canvas and rebuilds the arrow field, rather than building
+    // a texture and a mesh per frame. `step` is the frame grid's, which is coarser than the
+    // live overlay's -- passing the wrong one does not throw, it paints one ocean's swell onto
+    // another, which is why it travels with the data rather than being assumed here.
+    function applyWaveFrame(frame, step) {
+      if (!frame || !waveCanvasCtx || !waveTexture) return;
+      const heights = waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights;
+      paintWaveCanvas(waveCanvasCtx, heights, step);
+      waveTexture.needsUpdate = true;
+
+      // Arrows are rebuilt in place when the count is unchanged, which it is for every frame
+      // after the first: the field is a fixed set of points on a sphere, and only the bearings
+      // move. A frame whose directions are missing leaves the last ones alone rather than
+      // clearing the sky.
+      if (frame.dirs && arrowMesh) {
+        const next = buildArrowField(frame.dirs, waveLand, step);
+        if (next.length === arrowPoints.length) {
+          arrowPoints = next;
+          arrowScaleAt = 0; // force the next layout pass to re-orient every instance
+        }
+      }
+      state.dataDirty = true;
+      if (markDirtyRef.current) markDirtyRef.current();
+    }
+    applyFrameRef.current = applyWaveFrame;
 
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
@@ -1426,6 +1545,61 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         >
           {wavesOn ? 'Hide live swell' : 'Show live swell'}
         </button>
+        {/* The animated week. Only offered once the live overlay is actually drawn: it repaints
+            that overlay's own texture, so there is nothing for it to animate until then. */}
+        {wavesOn && waveMeta && waveMeta.ok && (
+          <div style={{ marginBottom: 10 }}>
+            {framesState === 'ready' && frames ? (
+              <div>
+                <div className="flex items-center" style={{ gap: 10 }}>
+                  <button
+                    className="tl-btn"
+                    onClick={() => {
+                      // Replay from the start when the week has already run to its end,
+                      // rather than pressing play on a frame that cannot advance.
+                      if (frameIdx + 1 >= frames.list.length) setFrameIdx(0);
+                      setPlaying((v) => !v);
+                    }}
+                    aria-label={playing ? 'Pause the forecast' : 'Play the forecast'}
+                    style={{
+                      minWidth: 44, minHeight: 44, borderRadius: 8, flexShrink: 0,
+                      background: COLORS.navyCard, border: '1px solid ' + COLORS.tealBright,
+                      color: COLORS.tealBright, fontSize: 15, fontWeight: 700,
+                    }}
+                  >
+                    {playing ? '❚❚' : '▶'}
+                  </button>
+                  <input
+                    type="range" min={0} max={frames.list.length - 1} step={1} value={frameIdx}
+                    aria-label="Forecast hour"
+                    onChange={(e) => { setPlaying(false); setFrameIdx(Number(e.target.value)); }}
+                    style={{ flex: 1, accentColor: COLORS.tealBright, minHeight: 44 }}
+                  />
+                </div>
+                <div style={{ fontSize: 11, color: COLORS.foamDim, textAlign: 'center', marginTop: 2 }}>
+                  {frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now())}
+                  {frameIdx === 0 ? ' · now' : ' · +' + frameIdx * (frames.stepHours || 6) + 'h'}
+                </div>
+              </div>
+            ) : (
+              <button
+                className="tl-btn"
+                onClick={loadFramesOnce}
+                disabled={framesState === 'loading' || framesState === 'unavailable'}
+                style={{
+                  width: '100%', minHeight: 44, borderRadius: 8, fontSize: 13,
+                  background: 'none', border: '1px solid ' + COLORS.navyBorder,
+                  color: COLORS.foamDim,
+                  opacity: framesState === 'loading' ? 0.6 : 1,
+                }}
+              >
+                {framesState === 'loading' ? 'Loading the week…'
+                  : framesState === 'unavailable' ? 'Animation unavailable right now'
+                    : 'Animate the week'}
+              </button>
+            )}
+          </div>
+        )}
         {wavesOn && (
           <div style={{ marginBottom: 12 }}>
             {waveMeta && waveMeta.ok === false ? (
@@ -1459,7 +1633,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                   ))}
                 </div>
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
-                  {waveLegendCaption(waveMeta, units)}
+                  {waveLegendCaption(
+                    framesState === 'ready' && frames && frameIdx > 0
+                      ? { ...waveMeta, frameLabel: 'forecast for ' + frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now()) }
+                      : waveMeta,
+                    units,
+                  )}
                 </div>
                 <div style={{ fontSize: 9, color: COLORS.foamDim, marginTop: 3, textAlign: 'center', opacity: 0.8 }}>
                   Big is not the same as good — the spot colours below already account for wind, tide and swell direction.

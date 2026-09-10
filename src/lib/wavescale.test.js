@@ -184,3 +184,16 @@ describe('waveLegendCaption with arrows', () => {
     expect(caption).not.toContain('no wave directions');
   });
 });
+
+describe('waveLegendCaption while the week is animating', () => {
+  const meta = { ok: true, generatedAt: Date.now(), arrows: true };
+  it('says which hour is on screen instead of how old the build is', () => {
+    // A map four days ahead must not be captioned "just now".
+    const cap = waveLegendCaption({ ...meta, frameLabel: 'forecast for Sun 6am' }, 'imperial');
+    expect(cap).toContain('forecast for Sun 6am');
+    expect(cap).not.toContain('just now');
+  });
+  it('falls back to the build age when no frame is being shown', () => {
+    expect(waveLegendCaption(meta, 'imperial')).toContain('just now');
+  });
+});

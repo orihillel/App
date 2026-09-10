@@ -94,7 +94,11 @@ export function gridAgeLabel(generatedAt, now = Date.now()) {
 // of the two is happening.
 export function waveLegendCaption(meta, units, now = Date.now()) {
   const parts = ['Open-ocean wave height (' + waveScaleUnitLabel(units) + ')'];
-  parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
+  // While the week is animating, the map is not "now" and must not claim to be. The frame's own
+  // time replaces the grid's age, because the age of the build is not the interesting fact when
+  // the picture on screen is four days ahead of it.
+  if (meta && meta.frameLabel) parts.push(meta.frameLabel);
+  else parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
   if (meta && meta.stale) parts.push('last good data');
   if (meta && meta.coarse) parts.push('coarse edge — coastline unavailable');
   // Which way the arrows read. "Direction" is ambiguous for waves — the number in every marine
