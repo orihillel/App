@@ -1,8 +1,8 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
-  frameTimes, fetchFrame, buildFrames, framesAreUsable, loadFrames,
-  FRAME_COUNT, FRAME_STEP_H, MAX_TIMESTEPS_PER_FRAME, MAX_FETCHES, FRAMES_MIN_COVERAGE,
-  FRAMES_REFRESH_MS,
+  frameTimes, fetchFrame, framesAreUsable, loadFrames, advanceFrames, framesPerPass,
+  FRAME_COUNT, FRAME_STEP_H, MAX_TIMESTEPS_PER_FRAME, FRAMES_MIN_COVERAGE,
+  FRAMES_REFRESH_MS, UNITS_PER_PASS, UNITS_PER_MINUTE, FRAMES_KEY, FRAMES_PARTIAL_KEY,
 } from '../src/waveFrames.js';
 import { createFakeKv } from './fakeKv.js';
 import { gridCells, FRAME_LAT_STEP, base64ToBytes, decodeHeights } from '../../src/lib/wavegrid.js';
@@ -94,72 +94,6 @@ describe('fetchFrame', () => {
   });
 });
 
-describe('buildFrames', () => {
-  const serve = (h = 1.4, d = 250) => vi.fn(async () => okRes(CELLS.map(() => loc(h, d))));
-
-  it('builds a full week and stays inside the platform subrequest limit', async () => {
-    const fetchImpl = serve();
-    const out = await buildFrames({ fetchImpl, sleep: noSleep, now: Date.parse('2026-09-10T00:00:00Z') });
-    expect(out.frames).toHaveLength(FRAME_COUNT);
-    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(MAX_FETCHES);
-    expect(fetchImpl.mock.calls.length).toBeLessThan(50);
-    expect(out.aborted).toBeNull();
-    expect(out.coverage).toBe(1);
-  });
-
-  it('costs what the budget said it would', async () => {
-    // 186 cells x 28 frames. The number that chose the coarse grid, asserted so it cannot drift.
-    const out = await buildFrames({ fetchImpl: serve(), sleep: noSleep });
-    expect(out.units).toBe(186 * FRAME_COUNT);
-    expect(out.units).toBeLessThan(10000);
-  });
-
-  it('stops the whole build at the first over-long frame, not just that frame', async () => {
-    const overrun = { hourly: { time: Array(168).fill('x'), wave_height: Array(168).fill(1), wave_direction: Array(168).fill(0) } };
-    let n = 0;
-    const fetchImpl = vi.fn(async () => {
-      n++;
-      return okRes(CELLS.map(() => (n >= 3 ? overrun : loc(1, 90))));
-    });
-    const out = await buildFrames({ fetchImpl, sleep: noSleep });
-    expect(out.aborted).toBe('timestep-overrun');
-    // Three requests spent, not twenty-eight.
-    expect(fetchImpl).toHaveBeenCalledTimes(3);
-    expect(framesAreUsable(out)).toBe(false);
-  });
-
-  it('plans fewer frames rather than exceeding the fetch limit when batches are smaller', async () => {
-    const fetchImpl = serve();
-    const out = await buildFrames({ fetchImpl, sleep: noSleep, batchSize: 50, maxFetches: 20 });
-    // 186 cells at 50 per batch is 4 fetches a frame, so 20 fetches buys 5 frames.
-    expect(out.frames).toHaveLength(5);
-    expect(fetchImpl.mock.calls.length).toBeLessThanOrEqual(20);
-  });
-
-  it('encodes each frame so the app can decode it against the coarse grid', async () => {
-    const out = await buildFrames({ fetchImpl: serve(2.5, 180), sleep: noSleep, frameCount: 2 });
-    expect(out.cells).toBe(CELLS.length);
-    expect(out.latStep).toBe(FRAME_LAT_STEP);
-    expect(out.stepHours).toBe(FRAME_STEP_H);
-    const heights = decodeHeights(base64ToBytes(out.frames[0].data));
-    expect(heights).toHaveLength(CELLS.length);
-    expect(heights[0]).toBeCloseTo(2.5, 1);
-    expect(out.frames[0].t).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  });
-
-  it('keeps going when one frame fails, and records why', async () => {
-    let n = 0;
-    const fetchImpl = vi.fn(async () => {
-      n++;
-      if (n === 2) return { ok: false, status: 429, json: async () => ({ reason: 'rate limited' }) };
-      return okRes(CELLS.map(() => loc(1, 90)));
-    });
-    const out = await buildFrames({ fetchImpl, sleep: noSleep, frameCount: 4 });
-    expect(out.frames).toHaveLength(4);      // the failed frame is still a frame, just empty
-    expect(out.lastStatus).toBe(429);
-    expect(out.coverage).toBeLessThan(1);
-  });
-});
 
 describe('framesAreUsable', () => {
   const good = { frames: [{}, {}], cells: CELLS.length, coverage: 1, aborted: null };
@@ -175,62 +109,117 @@ describe('framesAreUsable', () => {
   });
 });
 
-describe('loadFrames', () => {
-  const okBuild = () => ({
-    generatedAt: Date.now(), cells: CELLS.length, latStep: FRAME_LAT_STEP, stepHours: FRAME_STEP_H,
-    frames: [{ t: 'a', data: 'x', dirs: 'y' }, { t: 'b', data: 'x', dirs: 'y' }],
-    coverage: 1, aborted: null, units: 5208,
+
+describe('pacing the build under the per-minute allowance', () => {
+  const loc = (h, d) => ({ hourly: { time: ['t'], wave_height: [h], wave_direction: [d] } });
+  const okRes = (body) => ({ ok: true, status: 200, json: async () => body });
+  const serve = () => vi.fn(async () => okRes(CELLS.map(() => loc(1.4, 250))));
+  const noSleep = () => Promise.resolve();
+  const env = () => ({ SUBSCRIPTIONS: createFakeKv() });
+
+  it('never asks for more in one pass than a minute of allowance buys', () => {
+    // The bug this replaced: a 28-frame week is 5,208 units against ~600 a minute, fired at
+    // once. It got about three frames in and every remaining request was refused.
+    expect(CELLS.length * FRAME_COUNT).toBeGreaterThan(UNITS_PER_MINUTE * 8);
+    const perPass = framesPerPass(CELLS.length);
+    expect(perPass * CELLS.length).toBeLessThanOrEqual(UNITS_PER_PASS);
+    expect(UNITS_PER_PASS).toBeLessThan(UNITS_PER_MINUTE);
+    expect(perPass).toBeGreaterThanOrEqual(1);
   });
 
-  it('serves a cached week without asking upstream again', async () => {
-    const env = { SUBSCRIPTIONS: createFakeKv() };
-    const build = vi.fn(async () => okBuild());
-    await loadFrames(env, { build });
-    const second = await loadFrames(env, { build });
-    expect(build).toHaveBeenCalledTimes(1);
-    expect(second.frames.stale).toBe(false);
+  it('takes a few frames per pass and leaves the rest for the next one', async () => {
+    const e = env();
+    const fetchImpl = serve();
+    const first = await advanceFrames(e, { fetchImpl, sleep: noSleep });
+    expect(first.complete).toBe(false);
+    expect(first.fetchedThisPass).toBe(framesPerPass(CELLS.length));
+    expect(first.units).toBeLessThanOrEqual(UNITS_PER_PASS);
+    expect(first.remaining).toBeGreaterThan(0);
   });
 
-  it('rebuilds once the cached week is a day old', async () => {
-    const env = { SUBSCRIPTIONS: createFakeKv() };
+  it('assembles the whole week across passes, then stops fetching', async () => {
+    const e = env();
+    const fetchImpl = serve();
+    const now = Date.parse('2026-09-10T00:00:00Z');
+    let out;
+    for (let i = 0; i < 20; i++) {
+      out = await advanceFrames(e, { fetchImpl, sleep: noSleep, now });
+      if (out.complete) break;
+    }
+    expect(out.complete).toBe(true);
+    expect(out.frames).toHaveLength(FRAME_COUNT);
+    const calls = fetchImpl.mock.calls.length;
+    await advanceFrames(e, { fetchImpl, sleep: noSleep, now });
+    expect(fetchImpl.mock.calls.length).toBe(calls); // a finished week costs nothing
+  });
+
+  it('keeps the frames it already has when the six-hourly boundary moves', async () => {
+    // The week slides forward every six hours, and its later frames are the same instants.
+    // Restarting from nothing each time would mean the build never converges.
+    const e = env();
+    const fetchImpl = serve();
     const t0 = Date.parse('2026-09-10T00:00:00Z');
-    const build = vi.fn(async (o) => ({ ...okBuild(), generatedAt: o.now }));
-    await loadFrames(env, { build, now: t0 });
-    await loadFrames(env, { build, now: t0 + FRAMES_REFRESH_MS + 1 });
-    expect(build).toHaveBeenCalledTimes(2);
+    await advanceFrames(e, { fetchImpl, sleep: noSleep, now: t0 });
+    const before = fetchImpl.mock.calls.length;
+    const after = await advanceFrames(e, { fetchImpl, sleep: noSleep, now: t0 + 6 * 3600e3 });
+    expect(after.frames.length).toBeGreaterThan(0);
+    expect(fetchImpl.mock.calls.length - before).toBeLessThanOrEqual(framesPerPass(CELLS.length));
   });
 
-  it('does not cache an aborted build, and cools off instead of retrying it', async () => {
-    // The abort is a property of the upstream, not a transient. Retrying on the next request
-    // would spend the same units to be told the same thing.
-    const env = { SUBSCRIPTIONS: createFakeKv() };
-    const build = vi.fn(async () => ({ ...okBuild(), aborted: 'timestep-overrun', coverage: 0 }));
-    const first = await loadFrames(env, { build });
-    expect(first.frames).toBeNull();
-    expect(first.build.aborted).toBe('timestep-overrun');
-    const second = await loadFrames(env, { build });
-    expect(build).toHaveBeenCalledTimes(1);         // not asked again
-    expect(second.build.cooling).toBe(true);
-    expect(second.build.retryInSeconds).toBeGreaterThan(0);
+  it('stops the pass at an over-long frame and stores nothing', async () => {
+    const overrun = { hourly: { time: Array(168).fill('x'), wave_height: Array(168).fill(1), wave_direction: Array(168).fill(0) } };
+    const e = env();
+    const out = await advanceFrames(e, { fetchImpl: async () => okRes(CELLS.map(() => overrun)), sleep: noSleep });
+    expect(out.aborted).toBe('timestep-overrun');
+    expect(await e.SUBSCRIPTIONS.get(FRAMES_PARTIAL_KEY)).toBeFalsy();
   });
 
-  it('keeps serving the last good week, marked stale, while a rebuild is failing', async () => {
-    const env = { SUBSCRIPTIONS: createFakeKv() };
-    const t0 = Date.parse('2026-09-10T00:00:00Z');
-    await loadFrames(env, { build: async (o) => ({ ...okBuild(), generatedAt: o.now }), now: t0 });
-    const later = await loadFrames(env, {
-      build: async () => ({ frames: [], coverage: 0, lastStatus: 429, lastError: 'rate limited' }),
-      now: t0 + FRAMES_REFRESH_MS + 1,
+  it('does not record a frame that answered with nothing', async () => {
+    // Storing an empty frame marks that hour done and leaves a hole in the week all day.
+    const e = env();
+    const out = await advanceFrames(e, {
+      fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({ reason: 'rate limited' }) }),
+      sleep: noSleep,
     });
-    expect(later.frames).not.toBeNull();
-    expect(later.frames.stale).toBe(true);
-    expect(later.build.lastStatus).toBe(429);
+    expect(out.frames).toHaveLength(0);
+    expect(out.lastStatus).toBe(429);
+  });
+});
+
+describe('loadFrames only ever reads', () => {
+  const env = () => ({ SUBSCRIPTIONS: createFakeKv() });
+  const week = (generatedAt) => JSON.stringify({
+    generatedAt, cells: CELLS.length, latStep: FRAME_LAT_STEP, stepHours: FRAME_STEP_H,
+    frames: Array.from({ length: FRAME_COUNT }, (_, i) => ({ t: 't' + i, data: 'x', dirs: 'y' })),
+    coverage: 1, aborted: null,
   });
 
-  it('survives a build that throws', async () => {
-    const env = { SUBSCRIPTIONS: createFakeKv() };
-    const out = await loadFrames(env, { build: async () => { throw new Error('boom'); } });
+  it('never fetches, which is what makes the button safe to press', async () => {
+    const out = await loadFrames(env());
     expect(out.frames).toBeNull();
-    expect(out.build.lastError).toMatch(/boom/);
+    expect(out.build.building).toBe(true);
+    expect(out.build.ready).toBe(0);
+    expect(out.build.wanted).toBe(FRAME_COUNT);
+  });
+
+  it('reports how much of the week is ready while it is assembling', async () => {
+    const e = env();
+    const loc = (h) => ({ hourly: { time: ['t'], wave_height: [h], wave_direction: [200] } });
+    await advanceFrames(e, {
+      fetchImpl: async () => ({ ok: true, status: 200, json: async () => CELLS.map(() => loc(1)) }),
+      sleep: () => Promise.resolve(),
+    });
+    const out = await loadFrames(e);
+    expect(out.frames).toBeNull();
+    expect(out.build.ready).toBeGreaterThan(0);
+    expect(out.build.ready).toBeLessThan(FRAME_COUNT);
+  });
+
+  it('serves a finished week, and marks an old one stale rather than withdrawing it', async () => {
+    const e = env();
+    const t0 = Date.parse('2026-09-10T00:00:00Z');
+    await e.SUBSCRIPTIONS.put(FRAMES_KEY, week(t0));
+    expect((await loadFrames(e, { now: t0 })).frames.stale).toBe(false);
+    expect((await loadFrames(e, { now: t0 + FRAMES_REFRESH_MS + 1 })).frames.stale).toBe(true);
   });
 });

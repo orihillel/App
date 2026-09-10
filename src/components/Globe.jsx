@@ -16,7 +16,7 @@ import { fetchWaveGrid, fetchWaveFrames } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
-import { frameLabel } from '../lib/waveframes.js';
+import { frameLabel, frameBuildLabel } from '../lib/waveframes.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long each frame of the animated week is held on screen.
@@ -50,6 +50,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   const [frameIdx, setFrameIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
   const [framesState, setFramesState] = useState('idle'); // idle | loading | ready | unavailable
+  const [framesBuild, setFramesBuild] = useState(null);
   const applyFrameRef = useRef(null);
   // The three.js scene is built once in a mount effect, so React state cannot reach it. Same
   // Read through a ref for the same reason dataRef exists: the render loop is set up once, and
@@ -82,7 +83,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     if (framesState === 'loading' || framesState === 'ready') return;
     setFramesState('loading');
     const res = await fetchWaveFrames();
-    if (!res || !res.frames) { setFramesState('unavailable'); setFrames(null); return; }
+    if (!res || !res.frames) {
+      // Why, not just whether. The overlay beside this has said "Fetched 2 of 5 batches · HTTP
+      // 429" since the round of guessing that taught it to; this said "unavailable" and sent
+      // the next failure straight back to guessing.
+      setFramesBuild((res && res.build) || null);
+      setFramesState('unavailable');
+      setFrames(null);
+      return;
+    }
+    setFramesBuild(null);
     const step = res.latStep;
     // A response without the step it was sampled on cannot be decoded safely, and guessing
     // would paint the wrong ocean rather than fail.
@@ -1594,9 +1604,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                 }}
               >
                 {framesState === 'loading' ? 'Loading the week…'
-                  : framesState === 'unavailable' ? 'Animation unavailable right now'
+                  : framesState === 'unavailable' ? frameBuildLabel(framesBuild)
                     : 'Animate the week'}
               </button>
+            )}
+            {framesState === 'unavailable' && framesBuild && (framesBuild.lastStatus || framesBuild.lastError) && (
+              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center', marginTop: 4, lineHeight: 1.5 }}>
+                {framesBuild.lastStatus ? 'HTTP ' + framesBuild.lastStatus : ''}
+                {framesBuild.lastError ? (framesBuild.lastStatus ? ' · ' : '') + String(framesBuild.lastError).slice(0, 120) : ''}
+              </div>
             )}
           </div>
         )}

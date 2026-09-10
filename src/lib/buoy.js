@@ -80,10 +80,10 @@ export async function fetchWaveFrames() {
     // Same contract as the grid above: diagnostics come back either way, so the UI can say why
     // there is no animation rather than only that there isn't one.
     if (!data || !Array.isArray(data.frames) || data.frames.length < 2) {
-      return { frames: null, build: data && data.build };
+      return { frames: null, build: (data && data.build) || null };
     }
     const frames = data.frames.filter((f) => f && typeof f.data === 'string');
-    if (frames.length < 2) return { frames: null, build: data.build };
+    if (frames.length < 2) return { frames: null, build: data.build || null };
     return {
       frames,
       cells: data.cells,
