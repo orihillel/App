@@ -6,7 +6,7 @@ import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleT
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import {
-  base64ToBytes, decodeHeights, decodeDirections, fillGridGaps, sampleGridSmooth, sampleDirectionSmooth,
+  base64ToBytes, decodeHeights, decodeDirections, fillGridGaps, makeGridSampler,
   GRID_LAT_STEP,
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
@@ -16,7 +16,7 @@ import { fetchWaveGrid, fetchWaveFrames } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
-import { frameLabel, frameBuildLabel } from '../lib/waveframes.js';
+import { frameLabel, frameBuildLabel, lerpFrames } from '../lib/waveframes.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long each frame of the animated week is held on screen.
@@ -25,7 +25,25 @@ import { ConditionScale } from './ConditionScale.jsx';
 // 720x360 overlay texture, and running faster than the repaint takes turns the animation into a
 // backlog. At this cadence the whole week plays in about twelve seconds, which is long enough
 // to follow a swell across an ocean and short enough to watch twice.
-const FRAME_MS = 450;
+// How long one six-hour step of the week takes on screen, and how many pictures are drawn
+// inside it.
+//
+// The frames are six hours apart because that is what the upstream budget allows to fetch -- but
+// the eye does not have to be shown the same six steps the network was. Drawing straight from
+// one frame to the next is 28 jumps and reads as a slideshow at any speed; interpolating six
+// pictures inside each step turns the same data into motion, at no cost upstream at all.
+//
+// 450ms a step and 6 sub-steps is 75ms a picture -- about 13 a second -- and the whole week in
+// twelve and a half seconds. The work behind each picture was measured at 23ms of JavaScript
+// before this, and the sub-steps below are cheaper than that again.
+const STEP_MS = 450;
+const SUB_STEPS = 6;
+const FRAME_MS = STEP_MS / SUB_STEPS;
+
+// How coarsely an animation frame is sampled. 3 means every third texel in each direction, so a
+// ninth of the work. See paintWaveCanvas for why that is not a ninth of the quality -- the
+// picture is drawn from 186 numbers however finely it is sampled.
+const ANIM_COARSEN = 3;
 
 // Interactive 3D globe of every saved spot, colored by live conditions. Owns its own WebGL
 // lifecycle: mounting this component is equivalent to the parent switching to the globe view,
@@ -47,7 +65,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // whether the timer is advancing it. Held here rather than in the WebGL effect so the
   // controls can read them; the effect exposes one imperative function to draw a frame.
   const [frames, setFrames] = useState(null);
-  const [frameIdx, setFrameIdx] = useState(0);
+  // A continuous position through the week rather than an index, so the picture can sit between
+  // two frames. The scrubber and the label still work in whole frames.
+  const [pos, setPos] = useState(0);
+  const frameIdx = Math.round(pos);
   const [playing, setPlaying] = useState(false);
   const [framesState, setFramesState] = useState('idle'); // idle | loading | ready | unavailable
   const [framesBuild, setFramesBuild] = useState(null);
@@ -70,7 +91,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // Turning the overlay off ends the animation and rewinds to now. Otherwise "Show live swell"
   // would bring back whatever hour was last on screen -- a map of Thursday, labelled live.
   useEffect(() => {
-    if (!wavesOn) { setPlaying(false); setFrameIdx(0); }
+    if (!wavesOn) { setPlaying(false); setPos(0); }
   }, [wavesOn]);
 
   // Fetch and decode the week, once, the first time the animation is asked for.
@@ -81,6 +102,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // than one of the textures it paints.
   const loadFramesOnce = useCallback(async () => {
     if (framesState === 'loading' || framesState === 'ready') return;
+    // 'unavailable' is deliberately not a stopping state: it usually means the week is still
+    // being assembled, which fixes itself a few minutes later.
     setFramesState('loading');
     const res = await fetchWaveFrames();
     if (!res || !res.frames) {
@@ -107,7 +130,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         dirs: typeof f.dirs === 'string' ? decodeDirections(base64ToBytes(f.dirs)) : null,
       })),
     });
-    setFrameIdx(0);
+    setPos(0);
     setFramesState('ready');
   }, [framesState]);
 
@@ -116,24 +139,26 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   useEffect(() => {
     if (!playing || !frames || framesState !== 'ready') return undefined;
     const timer = setInterval(() => {
-      setFrameIdx((i) => {
-        if (i + 1 >= frames.list.length) return i;
-        return i + 1;
-      });
+      setPos((p) => Math.min(frames.list.length - 1, p + 1 / SUB_STEPS));
     }, FRAME_MS);
     return () => clearInterval(timer);
   }, [playing, frames, framesState]);
 
   useEffect(() => {
-    if (playing && frames && frameIdx + 1 >= frames.list.length) setPlaying(false);
-  }, [playing, frames, frameIdx]);
+    if (playing && frames && pos >= frames.list.length - 1) setPlaying(false);
+  }, [playing, frames, pos]);
 
   // Draw whichever frame is selected. Also the path back to "now" when the animation is turned
   // off, which redraws frame zero rather than leaving the last frame of the week on screen.
   useEffect(() => {
     if (framesState !== 'ready' || !frames || !applyFrameRef.current) return;
-    applyFrameRef.current(frames.list[Math.min(frameIdx, frames.list.length - 1)], frames.latStep);
-  }, [frames, frameIdx, framesState]);
+    const last = frames.list.length - 1;
+    const i = Math.min(last, Math.floor(pos));
+    const t = pos - i;
+    // Exactly on a frame, draw it; between two, draw the blend. See lib/waveframes.js.
+    const frame = t > 0 && i < last ? lerpFrames(frames.list[i], frames.list[i + 1], t) : frames.list[i];
+    applyFrameRef.current(frame, frames.latStep);
+  }, [frames, pos, framesState]);
   const [globeError, setGlobeError] = useState(false);
   // How many spots currently have a live reading, so the legend can say what its colour scale
   // actually covers instead of implying it covers everything.
@@ -511,6 +536,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // arrows are culled against. Both are built once with the live overlay and reused by every
     // frame, so a frame costs a repaint rather than a rebuild.
     let waveCanvasCtx = null;
+    let waveImageData = null;
     let waveLand = null;
 
     // The arrows over the colour: which way each patch of swell is travelling.
@@ -528,21 +554,42 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Painting and wrapping are separate because the animation repaints the same canvas 28
     // times. Allocating a texture per frame would hand the GPU 28 uploads and the collector 28
     // canvases for a picture that is the same size every time.
-    function paintWaveCanvas(ctx, heights, step) {
-      const img = ctx.createImageData(WAVE_TEX_W, WAVE_TEX_H);
-      const px = img.data;
-      for (let y = 0; y < WAVE_TEX_H; y++) {
+    // `coarsen` samples every nth texel and fills the n-by-n block with the result.
+    //
+    // The static overlay is painted once and can afford every texel. An animation frame cannot:
+    // 259,200 texels was a quarter-second freeze on every step, and the source it is drawn from
+    // is 186 cells. Sampling at half resolution asks 64,800 questions of 186 numbers instead of
+    // 259,200, and the answer still passes through a mipmapped linear filter on its way to a
+    // sphere, so the difference on screen is far smaller than the difference in cost.
+    function paintWaveCanvas(ctx, heights, step, coarsen = 1) {
+      // One buffer for the life of the overlay. createImageData allocates a megabyte, and doing
+      // that 28 times hands the collector a megabyte of garbage per animation.
+      if (!waveImageData || waveImageData.width !== WAVE_TEX_W) {
+        waveImageData = ctx.createImageData(WAVE_TEX_W, WAVE_TEX_H);
+      }
+      const px = waveImageData.data;
+      // One sampler for the whole texture rather than rebuilding the grid's row table inside
+      // every texel below. See lib/wavegrid.js's makeGridSampler.
+      const sampler = makeGridSampler(step);
+      const n = Math.max(1, coarsen | 0);
+      for (let y = 0; y < WAVE_TEX_H; y += n) {
         // Texel centres, and latitude runs north-to-south down an equirectangular image.
         const lat = 90 - ((y + 0.5) / WAVE_TEX_H) * 180;
-        for (let x = 0; x < WAVE_TEX_W; x++) {
+        const yMax = Math.min(WAVE_TEX_H, y + n);
+        for (let x = 0; x < WAVE_TEX_W; x += n) {
           const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
-          const o = (y * WAVE_TEX_W + x) * 4;
-          const c = waveColor(sampleGridSmooth(heights, lat, lon, step));
-          if (!c) { px[o + 3] = 0; continue; } // nothing to say here: draw nothing
-          px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
+          const c = waveColor(sampler.height(heights, lat, lon));
+          const xMax = Math.min(WAVE_TEX_W, x + n);
+          for (let yy = y; yy < yMax; yy++) {
+            let o = (yy * WAVE_TEX_W + x) * 4;
+            for (let xx = x; xx < xMax; xx++, o += 4) {
+              if (!c) { px[o + 3] = 0; continue; } // nothing to say here: draw nothing
+              px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
+            }
+          }
         }
       }
-      ctx.putImageData(img, 0, 0);
+      ctx.putImageData(waveImageData, 0, 0);
     }
 
     function buildWaveTexture(heights, step) {
@@ -650,9 +697,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // rebuilding anything.
     function buildArrowField(directions, land, step) {
       const points = [];
+      const sampler = makeGridSampler(step);
       for (const p of fibonacciSphere(ARROW_FIELD)) {
         if (land && !isWater(land.mask, land.width, land.height, p.lat, p.lon)) continue;
-        const from = sampleDirectionSmooth(directions, p.lat, p.lon, step);
+        const from = sampler.direction(directions, p.lat, p.lon);
         const bearing = swellTravelBearing(from);
         if (bearing == null) continue;
         points.push({ ...p, bearing });
@@ -792,7 +840,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function applyWaveFrame(frame, step) {
       if (!frame || !waveCanvasCtx || !waveTexture) return;
       const heights = waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights;
-      paintWaveCanvas(waveCanvasCtx, heights, step);
+      paintWaveCanvas(waveCanvasCtx, heights, step, ANIM_COARSEN);
+      // A mipmap chain is worth building for a picture that is drawn thousands of times and
+      // uploaded once. An animation frame is the other way round, and rebuilding the chain on
+      // every one of them is the single most expensive thing about a frame change -- measured
+      // at an order of magnitude more than all the JavaScript that produced the picture.
+      if (waveTexture.generateMipmaps) {
+        waveTexture.generateMipmaps = false;
+        waveTexture.minFilter = THREE.LinearFilter;
+      }
       waveTexture.needsUpdate = true;
 
       // Arrows are rebuilt in place when the count is unchanged, which it is for every frame
@@ -1567,7 +1623,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                     onClick={() => {
                       // Replay from the start when the week has already run to its end,
                       // rather than pressing play on a frame that cannot advance.
-                      if (frameIdx + 1 >= frames.list.length) setFrameIdx(0);
+                      if (pos >= frames.list.length - 1) setPos(0);
                       setPlaying((v) => !v);
                     }}
                     aria-label={playing ? 'Pause the forecast' : 'Play the forecast'}
@@ -1582,7 +1638,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                   <input
                     type="range" min={0} max={frames.list.length - 1} step={1} value={frameIdx}
                     aria-label="Forecast hour"
-                    onChange={(e) => { setPlaying(false); setFrameIdx(Number(e.target.value)); }}
+                    onChange={(e) => { setPlaying(false); setPos(Number(e.target.value)); }}
                     style={{ flex: 1, accentColor: COLORS.tealBright, minHeight: 44 }}
                   />
                 </div>
@@ -1595,7 +1651,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
               <button
                 className="tl-btn"
                 onClick={loadFramesOnce}
-                disabled={framesState === 'loading' || framesState === 'unavailable'}
+                // Retryable. The week is assembled on a schedule, so "not ready" is a state
+                // that resolves on its own -- disabling the button meant a viewer who pressed
+                // it early could not press it again when it finished, for as long as the tab
+                // stayed open.
+                disabled={framesState === 'loading'}
                 style={{
                   width: '100%', minHeight: 44, borderRadius: 8, fontSize: 13,
                   background: 'none', border: '1px solid ' + COLORS.navyBorder,

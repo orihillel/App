@@ -75,7 +75,11 @@ export async function fetchWaveFrames() {
   if (!base) return null;
   try {
     const res = await fetch(base.replace(/\/$/, '') + '/wavegrid/frames');
-    if (!res.ok) return null;
+    // The status, not just the failure. Returning a bare null here threw away the one fact
+    // that separates "the Worker predates this endpoint" from "the Worker is erroring" from
+    // "there is no Worker" -- and left the screen saying "unavailable" with nothing under it,
+    // which is the diagnostic erasing itself all over again.
+    if (!res.ok) return { frames: null, build: { httpStatus: res.status } };
     const data = await res.json();
     // Same contract as the grid above: diagnostics come back either way, so the UI can say why
     // there is no animation rather than only that there isn't one.
@@ -97,7 +101,7 @@ export async function fetchWaveFrames() {
       build: data.build || null,
     };
   } catch {
-    return null;
+    return { frames: null, build: { unreachable: true } };
   }
 }
 
