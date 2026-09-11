@@ -10,6 +10,16 @@ on:
     paths:
       - 'worker/**'
       - '.github/workflows/deploy-worker.yml'
+      # The Worker bundles these from the app at deploy time (see the ../../src/lib imports in
+      # worker/src). Watching only worker/** meant a change to one of them shipped to the
+      # browser and not to the Worker, leaving the two running different copies of the same
+      # file -- which does not fail, it just quietly disagrees. It has been dodged twice so far
+      # by the order merges happened to land in, which is not a mechanism.
+      - 'src/lib/alerts.js'
+      - 'src/lib/forecast.js'
+      - 'src/lib/marine.js'
+      - 'src/lib/spots.catalog.js'
+      - 'src/lib/wavegrid.js'
   workflow_dispatch:
 
 jobs:
