@@ -15,7 +15,8 @@
     "lint": "eslint .",
     "check:classnames": "node scripts/check-classnames.mjs",
     "check:spots": "node scripts/check-spots.mjs",
-    "check:orientation": "node scripts/check-orientation.mjs"
+    "check:orientation": "node scripts/check-orientation.mjs",
+    "check:worker-deps": "node scripts/check-worker-deps.mjs"
   },
   "dependencies": {
     "lucide-react": "^1.38.0",
