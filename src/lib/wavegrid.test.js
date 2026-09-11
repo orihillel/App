@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP,
+  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, makeGridSampler, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP,
 } from './wavegrid.js';
 
 describe('the grid itself', () => {
@@ -414,5 +414,53 @@ describe('a second, coarser grid for the animation', () => {
     const holey = cells.map((_, i) => (i === 40 ? null : 2));
     const filled = fillGridGaps(holey, 2, FRAME_LAT_STEP);
     expect(filled[40]).not.toBeNull();
+  });
+});
+
+describe('makeGridSampler', () => {
+  // It exists only to be faster, so the property that matters is that it is not different.
+  const cells = gridCells(FRAME_LAT_STEP);
+  const heights = cells.map((_, i) => (i % 9 === 0 ? null : 0.5 + (i % 17) / 4));
+  const dirs = cells.map((_, i) => (i % 11 === 0 ? null : (i * 37) % 360));
+
+  it('agrees with sampleGridSmooth everywhere, including over nulls and across the antimeridian', () => {
+    const s = makeGridSampler(FRAME_LAT_STEP);
+    for (let lat = -80; lat <= 80; lat += 3.5) {
+      for (let lon = -180; lon <= 180; lon += 7.5) {
+        const a = sampleGridSmooth(heights, lat, lon, FRAME_LAT_STEP);
+        const b = s.height(heights, lat, lon);
+        if (a === null) expect(b, `${lat},${lon}`).toBeNull();
+        else expect(b, `${lat},${lon}`).toBeCloseTo(a, 10);
+      }
+    }
+  });
+
+  it('agrees with sampleDirectionSmooth, including where it declines to average', () => {
+    const s = makeGridSampler(FRAME_LAT_STEP);
+    for (let lat = -70; lat <= 70; lat += 5) {
+      for (let lon = -180; lon <= 175; lon += 11) {
+        const a = sampleDirectionSmooth(dirs, lat, lon, FRAME_LAT_STEP);
+        const b = s.direction(dirs, lat, lon);
+        if (a === null) expect(b, `${lat},${lon}`).toBeNull();
+        else expect(b, `${lat},${lon}`).toBeCloseTo(a, 10);
+      }
+    }
+  });
+
+  it('agrees on the live grid too, not only the coarse one', () => {
+    const live = gridCells().map((_, i) => 1 + (i % 13) / 3);
+    const s = makeGridSampler();
+    for (let lat = -60; lat <= 60; lat += 9) {
+      for (let lon = -170; lon <= 170; lon += 23) {
+        expect(s.height(live, lat, lon)).toBeCloseTo(sampleGridSmooth(live, lat, lon), 10);
+      }
+    }
+  });
+
+  it('handles missing input the same way', () => {
+    const s = makeGridSampler(FRAME_LAT_STEP);
+    expect(s.height(null, 0, 0)).toBeNull();
+    expect(s.height(heights, NaN, 0)).toBeNull();
+    expect(s.direction(null, 0, 0)).toBeNull();
   });
 });

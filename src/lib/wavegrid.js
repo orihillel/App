@@ -146,6 +146,105 @@ export function sampleGrid(heights, lat, lon, step = GRID_LAT_STEP) {
 // as though it were 0m would drag a band of false calm out along every coast — exactly where
 // people are looking. Instead only the neighbours that have data contribute, reweighted, so
 // the field fades out at the coast rather than dipping.
+// The same bilinear sampling as sampleGridSmooth and sampleDirectionSmooth, with the part that
+// does not depend on the point hoisted out of the call.
+//
+// Those two rebuild the row table on every invocation -- eleven rows, each with a cos() and a
+// round() -- and allocate an offsets array and four array literals besides. That is invisible
+// when the overlay is painted once. The animation paints it 28 times, and a 720x360 texture is
+// 259,200 texels, so painting one frame was calling gridRows 259,200 times: about 2.9 million
+// trig operations and a million short-lived arrays to produce a picture whose geometry never
+// changes. Measured in a browser, each frame froze the main thread for about half a second.
+//
+// Same arithmetic, same results -- a test asserts they agree texel for texel. Build one sampler
+// per paint and call it per texel.
+export function makeGridSampler(step = GRID_LAT_STEP) {
+  const rows = gridRows(step);
+  const n = rows.length;
+  const counts = new Int32Array(n);
+  const stepsLon = new Float64Array(n);
+  const offsets = new Int32Array(n);
+  let acc = 0;
+  for (let i = 0; i < n; i++) {
+    counts[i] = rows[i].count;
+    stepsLon[i] = rows[i].step;
+    offsets[i] = acc;
+    acc += rows[i].count;
+  }
+
+  // Which two cells in row `ri` a longitude falls between, and how much of each.
+  function span(ri, lon) {
+    const fx = ((((lon + 180) % 360) + 360) % 360) / stepsLon[ri] - 0.5;
+    const i0 = Math.floor(fx);
+    const t = fx - i0;
+    const c = counts[ri];
+    return {
+      a: offsets[ri] + (((i0 % c) + c) % c),
+      b: offsets[ri] + ((((i0 + 1) % c) + c) % c),
+      wa: 1 - t,
+      wb: t,
+    };
+  }
+
+  function rowsAt(lat) {
+    const fr = (lat + GRID_MAX_LAT) / step;
+    const r0 = Math.floor(fr);
+    return { r0, tLat: fr - r0 };
+  }
+
+  return {
+    height(values, lat, lon) {
+      if (!values || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      const { r0, tLat } = rowsAt(lat);
+      let total = 0;
+      let weight = 0;
+      for (let k = 0; k < 2; k++) {
+        const ri = r0 + k;
+        const wLat = k === 0 ? 1 - tLat : tLat;
+        if (ri < 0 || ri >= n || wLat <= 0) continue;
+        const sp = span(ri, lon);
+        for (let j = 0; j < 2; j++) {
+          const wLon = j === 0 ? sp.wa : sp.wb;
+          if (wLon <= 0) continue;
+          const v = values[j === 0 ? sp.a : sp.b];
+          if (v == null || !Number.isFinite(v)) continue;
+          total += v * wLat * wLon;
+          weight += wLat * wLon;
+        }
+      }
+      return weight > 0 ? total / weight : null;
+    },
+
+    direction(values, lat, lon) {
+      if (!values || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+      const { r0, tLat } = rowsAt(lat);
+      let x = 0;
+      let y = 0;
+      let weight = 0;
+      for (let k = 0; k < 2; k++) {
+        const ri = r0 + k;
+        const wLat = k === 0 ? 1 - tLat : tLat;
+        if (ri < 0 || ri >= n || wLat <= 0) continue;
+        const sp = span(ri, lon);
+        for (let j = 0; j < 2; j++) {
+          const wLon = j === 0 ? sp.wa : sp.wb;
+          if (wLon <= 0) continue;
+          const deg = values[j === 0 ? sp.a : sp.b];
+          if (deg == null || !Number.isFinite(deg)) continue;
+          const w = wLat * wLon;
+          const rad = (deg * Math.PI) / 180;
+          x += Math.sin(rad) * w;
+          y += Math.cos(rad) * w;
+          weight += w;
+        }
+      }
+      if (weight <= 0) return null;
+      if (Math.sqrt(x * x + y * y) < weight * 0.15) return null;
+      return (((Math.atan2(x, y) * 180) / Math.PI) + 360) % 360;
+    },
+  };
+}
+
 export function sampleGridSmooth(heights, lat, lon, step = GRID_LAT_STEP) {
   if (!heights || !Number.isFinite(lat) || !Number.isFinite(lon)) return null;
   const rows = gridRows(step);
