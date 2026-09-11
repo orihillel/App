@@ -109,6 +109,19 @@ export const ORDER = [
   'kaikoura', 'newbrighton', 'coxbay', 'chesterman', 'martiniquens', 'mahabalipuram', 'gokarna', 'puri',
   'borestranden', 'vikiceland', 'topocalma', 'concon', 'rehoboth', 'assateague', 'tybee',
   'southpadre', 'galveston', 'pensacola', 'hamptonnh', 'longsandsme',
+  'grumari', 'recreio', 'macumba', 'silveira', 'ferrugem', 'campeche', 'barradalagoa', 'santinho', 'geriba', 'pipabr',
+  'baiaformosa', 'praiadofuturo', 'tombo', 'camburi', 'tuason', 'pacifico', 'charliespoint', 'crystalbeach', 'bagasbas', 'borongan',
+  'dahican', 'realquezon', 'shipwrecksnl', 'playgrounds', 'scarreef', 'maluk', 'sawarna', 'kutabeach', 'airportlefts', 'balian',
+  'tanjungaan', 'brimsness', 'sandside', 'fraserburgh', 'coldingham', 'belhaven', 'tiree', 'dalmore', 'scarista', 'waitpinga',
+  'goolwa', 'boomerbeach', 'moana', 'southportsa', 'blackfellows', 'dalyhead', 'pondalowie', 'playagrandecr', 'malpais', 'jaco',
+  'cocles', 'matapalo', 'marbellacr', 'abreojos', 'sancarlosbaja', 'cerritos', 'shipwreckscabo', 'caletadecampos', 'zipolite', 'sanbartolo',
+  'losorganos', 'elnuro', 'puntasal', 'makahalima', 'maitencillo', 'ritoque', 'llico', 'cobquecura', 'laserena', 'canoa',
+  'salinasec', 'mompiche', 'gigante', 'remanso', 'hermosasjds', 'silverbacks', 'riomar', 'jailbreaks', 'lohis', 'natadola',
+  'swimmingpools', 'marias', 'jobos', 'crashboat', 'macao', 'playabonita', 'surferspoint', 'varazze', 'dulan', 'jialeshui',
+  'gyeongpo', 'jinha', 'nonnuoc', 'islalobos', 'lascanteras', 'elmedano', 'socorro', 'sidikaouki', 'essaouira', 'lasource',
+  'kallialay', 'sasihithlu', 'hiriketiya', 'madiha', 'kujukuri', 'amami', 'irino', 'ansteys', 'noordhoek', 'saopedrodemoel',
+  'vagueira', 'zambujeira', 'lizandro', 'berria', 'patos', 'mimizan', 'capferret', 'siouville', 'crabisland', 'keelachill',
+  'portrush', 'manorbier', 'hellsmouth', 'kimmeridge', 'ervik', 'lokken',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
