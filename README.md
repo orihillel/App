@@ -44,7 +44,7 @@ The app is installable (add to home screen on iOS/Android, or install from
 the browser on desktop) and has an offline shell: the app itself, and the
 last forecast data it fetched, are cached by a service worker
 (`vite-plugin-pwa`), so it still opens with no connection. Icons are
-generated from `scripts/icon-source.svg` via `npm run build:icons`.
+generated from the wave mark in `scripts/wave-mark.mjs` via `npm run build:icons`.
 
 ## Push notifications
 
