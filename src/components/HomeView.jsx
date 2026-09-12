@@ -8,7 +8,6 @@ import { calibrationLabel } from '../lib/calibration.js';
 import { swellTrend } from '../lib/swelltrend.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
-import { outlookBarHeight } from '../lib/outlook.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -34,7 +33,7 @@ export function HomeView({
   units, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry, errorReason,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain, outlook, onShare,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain, onShare,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
@@ -415,30 +414,6 @@ export function HomeView({
             );
           })}
         </div>
-      ) : null}
-
-      {/* The fortnight after the week.
-          Coarser on purpose, and labelled as such: one bar per day, no hours, no wind, no
-          rating. Past about a week the models stop agreeing on anything finer than "big or
-          small" -- the confidence badge above exists because of exactly that -- so drawing
-          hour-by-hour detail this far out would dress uncertainty up as precision. See
-          lib/outlook.js. */}
-      {outlook && outlook.length ? (
-        <section className="mx-4" style={{ marginTop: 14, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
-          <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
-            <h2 style={{ fontSize: 11.5, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, margin: 0 }}>THE WEEK AFTER</h2>
-            <span style={{ fontSize: 10.5, color: COLORS.foamDim }}>daily max · low confidence</span>
-          </div>
-          <div className="flex items-end" style={{ gap: 6 }}>
-            {outlook.map((d) => (
-              <div key={d.date} className="flex flex-col items-center" style={{ flex: 1, minWidth: 0 }}>
-                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: COLORS.foamDim, marginBottom: 4 }}>{formatWaveNum(d.waveFt, units)}</span>
-                <div style={{ width: '100%', maxWidth: 16, height: outlookBarHeight(d.waveFt, outlook), background: COLORS.teal, borderRadius: 3 }} />
-                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: COLORS.foamDim, marginTop: 5 }}>{d.day}</span>
-              </div>
-            ))}
-          </div>
-        </section>
       ) : null}
 
       <div className="grid grid-cols-3 px-4" style={{ gap: 8, marginTop: 14, paddingBottom: 14 }}>
