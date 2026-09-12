@@ -12,7 +12,7 @@
 // and Pages will not. A hash never reaches the server, so #/spot/trestles works from a cold
 // open, a bookmark, or a notification with no configuration at all.
 
-const VIEWS = ['globe', 'alerts', 'profile', 'nearby'];
+const VIEWS = ['globe', 'alerts', 'profile', 'nearby', 'myspots'];
 
 // Anything unrecognised is home rather than an error: these strings arrive from a person's
 // address bar and an old notification as readily as from this app, and the worst outcome for

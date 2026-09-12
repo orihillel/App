@@ -7,7 +7,7 @@ export function AlertSheet({ order, spots, alertDraft, setAlertDraft, units, sav
     <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(5,12,20,0.6)', display: 'flex', alignItems: 'flex-end', zIndex: 10 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', background: COLORS.navyCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: '18px 20px 26px', maxHeight: '85%', overflowY: 'auto' }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
-          <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 16, color: COLORS.foam }}>New alert</span>
+          <h2 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 16, color: COLORS.foam, margin: 0 }}>New alert</h2>
           <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 4 }}><X size={18} color={COLORS.foamDim} /></button>
         </div>
 

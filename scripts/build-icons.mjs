@@ -28,3 +28,16 @@ for (const { file, size } of targets) {
     .toFile(join(outDir, file));
   console.log(`Wrote public/icons/${file} (${size}x${size})`);
 }
+
+// The link-preview card, from its own artwork rather than the square icon.
+//
+// 1200x630 is what Open Graph and Twitter both want, and it is a landscape card with room for
+// words -- an upscaled square app icon in that slot reads as a mistake. It carries the app name
+// because the route lives in the URL hash, which never reaches a crawler: no preview can ever
+// know which spot a shared link points at, so naming the app is the only honest thing it can do.
+const cardSvg = readFileSync(fileURLToPath(new URL('./og-card.svg', import.meta.url)));
+await sharp(cardSvg, { density: 192 })
+  .resize(1200, 630)
+  .png()
+  .toFile(join(outDir, 'og-card.png'));
+console.log('Wrote public/icons/og-card.png (1200x630)');

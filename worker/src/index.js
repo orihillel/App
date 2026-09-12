@@ -2,6 +2,7 @@ import { fetchSpotForecast, fetchNowForSpots } from '../../src/lib/forecast.js';
 import { CATALOG } from '../../src/lib/spots.catalog.js';
 import { checkAlertMatch } from '../../src/lib/alerts.js';
 import { fetchMarine } from '../../src/lib/marine.js';
+import { outlookUrl } from '../../src/lib/outlook.js';
 import { putSubscription, deleteSubscription, listSubscriptions } from './store.js';
 import { sendPushNotification, buildNotificationPayload } from './push.js';
 import { verifyGoogleIdToken } from './googleAuth.js';
@@ -147,6 +148,50 @@ async function handleForecast(request, env) {
   const res = json({ marine, wind }, env);
   res.headers.set('Cache-Control', 'public, max-age=' + FORECAST_TTL_S);
   // Only a good answer is cached; an error must not be served for the next half hour.
+  await cache.put(cacheKey, res.clone());
+  return res;
+}
+
+// The long-range outlook, proxied and cached on the same terms as /forecast.
+//
+// It is a separate, far smaller upstream call than /forecast -- one daily variable over 16 days
+// rather than thirteen hourly ones over 7 -- and it exists here for the same reason /forecast
+// does: Open-Meteo is unreachable from some networks entirely, so a browser asking it directly
+// simply fails for those people. See src/lib/outlook.js.
+const OUTLOOK_TTL_S = 10800;
+
+async function handleOutlook(request, env) {
+  const url = new URL(request.url);
+  const coords = readCoords(url);
+  if (!coords) return json({ error: 'lat and lon required' }, env, 400);
+  const { lat, lon } = coords;
+
+  const cache = caches.default;
+  const cacheKey = new Request(url.origin + '/outlook?lat=' + lat + '&lon=' + lon);
+  const hit = await cache.match(cacheKey);
+  if (hit) return hit;
+
+  let upstream;
+  try {
+    upstream = await fetch(outlookUrl(lat, lon));
+  } catch {
+    return json({ error: 'upstream unreachable' }, env, 502);
+  }
+  if (!upstream.ok) {
+    return json({ error: 'upstream', status: upstream.status }, env, upstream.status === 429 ? 429 : 502);
+  }
+  let body;
+  try {
+    body = await upstream.json();
+  } catch {
+    return json({ error: 'upstream returned junk' }, env, 502);
+  }
+
+  // Three hours rather than /forecast's thirty minutes. This is a daily maximum a week or more
+  // out: it does not meaningfully change between model runs, and the whole point of the endpoint
+  // is that it costs almost nothing to serve.
+  const res = json(body, env);
+  res.headers.set('Cache-Control', 'public, max-age=' + OUTLOOK_TTL_S);
   await cache.put(cacheKey, res.clone());
   return res;
 }
@@ -390,6 +435,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/tide') return handleTide(request, env);
     if (request.method === 'GET' && url.pathname === '/forecast') return handleForecast(request, env);
     if (request.method === 'GET' && url.pathname === '/conditions') return handleConditions(request, env);
+    if (request.method === 'GET' && url.pathname === '/outlook') return handleOutlook(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid/frames') return handleWaveFrames(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);

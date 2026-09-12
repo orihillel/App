@@ -1,5 +1,5 @@
-import { conditionsScore, scoreToRating } from './rating.js';
-import { breakingHeightFt, surfRange } from './surf.js';
+import { scoreHour } from './scorehour.js';
+import { breakingHeightFt } from './surf.js';
 
 // Correcting the forecast at a spot from what the buoy actually measured there.
 //
@@ -104,7 +104,7 @@ export function calibrationLabel(cal) {
 // is the whole basis for trusting this instead of re-deriving the score independently: it is
 // provably a no-op until there is real evidence of a bias, not a second scoring path that
 // might quietly disagree with the first.
-export function recalibrateHours(hours, cal, spot) {
+export function recalibrateHours(hours, cal, spot, profile) {
   if (!Array.isArray(hours) || !cal || !cal.ready) return hours;
   return hours.map((h) => {
     if (h.waveFt == null) return h;
@@ -113,17 +113,12 @@ export function recalibrateHours(hours, cal, spot) {
     // measured against a buoy, which reports offshore significant height, so that is the number
     // the ratio describes -- and the transform is non-linear in height (Hb scales with H0^0.8),
     // so scaling its output is not the same operation as scaling its input.
-    const waveFt = applyCalibration(h.waveFt, cal);
-    const dominant = (h.trains && h.trains[0]) || null;
-    const scorePeriod = dominant && dominant.period != null ? dominant.period : h.period;
-    const scoreSwellDeg = dominant && dominant.deg != null ? dominant.deg : h.swellDeg;
-    const surfFt = breakingHeightFt(waveFt, scorePeriod);
-    const score = conditionsScore(
-      surfFt, h.windMph, h.type, scorePeriod, scoreSwellDeg,
-      spot && spot.offshoreDeg, h.tidePosition, spot,
-    );
+    //
+    // scoreHour does that derivation and the scoring; see lib/scorehour.js for why it is shared
+    // with forecast.js rather than written out again here.
+    const scored = scoreHour(h, spot, profile, applyCalibration(h.waveFt, cal));
     return {
-      ...h, waveFt, surfFt, wave: surfRange(surfFt), score, rating: scoreToRating(score),
+      ...scored,
       // The trains are on screen directly underneath the corrected height, so leaving them raw
       // showed the correction and contradicted it in the same breath: "4-6ft" over a
       // groundswell line still reading 5.2ft.

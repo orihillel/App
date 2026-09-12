@@ -5,6 +5,25 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <meta name="description" content="Live surf forecast, an interactive spot globe, and wind/tide-aware alerts." />
     <meta name="theme-color" content="#070F18" />
+
+    <!-- What a shared link looks like when it lands.
+         The app has been linkable since routing arrived and every link pasted anywhere rendered
+         as a bare URL, which is the difference between a friend tapping it and ignoring it.
+         These are static rather than per-spot on purpose: the route lives in the hash, which
+         never reaches a server, so no crawler can ever see which spot a link points at. A card
+         that names the app honestly beats one that names the wrong spot. -->
+    <meta property="og:type" content="website" />
+    <meta property="og:site_name" content="Surfcast" />
+    <meta property="og:title" content="Surfcast — Surf Forecast" />
+    <meta property="og:description" content="Live surf forecast rated for the board you actually ride, an interactive spot globe, and wind/tide-aware alerts." />
+    <meta property="og:image" content="https://orihillel.github.io/App/icons/og-card.png" />
+    <meta property="og:image:width" content="1200" />
+    <meta property="og:image:height" content="630" />
+    <meta property="og:url" content="https://orihillel.github.io/App/" />
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content="Surfcast — Surf Forecast" />
+    <meta name="twitter:description" content="Live surf forecast rated for the board you actually ride, an interactive spot globe, and wind/tide-aware alerts." />
+    <meta name="twitter:image" content="https://orihillel.github.io/App/icons/og-card.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <link rel="icon" type="image/png" href="/App/icons/favicon-32.png" />

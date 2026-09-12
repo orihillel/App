@@ -6,6 +6,7 @@ import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
 import { confidenceForSeries, confidenceLabel } from './confidence.js';
 import { fetchMarine } from './marine.js';
+import { fetchOutlook } from './outlook.js';
 import { breakingHeightFt, surfRange } from './surf.js';
 
 // What to tell someone when the forecast did not arrive.
@@ -184,14 +185,19 @@ function periodAt(hourly, peakKey, meanKey, idx) {
   return mean && mean[idx] != null ? mean[idx] : null;
 }
 
-export async function fetchSpotForecast(spot) {
+export async function fetchSpotForecast(spot, profile) {
   // Run alongside the main fetch, not after it: real tide is a pure bonus over the modeled
   // curve every spot already gets, on the same footing as the buoy panel and the model
   // agreement badge -- never allowed to slow the page down or fail it. No extra .catch here:
   // fetchRealTide's own body is entirely inside its own try/catch and cannot throw, which a
   // mutation test confirmed by proving an outer one was never actually reachable -- rather than
   // keep it as reassurance nothing exercises, the guarantee is fetchRealTide's contract instead.
-  const [{ marine, wind }, realTide] = await Promise.all([fetchRaw(spot), fetchRealTide(spot)]);
+  // The long-range outlook rides alongside on the same terms as the real tide: a bonus that can
+  // fail without failing the page. See lib/outlook.js for why it is a separate small request
+  // rather than a longer version of this one.
+  const [{ marine, wind }, realTide, outlook] = await Promise.all([
+    fetchRaw(spot), fetchRealTide(spot), fetchOutlook(spot),
+  ]);
   const tideFtAt = realTideLookup(realTide, (marine.hourly || {}).time, (marine.hourly || {}).sea_level_height_msl);
 
   // Which hours to sample, from this spot's own sunrise and sunset rather than a fixed
@@ -280,7 +286,7 @@ export async function fetchSpotForecast(spot) {
     // or scores is the second. See lib/surf.js -- and note this happens *after* the dominant
     // train is picked, because the transform depends on the period carrying the energy.
     const surfFt = breakingHeightFt(waveFt, scorePeriod);
-    const score = conditionsScore(surfFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition, spot);
+    const score = conditionsScore(surfFt, windMph, type, scorePeriod, scoreSwellDeg, spot.offshoreDeg, tidePosition, spot, profile);
     return {
       t: hourLabel12(idx), hour: idx, wave: surfRange(surfFt), period,
       swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
@@ -342,7 +348,7 @@ export async function fetchSpotForecast(spot) {
     // the whole week), so this leaves tide out of the week-ahead score — the same score used
     // for today already includes it, just not this longer-range one.
     const cSurfFt = breakingHeightFt(cWaveFt, cPeriod);
-    const cScore = cWindMph != null ? conditionsScore(cSurfFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot) : null;
+    const cScore = cWindMph != null ? conditionsScore(cSurfFt, cWindMph, cType, cPeriod, cSwellDeg, spot.offshoreDeg, null, spot, profile) : null;
     continuous.push({
       waveFt: cWaveFt,
       // The breaking height, and the period it was derived from -- the period so a correction
@@ -368,7 +374,7 @@ export async function fetchSpotForecast(spot) {
   const waterC = sstNow != null ? sstNow : null;
 
   return {
-    hours, weekly, continuous, tideToday, tideFine,
+    hours, weekly, outlook, continuous, tideToday, tideFine,
     best: bestWindow(hours),
     waterC,
     wetsuit: wetsuitFor(waterC),
@@ -542,7 +548,7 @@ export async function fetchNowViaWorker(ids, { fetchImpl = fetch } = {}) {
   }
 }
 
-export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize = NOW_BATCH_SIZE, now = new Date() } = {}) {
+export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize = NOW_BATCH_SIZE, now = new Date(), profile } = {}) {
   const out = {};
   // Every batch failing is a different thing from a few cells having no reading, and the only
   // way to tell them apart from the outside is to say so. Reported alongside the results rather
@@ -579,7 +585,7 @@ export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize 
     const marineList = asList(marine, batch.length);
     const windList = asList(wind, batch.length);
     for (let i = 0; i < batch.length; i++) {
-      const row = nowRow(batch[i].spot, marineList[i], windList[i], now);
+      const row = nowRow(batch[i].spot, marineList[i], windList[i], now, profile);
       if (row) out[batch[i].id] = { hours: [row], now: true };
     }
   }
@@ -590,7 +596,7 @@ export async function fetchNowForSpots(spotList, { fetchImpl = fetch, batchSize 
 // One hour-shaped row, so the globe reads it with exactly the same code it reads a full
 // forecast with. Anything the spot page needs and this cannot supply is simply absent, and the
 // entry is marked `now` so the app knows not to let it stand in for a real forecast.
-function nowRow(spot, marine, wind, now) {
+function nowRow(spot, marine, wind, now, profile) {
   const mc = marine && marine.current;
   const wc = wind && wind.current;
   if (!mc || !wc) return null;
@@ -617,16 +623,27 @@ function nowRow(spot, marine, wind, now) {
   const type = windType(windDeg, spot.offshoreDeg);
   const scorePeriod = dominant && dominant.period != null ? dominant.period : period;
   const surfFt = breakingHeightFt(waveFt, scorePeriod);
+  const tidePosition = tidePositionNow(marine, mc.time);
   const score = conditionsScore(
     surfFt, windMph, type, scorePeriod,
     dominant && dominant.deg != null ? dominant.deg : swellDeg,
-    spot.offshoreDeg, tidePositionNow(marine, mc.time), spot,
+    spot.offshoreDeg, tidePosition, spot, profile,
   );
   const hour = localHour(mc.time, spot.lon, now);
   return {
     t: hourLabel12(hour), hour, wave: surfRange(surfFt), waveFt, surfFt,
     period, swellDir: degToCompass(swellDeg), swellDeg, windSpd: Math.round(windMph),
     windDir: degToCompass(windDeg), windDeg, type, score, rating: scoreToRating(score), trains,
+    // Unrounded wind and the tide position, carried so this row can be re-scored for a
+    // different surfer without being re-fetched.
+    //
+    // That matters most for the rows the Worker serves. Its per-spot cache is shared by
+    // everyone who opens the globe, so it has to hold a reading rather than one person's
+    // opinion of it: the Worker scores with no profile at all and the browser rescores what
+    // comes back for whoever is actually looking (see rescoreHours). Without these two fields
+    // that rescore would silently drop the wind and tide terms, and a marker would disagree
+    // with the spot page it opens.
+    windMph, tidePosition,
   };
 }
 

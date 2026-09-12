@@ -6,7 +6,7 @@ export function AlertsView({ alerts, spots, units, checkAlertMatch, openNewAlert
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
-        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>Alerts</span>
+        <h1 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 17, color: COLORS.foam, margin: 0 }}>Alerts</h1>
         <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 0, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }} aria-label="Close alerts"><X size={22} color={COLORS.foamDim} /></button>
       </div>
       <div style={{ padding: '0 20px 12px' }}>

@@ -11,7 +11,39 @@
 
 export const MAX_SESSIONS = 500;
 
-export function makeSession({ spotId, spotName, date, rating, waveFt, stars, note }) {
+// Every field of `conditions` is one the score was actually built from, at the precision the
+// score used rather than the precision the screen showed.
+//
+// ratingAccuracy can already say "GOOD averaged 3.2 stars at your spots", which is a real
+// finding and a useless one: it cannot say *which* GOODs, so there is nothing to act on. A
+// stored rating and a star count describe the verdict; these describe the day. With them, a run
+// of two-star GOODs that were all 15-second swell on a dropping tide is a visible pattern about
+// a spot rather than noise about a label -- and the same record is what a profile would have to
+// be learned from, since a star rating with no conditions attached cannot distinguish "I do not
+// like this spot" from "I do not like this size".
+//
+// Kept deliberately small: five numbers and two short strings per session, against a 500-session
+// cap that rides along in the synced blob.
+function conditionVector(c) {
+  if (!c || typeof c !== 'object') return null;
+  const num = (v, dp) => (v != null && Number.isFinite(Number(v)) ? +Number(v).toFixed(dp) : null);
+  return {
+    surfFt: num(c.surfFt, 1),
+    period: num(c.period, 0),
+    swellDeg: num(c.swellDeg, 0),
+    windMph: num(c.windMph, 1),
+    windType: typeof c.windType === 'string' ? c.windType : null,
+    // 0 = today's low, 1 = today's high. The same measure the score uses, not a tide height in
+    // feet, which would mean nothing without the spot's own range alongside it.
+    tidePosition: num(c.tidePosition, 2),
+    // Which profile was reading. A five-star 2ft day means something different depending on
+    // what you were riding, and without this the record cannot tell the two apart later.
+    board: typeof c.board === 'string' ? c.board : null,
+    skill: typeof c.skill === 'string' ? c.skill : null,
+  };
+}
+
+export function makeSession({ spotId, spotName, date, rating, waveFt, stars, note, conditions }) {
   return {
     id: 's_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 8),
     spotId,
@@ -23,6 +55,9 @@ export function makeSession({ spotId, spotName, date, rating, waveFt, stars, not
     // What you thought: 1–5.
     stars: clampStars(stars),
     note: typeof note === 'string' ? note.slice(0, 280) : '',
+    // What the day was, so a disagreement between the two above can later be attributed to
+    // something. Null on a session logged with no forecast on screen.
+    conditions: conditionVector(conditions),
     loggedAt: Date.now(),
   };
 }

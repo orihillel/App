@@ -1,4 +1,4 @@
-import { Home, Map, Bell, User } from 'lucide-react';
+import { Home, Layers, Map, Bell, User } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 
 // The bar is outside the scrolling column now (see App.jsx), so it stays put instead of being
@@ -17,12 +17,17 @@ const TAP = {
 export function BottomNav({ view, handleNav }) {
   const items = [
     [Home, 'Home', 'home', view === 'home'],
+    // Second, not buried: "which of my spots" is the question people open a surf app to ask on
+    // a weekday morning, and until this view existed the only way to answer it was to page
+    // through them one at a time with the header arrows.
+    [Layers, 'Your spots', 'myspots', view === 'myspots'],
     [Map, 'Globe', 'map', view === 'globe'],
     [Bell, 'Alerts', 'alerts', view === 'alerts'],
     [User, 'Profile', 'profile', view === 'profile'],
   ];
   return (
-    <div
+    <nav
+      aria-label="Main"
       className="flex justify-around items-center"
       style={{
         flexShrink: 0, padding: '6px 16px', borderTop: '1px solid ' + COLORS.foamFaint,
@@ -37,6 +42,6 @@ export function BottomNav({ view, handleNav }) {
           <Icon size={22} color={active ? COLORS.coral : COLORS.foamDim} />
         </button>
       ))}
-    </div>
+    </nav>
   );
 }

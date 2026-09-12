@@ -4,8 +4,21 @@ import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER, searchCatalog } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
+import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
 import { ratingBg } from '../lib/rating.js';
 import { AuthButtons } from './AuthButtons.jsx';
+
+// The band in whichever units are on screen. Rounded to the nearest half-foot / quarter-metre
+// because the band's edges are a judgement about boards, not a measurement -- printing
+// "1.8-4.8ft" would claim a precision the numbers behind it do not have.
+function formatBand(band, units) {
+  if (units === 'metric') {
+    const round = (ft) => (Math.round((ft / 3.28084) * 4) / 4).toFixed(2).replace(/0$/, '');
+    return round(band.lo) + '-' + round(band.hi) + 'm';
+  }
+  const round = (ft) => String(Math.round(ft * 2) / 2);
+  return round(band.lo) + '-' + round(band.hi) + 'ft';
+}
 
 const TAP = {
   background: 'none', border: 'none', padding: 0,
@@ -13,7 +26,7 @@ const TAP = {
   flexShrink: 0,
 };
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession, surferProfile = DEFAULT_PROFILE, updateProfile }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
@@ -34,7 +47,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
-        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam }}>Profile</span>
+        <h1 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, margin: 0 }}>Profile</h1>
         <button className="tl-btn" onClick={onClose} style={TAP} aria-label="Close profile"><X size={22} color={COLORS.foamDim} /></button>
       </div>
 
@@ -115,6 +128,41 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
               </button>
             );
           })}
+        </div>
+
+        {/* What you ride, which is an input to every rating in the app rather than a preference
+            about how they are displayed. The same 2ft morning is a wasted drive on a shortboard
+            and the best session of the week on a log, and until this existed the app only knew
+            how to have the first opinion. See lib/surfer.js. */}
+        <Heading>YOUR BOARD</Heading>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {BOARD_IDS.map((id) => {
+            const on = surferProfile.board === id;
+            return (
+              <button key={id} className="tl-btn" aria-pressed={on} onClick={() => updateProfile({ board: id })}
+                style={{ background: on ? COLORS.tealBright : COLORS.navyCard, color: on ? COLORS.navy : COLORS.foam, border: '1px solid ' + (on ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, padding: '0 13px', fontSize: 14, fontWeight: 600 }}>
+                {boardLabel(id)}
+              </button>
+            );
+          })}
+        </div>
+
+        <Heading>YOUR LEVEL</Heading>
+        <div className="flex" style={{ gap: 8, marginBottom: 10 }}>
+          {SKILL_IDS.map((id) => {
+            const on = surferProfile.skill === id;
+            return (
+              <button key={id} className="tl-btn" aria-pressed={on} onClick={() => updateProfile({ skill: id })}
+                style={{ flex: 1, background: on ? COLORS.tealBright : COLORS.navyCard, color: on ? COLORS.navy : COLORS.foam, border: '1px solid ' + (on ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, fontSize: 14, fontWeight: 600 }}>
+                {skillLabel(id)}
+              </button>
+            );
+          })}
+        </div>
+        {/* The consequence, stated plainly, so the two controls above are not a black box: this
+            is the range every rating in the app is now measured against. */}
+        <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.5 }}>
+          Rating spots for {formatBand(bandFor(surferProfile), units)} surf. Bigger or smaller than that scores lower.
         </div>
 
         <Heading>UNITS</Heading>
@@ -256,10 +304,17 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
 // One heading style for the whole view. They used to be written out at each call site, which
 // is how YOUR SESSIONS ended up in a container with its own padding and 24px out of line with
 // the rest; a shared component cannot drift like that.
+// A real <h2>, styled to look exactly as it did as a <div>.
+//
+// An audit of the running app found zero h1-h6 and zero landmark elements anywhere in it: every
+// control was labelled and every hit area was 44px, so a screen reader could operate the app
+// perfectly and had no way to navigate it -- one unbroken wall of text with no structure to jump
+// through. Nothing here changes visually; the heading was always a heading, it was just never
+// marked as one.
 function Heading({ children }) {
   return (
-    <div style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 9, marginTop: 2 }}>
+    <h2 style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 9, marginTop: 2 }}>
       {children}
-    </div>
+    </h2>
   );
 }

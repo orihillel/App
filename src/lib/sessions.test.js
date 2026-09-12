@@ -115,3 +115,51 @@ describe('sessionStats', () => {
     expect(stats.avgStars).toBe(3);
   });
 });
+
+describe('makeSession conditions', () => {
+  const full = {
+    surfFt: 4.26, period: 13.4, swellDeg: 214.7, windMph: 6.42,
+    windType: 'offshore', tidePosition: 0.417, board: 'longboard', skill: 'advanced',
+  };
+
+  it('keeps the whole condition vector, rounded but not to display precision', () => {
+    const { conditions } = makeSession({ spotId: 'x', stars: 4, conditions: full });
+    expect(conditions).toEqual({
+      surfFt: 4.3, period: 13, swellDeg: 215, windMph: 6.4,
+      windType: 'offshore', tidePosition: 0.42, board: 'longboard', skill: 'advanced',
+    });
+  });
+
+  it('records which profile was reading, so a five-star 2ft day can be interpreted later', () => {
+    const a = makeSession({ spotId: 'x', stars: 5, conditions: { ...full, board: 'foil' } });
+    const b = makeSession({ spotId: 'x', stars: 5, conditions: { ...full, board: 'shortboard' } });
+    expect(a.conditions.board).toBe('foil');
+    expect(b.conditions.board).toBe('shortboard');
+  });
+
+  it('is null when there was no forecast on screen to record', () => {
+    for (const nothing of [undefined, null, 'sunny', 42]) {
+      expect(makeSession({ spotId: 'x', stars: 3, conditions: nothing }).conditions).toBeNull();
+    }
+  });
+
+  it('nulls the individual fields it cannot use rather than storing NaN or a string', () => {
+    const { conditions } = makeSession({
+      spotId: 'x',
+      stars: 3,
+      conditions: { surfFt: 'big', period: NaN, swellDeg: null, windMph: Infinity, windType: 7, tidePosition: undefined },
+    });
+    expect(conditions).toEqual({
+      surfFt: null, period: null, swellDeg: null, windMph: null,
+      windType: null, tidePosition: null, board: null, skill: null,
+    });
+  });
+
+  it('leaves every other field of the session alone', () => {
+    const withC = makeSession({ spotId: 'x', spotName: 'X', rating: 'GOOD', waveFt: 4, stars: 4, note: 'fun', conditions: full });
+    const withoutC = makeSession({ spotId: 'x', spotName: 'X', rating: 'GOOD', waveFt: 4, stars: 4, note: 'fun' });
+    for (const k of ['spotId', 'spotName', 'rating', 'waveFt', 'stars', 'note']) {
+      expect(withC[k]).toEqual(withoutC[k]);
+    }
+  });
+});
