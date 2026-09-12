@@ -6,6 +6,8 @@ import { fetchSpotForecast, fetchNowForSpots, fetchNowViaWorker, fetchModelAgree
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration, recalibrateHours, recalibrateContinuous } from './lib/calibration.js';
+import { DEFAULT_PROFILE, normalizeProfile } from './lib/surfer.js';
+import { rescoreHours, explainHour, explainText } from './lib/scorehour.js';
 import { bestWindow } from './lib/bestwindow.js';
 import { makeSession, addSession, removeSession } from './lib/sessions.js';
 import { linePath, waveAvg, fillGaps } from './lib/format.js';
@@ -142,6 +144,9 @@ export default function App() {
   const [contSelectedIdx, setContSelectedIdx] = useState(null);
   const [toast, setToast] = useState('');
   const [forecast, setForecast] = useState({});
+  // Who is reading the ratings. See lib/surfer.js -- a 2ft morning and an 8ft one swap places
+  // entirely depending on the answer, so this is an input to the score, not a display setting.
+  const [surferProfile, setSurferProfile] = useState(DEFAULT_PROFILE);
   // Empty, not the whole catalog.
   //
   // This used to start as `new Set(ORDER)` — every spot marked "fetching" up front — which was
@@ -237,15 +242,38 @@ export default function App() {
   const goToIdRef = useRef(goToId);
   activeIdRef.current = activeId;
   goToIdRef.current = goToId;
-  const dataRef = useRef({ spots, order, forecast, clockHour: null });
+  const profileRef = useRef(surferProfile);
+  profileRef.current = surferProfile;
+
+  // Every cached forecast, scored for whoever is reading it.
+  //
+  // Scores arrive already computed -- from this browser's own fetch, or from the Worker's
+  // shared per-spot cache, which is scored with no profile at all because it is one cache
+  // serving everybody. Both are re-scored here from the raw fields each hour carries, so a
+  // marker on the globe, a row in "best nearby" and the spot page it opens can never disagree
+  // about the same hour, and changing your board costs no network at all.
+  //
+  // Keyed on the profile object, which `updateProfile` always replaces rather than mutates.
+  const scoredForecast = useMemo(() => {
+    const out = {};
+    for (const [id, entry] of Object.entries(forecast)) {
+      const sp = spots[id];
+      out[id] = (sp && entry && Array.isArray(entry.hours))
+        ? { ...entry, hours: rescoreHours(entry.hours, sp, surferProfile) }
+        : entry;
+    }
+    return out;
+  }, [forecast, spots, surferProfile]);
+
+  const dataRef = useRef({ spots, order, forecast: scoredForecast, clockHour: null });
   useEffect(() => {
     // The globe colours every marker for one moment in time, so it needs the clock hour, not the
     // index. `hourIdx` only indexes the *active* spot's daylight window, and since PR #22 those
     // windows differ per spot: the same index is a different time of day elsewhere, and off the
     // end entirely at a spot with a shorter day.
-    const own = (forecast[activeId] && forecast[activeId].hours) || null;
+    const own = (scoredForecast[activeId] && scoredForecast[activeId].hours) || null;
     const sel = own && own.length ? own[Math.min(hourIdx, own.length - 1)] : null;
-    dataRef.current = { spots, order, forecast, clockHour: sel ? sel.hour : null };
+    dataRef.current = { spots, order, forecast: scoredForecast, clockHour: sel ? sel.hour : null };
   });
 
   // Two effects can ask for the same spot in the same commit — the mount loader and the
@@ -260,7 +288,7 @@ export default function App() {
     setErrorIds((prev) => { const n = new Set(prev); n.delete(id); return n; });
     setErrorReasons((prev) => { const n = { ...prev }; delete n[id]; return n; });
     try {
-      const result = await fetchSpotForecast(spotObj);
+      const result = await fetchSpotForecast(spotObj, profileRef.current);
       // When the next refresh fails, this is what lets the page say "4h 20m ago" instead of
       // quietly presenting stale numbers as current ones.
       setForecast((prev) => ({ ...prev, [id]: { ...result, fetchedAt: Date.now() } }));
@@ -477,6 +505,14 @@ export default function App() {
       } catch { /* nothing saved yet */ }
     })();
     (async () => {
+      try {
+        const res = await storage.get('surf-profile');
+        // normalizeProfile, not a raw parse: this is localStorage, it survives app versions, and
+        // a board id that no longer exists must fall back rather than score as nothing.
+        if (res && res.value) setSurferProfile(normalizeProfile(JSON.parse(res.value)));
+      } catch { /* nothing saved yet, or unparseable — the default stands */ }
+    })();
+    (async () => {
       // A link naming a spot is already the answer onboarding asks for. Someone who taps a
       // shared #/spot/<id> should see that spot, not "pick your go-to spot" -- the deep link
       // works and then immediately does not, which is the worst of both. They can still set a
@@ -488,6 +524,14 @@ export default function App() {
       } catch { setOnboarded(false); } // missing key = never onboarded
     })();
   }, []);
+
+  // No refetch. Changing your board does not change the ocean: every score in `forecast` is
+  // recomputed from fields already in memory (see scoredForecast below).
+  function updateProfile(patch) {
+    const next = normalizeProfile({ ...surferProfile, ...patch });
+    setSurferProfile(next);
+    storage.set('surf-profile', JSON.stringify(next)).catch(() => {});
+  }
 
   function toggleUnits() {
     const next = units === 'imperial' ? 'metric' : 'imperial';
@@ -724,7 +768,7 @@ export default function App() {
   // The spot page reads a full forecast only. A `now` entry exists for the globe's markers and
   // carries a single hour; letting it through here would render a chart from one point and a
   // week from none, which reads as broken data rather than as loading.
-  const spotForecast = forecast[activeId] && !forecast[activeId].now ? forecast[activeId] : null;
+  const spotForecast = scoredForecast[activeId] && !scoredForecast[activeId].now ? scoredForecast[activeId] : null;
   // Every value below is either a real measurement or null. There is no third option any more.
   //
   // It used to be a third option, and it was the worst bug in the app. When a fetch was slow
@@ -741,7 +785,7 @@ export default function App() {
   // never to what gets kept.
   const spotCalibration = calibration(calSamples[activeId]);
   const hourData = (spotForecast && spotForecast.hours && spotForecast.hours.length)
-    ? recalibrateHours(spotForecast.hours, spotCalibration, spot) : null;
+    ? recalibrateHours(spotForecast.hours, spotCalibration, spot, surferProfile) : null;
   const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length)
     ? recalibrateContinuous(spotForecast.continuous, spotCalibration) : null;
   const contWaveLine = contData ? linePath(contData.map((p) => p.waveFt), 300, 70, 10) : null;
@@ -784,8 +828,8 @@ export default function App() {
   // parked at. "Which of these should I drive to" is a question about now; the device's own
   // clock is the right one, since every spot in the list is near the device by construction.
   const nearbyRows = useMemo(
-    () => rankNearby(nearbyCandidates, forecast, nowHourTick),
-    [nearbyCandidates, forecast, nowHourTick],
+    () => rankNearby(nearbyCandidates, scoredForecast, nowHourTick),
+    [nearbyCandidates, scoredForecast, nowHourTick],
   );
 
   // Both of these sit below the values they depend on rather than beside the other effects.
@@ -1010,7 +1054,7 @@ export default function App() {
           <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
             pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
             session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast}
-            sessions={sessions} deleteSession={deleteSession} />
+            sessions={sessions} surferProfile={surferProfile} updateProfile={updateProfile} deleteSession={deleteSession} />
         ) : (
           <HomeView
             units={units} toggleUnits={toggleUnits} openSearch={openSearch} openMenu={() => setMenuOpen(true)}
@@ -1022,6 +1066,7 @@ export default function App() {
             waveChart={waveChart} hourIdx={safeHourIdx} setHourIdx={setHourIdx} hourData={hourData}
             best={best}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
+            explain={explainText(explainHour(h, spot, surferProfile))}
             agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}
             onLogSession={logSession} calibration={spotCalibration}

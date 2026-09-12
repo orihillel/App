@@ -4,8 +4,21 @@ import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER, searchCatalog } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
+import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
 import { ratingBg } from '../lib/rating.js';
 import { AuthButtons } from './AuthButtons.jsx';
+
+// The band in whichever units are on screen. Rounded to the nearest half-foot / quarter-metre
+// because the band's edges are a judgement about boards, not a measurement -- printing
+// "1.8-4.8ft" would claim a precision the numbers behind it do not have.
+function formatBand(band, units) {
+  if (units === 'metric') {
+    const round = (ft) => (Math.round((ft / 3.28084) * 4) / 4).toFixed(2).replace(/0$/, '');
+    return round(band.lo) + '-' + round(band.hi) + 'm';
+  }
+  const round = (ft) => String(Math.round(ft * 2) / 2);
+  return round(band.lo) + '-' + round(band.hi) + 'ft';
+}
 
 const TAP = {
   background: 'none', border: 'none', padding: 0,
@@ -13,7 +26,7 @@ const TAP = {
   flexShrink: 0,
 };
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession, surferProfile = DEFAULT_PROFILE, updateProfile }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
@@ -115,6 +128,41 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
               </button>
             );
           })}
+        </div>
+
+        {/* What you ride, which is an input to every rating in the app rather than a preference
+            about how they are displayed. The same 2ft morning is a wasted drive on a shortboard
+            and the best session of the week on a log, and until this existed the app only knew
+            how to have the first opinion. See lib/surfer.js. */}
+        <Heading>YOUR BOARD</Heading>
+        <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 12 }}>
+          {BOARD_IDS.map((id) => {
+            const on = surferProfile.board === id;
+            return (
+              <button key={id} className="tl-btn" aria-pressed={on} onClick={() => updateProfile({ board: id })}
+                style={{ background: on ? COLORS.tealBright : COLORS.navyCard, color: on ? COLORS.navy : COLORS.foam, border: '1px solid ' + (on ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, padding: '0 13px', fontSize: 14, fontWeight: 600 }}>
+                {boardLabel(id)}
+              </button>
+            );
+          })}
+        </div>
+
+        <Heading>YOUR LEVEL</Heading>
+        <div className="flex" style={{ gap: 8, marginBottom: 10 }}>
+          {SKILL_IDS.map((id) => {
+            const on = surferProfile.skill === id;
+            return (
+              <button key={id} className="tl-btn" aria-pressed={on} onClick={() => updateProfile({ skill: id })}
+                style={{ flex: 1, background: on ? COLORS.tealBright : COLORS.navyCard, color: on ? COLORS.navy : COLORS.foam, border: '1px solid ' + (on ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, fontSize: 14, fontWeight: 600 }}>
+                {skillLabel(id)}
+              </button>
+            );
+          })}
+        </div>
+        {/* The consequence, stated plainly, so the two controls above are not a black box: this
+            is the range every rating in the app is now measured against. */}
+        <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.5 }}>
+          Rating spots for {formatBand(bandFor(surferProfile), units)} surf. Bigger or smaller than that scores lower.
         </div>
 
         <Heading>UNITS</Heading>

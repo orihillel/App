@@ -236,17 +236,32 @@ describe('recalibrateHours', () => {
     expect(out.surfFt).toBeGreaterThan(original.surfFt);
   });
 
-  it('raises the rating when the correction pushes wave height into a bigger bucket', () => {
-    // 2.4ft scores nothing for size; 1.5x makes it 3.6ft, which crosses the >=2.5 threshold.
-    const small = hour({ waveFt: 2.4 });
+  // Size no longer scores in ascending buckets -- it scores against the reader's ideal band,
+  // which is flat inside and falls off outside (see lib/surfer.js). So a correction only moves
+  // the score when it moves the height across a band edge; two heights that are both comfortably
+  // in range rate the same, which is the model working rather than the correction failing.
+  it('raises the rating when the correction lifts wave height into the band', () => {
+    // 1.5ft offshore breaks at ~2.4ft, under the default band's 3ft floor. 1.5x lands it inside.
+    const small = hour({ waveFt: 1.5 });
     const boosted = recalibrateHours([small], { ready: true, ratio: 1.5 }, SPOT)[0];
+    expect(small.surfFt).toBeLessThan(3);
+    expect(boosted.surfFt).toBeGreaterThan(3);
     expect(boosted.score).toBeGreaterThan(small.score);
   });
 
-  it('lowers the rating when the correction shrinks a spot that runs smaller than forecast', () => {
-    const big = hour({ waveFt: 5 });
+  it('lowers the rating when the correction shrinks a spot out of the band', () => {
+    const big = hour({ waveFt: 3 });
     const shrunk = recalibrateHours([big], { ready: true, ratio: 0.5 }, SPOT)[0];
+    expect(big.surfFt).toBeGreaterThan(3);
+    expect(shrunk.surfFt).toBeLessThan(3);
     expect(shrunk.score).toBeLessThan(big.score);
+  });
+
+  it('leaves the score alone when both heights sit inside the band', () => {
+    const a = hour({ waveFt: 2.4 });
+    const b = recalibrateHours([a], { ready: true, ratio: 1.5 }, SPOT)[0];
+    expect(b.surfFt).toBeGreaterThan(a.surfFt);
+    expect(b.score).toBe(a.score);
   });
 
   it("scores against the dominant train's period and direction, not the hour's raw ones", () => {

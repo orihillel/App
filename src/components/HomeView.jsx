@@ -33,7 +33,7 @@ export function HomeView({
   units, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry, errorReason,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
@@ -174,6 +174,16 @@ export function HomeView({
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foam }}>{formatSpeed(h.windSpd, units)}{speedUnit(units)} {h.windDir}</span>
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: windColor(h.type), fontWeight: 600 }}>{h.type}</span>
                 </div>
+
+                {/* Why the badge says what it says.
+                    A rating with no reasoning asks to be taken on faith, which is the one thing
+                    this app has never done anywhere else -- it will show nothing rather than a
+                    number it made up, and it labels how old its numbers are. The terms behind the
+                    score were always itemised internally; this just reads the two carrying it and
+                    the one holding it back back out. See lib/scorehour.js. */}
+                {explain ? (
+                  <div style={{ fontSize: 13, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.45 }}>{explain}</div>
+                ) : null}
               </div>
 
               {/* The answer to the question people actually opened the app to ask. Every number
