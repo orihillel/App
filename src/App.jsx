@@ -1131,7 +1131,6 @@ export default function App() {
             best={best}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             explain={explainText(explainHour(h, spot, surferProfile))}
-            outlook={spotForecast ? spotForecast.outlook : null}
             onShare={shareActiveSpot}
             agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}
