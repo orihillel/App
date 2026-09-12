@@ -47,7 +47,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
-        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam }}>Profile</span>
+        <h1 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, margin: 0 }}>Profile</h1>
         <button className="tl-btn" onClick={onClose} style={TAP} aria-label="Close profile"><X size={22} color={COLORS.foamDim} /></button>
       </div>
 
@@ -304,10 +304,17 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
 // One heading style for the whole view. They used to be written out at each call site, which
 // is how YOUR SESSIONS ended up in a container with its own padding and 24px out of line with
 // the rest; a shared component cannot drift like that.
+// A real <h2>, styled to look exactly as it did as a <div>.
+//
+// An audit of the running app found zero h1-h6 and zero landmark elements anywhere in it: every
+// control was labelled and every hit area was 44px, so a screen reader could operate the app
+// perfectly and had no way to navigate it -- one unbroken wall of text with no structure to jump
+// through. Nothing here changes visually; the heading was always a heading, it was just never
+// marked as one.
 function Heading({ children }) {
   return (
-    <div style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 9, marginTop: 2 }}>
+    <h2 style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 9, marginTop: 2 }}>
       {children}
-    </div>
+    </h2>
   );
 }

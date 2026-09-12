@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Menu, Search, Star, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
+import { Menu, Search, Star, Share2, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
@@ -8,6 +8,7 @@ import { calibrationLabel } from '../lib/calibration.js';
 import { swellTrend } from '../lib/swelltrend.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
+import { outlookBarHeight } from '../lib/outlook.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -33,7 +34,7 @@ export function HomeView({
   units, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry, errorReason,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain, outlook, onShare,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
@@ -59,7 +60,7 @@ export function HomeView({
   const stale = dataState === 'stale';
   return (
     <>
-      <div className="flex justify-between items-center px-4" style={{ paddingBottom: 2 }}>
+      <header className="flex justify-between items-center px-4" style={{ paddingBottom: 2 }}>
         <button className="tl-btn" style={TAP} onClick={openMenu} aria-label="Menu"><Menu size={22} color={COLORS.foamDim} /></button>
         <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 14, letterSpacing: '0.14em', color: COLORS.foam, opacity: 0.9 }}>SURFCAST</span>
         <div className="flex items-center">
@@ -68,7 +69,7 @@ export function HomeView({
           </button>
           <button className="tl-btn" style={TAP} onClick={openSearch} aria-label="Search for a spot"><Search size={22} color={COLORS.foamDim} /></button>
         </div>
-      </div>
+      </header>
 
       {/* The directions pin used to sit here, next to the star. At this type size four
           controls crowded the spot name into an ellipsis, and an unlabelled pin that leaves
@@ -88,7 +89,7 @@ export function HomeView({
             </button>
           )}
           <div style={{ minWidth: 0, paddingLeft: showSpotNav ? 0 : 8 }}>
-            <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 26, color: COLORS.foam, lineHeight: 1.1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{spot.name}</div>
+            <h1 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 26, color: COLORS.foam, lineHeight: 1.1, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', margin: 0 }}>{spot.name}</h1>
             <div style={{ fontSize: 14, color: COLORS.foamDim, marginTop: 3 }}>{spot.region}</div>
             {isGoTo && <div style={{ fontSize: 11.5, color: COLORS.tealBright, marginTop: 5, fontWeight: 600, letterSpacing: '0.06em' }}>YOUR GO-TO SPOT</div>}
           </div>
@@ -101,6 +102,9 @@ export function HomeView({
             </button>
           )}
         </div>
+        <button className="tl-btn" style={TAP} onClick={onShare} aria-label="Share this spot">
+          <Share2 size={19} color={COLORS.foamDim} />
+        </button>
         <button className="tl-btn" style={TAP} onClick={makeGoTo} aria-label="Set as go-to spot">
           <Star size={24} color={isGoTo ? COLORS.gold : COLORS.foamDim} fill={isGoTo ? COLORS.gold : 'none'} />
         </button>
@@ -411,6 +415,30 @@ export function HomeView({
             );
           })}
         </div>
+      ) : null}
+
+      {/* The fortnight after the week.
+          Coarser on purpose, and labelled as such: one bar per day, no hours, no wind, no
+          rating. Past about a week the models stop agreeing on anything finer than "big or
+          small" -- the confidence badge above exists because of exactly that -- so drawing
+          hour-by-hour detail this far out would dress uncertainty up as precision. See
+          lib/outlook.js. */}
+      {outlook && outlook.length ? (
+        <section className="mx-4" style={{ marginTop: 14, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
+          <div className="flex items-center justify-between" style={{ marginBottom: 9 }}>
+            <h2 style={{ fontSize: 11.5, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, margin: 0 }}>THE WEEK AFTER</h2>
+            <span style={{ fontSize: 10.5, color: COLORS.foamDim }}>daily max · low confidence</span>
+          </div>
+          <div className="flex items-end" style={{ gap: 6 }}>
+            {outlook.map((d) => (
+              <div key={d.date} className="flex flex-col items-center" style={{ flex: 1, minWidth: 0 }}>
+                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: COLORS.foamDim, marginBottom: 4 }}>{formatWaveNum(d.waveFt, units)}</span>
+                <div style={{ width: '100%', maxWidth: 16, height: outlookBarHeight(d.waveFt, outlook), background: COLORS.teal, borderRadius: 3 }} />
+                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, color: COLORS.foamDim, marginTop: 5 }}>{d.day}</span>
+              </div>
+            ))}
+          </div>
+        </section>
       ) : null}
 
       <div className="grid grid-cols-3 px-4" style={{ gap: 8, marginTop: 14, paddingBottom: 14 }}>

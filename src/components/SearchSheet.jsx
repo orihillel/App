@@ -2,20 +2,47 @@ import { X, Navigation, ChevronLeft, ChevronRight } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { degToCompass } from '../lib/rating.js';
 
-export function SearchSheet({ searchQuery, setSearchQuery, runSearch, searchStep, setSearchStep, searchError, pending, setPending, nudge, confirmAddSpot, matches = [], onSelectMatch, onSearchAnyway, onClose }) {
+export function SearchSheet({ searchQuery, setSearchQuery, runSearch, searchStep, setSearchStep, searchError, pending, setPending, nudge, confirmAddSpot, matches = [], liveMatches = [], onSelectMatch, onSearchAnyway, onClose }) {
+  const typed = searchQuery.trim();
   return (
     <div onClick={onClose} style={{ position: 'absolute', inset: 0, background: 'rgba(5,12,20,0.6)', display: 'flex', alignItems: 'flex-end', zIndex: 10 }}>
       <div onClick={(e) => e.stopPropagation()} style={{ width: '100%', background: COLORS.navyCard, borderTopLeftRadius: 28, borderTopRightRadius: 28, padding: '18px 20px 26px', maxHeight: '82%', overflowY: 'auto' }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 14 }}>
-          <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 16, color: COLORS.foam }}>{searchStep === 'matches' ? 'Spots' : 'Find a spot'}</span>
+          <h2 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 16, color: COLORS.foam, margin: 0 }}>{searchStep === 'matches' ? 'Spots' : 'Find a spot'}</h2>
           <button className="tl-btn" onClick={onClose} aria-label="Close search" style={{ background: 'none', border: 'none', padding: 0, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }}><X size={22} color={COLORS.foamDim} /></button>
         </div>
         {searchStep === 'query' && (
           <div>
             <input className="tl-input" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') runSearch(); }}
-              placeholder="Try “Malibu” or “Jeffreys Bay”"
+              placeholder="Try “Malibu” or “Jeffreys Bay”" autoFocus
+              aria-label="Search spots" role="combobox" aria-expanded={liveMatches.length > 0} aria-controls="tl-search-matches"
               style={{ width: '100%', boxSizing: 'border-box', background: COLORS.navy, border: '1px solid ' + COLORS.foamFaint, borderRadius: 12, minHeight: 46, padding: '0 13px', color: COLORS.foam, fontSize: 14, fontFamily: 'Inter, sans-serif' }} />
-            <button className="tl-btn" onClick={runSearch} style={{ width: '100%', marginTop: 10, background: COLORS.tealBright, border: 'none', borderRadius: 12, minHeight: 46, padding: '0 13px', color: COLORS.navy, fontWeight: 700, fontSize: 14 }}>Search</button>
+
+            {/* The catalog, filtered as you type.
+                With seven hundred spots in it, hiding them behind a button meant the answer was
+                almost always already in the app and you had to guess that before you could see
+                it. Geocoding stays on the button below, because that is a network round trip and
+                a decision to add something new -- it should not fire on every keystroke. */}
+            <ul id="tl-search-matches" style={{ listStyle: 'none', margin: liveMatches.length ? '10px 0 0' : 0, padding: 0 }}>
+              {liveMatches.map(({ id, spot }) => (
+                <li key={id}>
+                  <button className="tl-btn w-full" onClick={() => onSelectMatch && onSelectMatch(id)}
+                    style={{ display: 'block', width: '100%', textAlign: 'left', background: COLORS.navy, border: '1px solid ' + COLORS.foamFaint, borderRadius: 12, minHeight: 46, padding: '0 13px', marginBottom: 8 }}>
+                    <span style={{ display: 'block', fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 14, color: COLORS.foam }}>{spot.name}</span>
+                    <span style={{ display: 'block', fontSize: 11.5, color: COLORS.foamDim, marginTop: 2 }}>{spot.region}</span>
+                  </button>
+                </li>
+              ))}
+            </ul>
+
+            {typed.length >= 2 && !liveMatches.length ? (
+              <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginTop: 10, lineHeight: 1.45 }}>No spot by that name yet.</div>
+            ) : null}
+
+            <button className="tl-btn" onClick={runSearch} disabled={!typed}
+              style={{ width: '100%', marginTop: 10, background: liveMatches.length ? 'none' : COLORS.tealBright, border: liveMatches.length ? '1px solid ' + COLORS.navyBorder : 'none', borderRadius: 12, minHeight: 46, padding: '0 13px', color: liveMatches.length ? COLORS.foamDim : COLORS.navy, fontWeight: liveMatches.length ? 500 : 700, fontSize: liveMatches.length ? 12.5 : 14, opacity: typed ? 1 : 0.5 }}>
+              {liveMatches.length ? 'Not in the list? Look up a new place' : 'Look it up'}
+            </button>
             <div style={{ fontSize: 10.5, color: COLORS.foamDim, marginTop: 10, lineHeight: 1.4 }}>Any coastal place works — I'll pull live wave/wind data and guess which wind direction is offshore from the coastline shape.</div>
           </div>
         )}

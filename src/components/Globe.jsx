@@ -1585,7 +1585,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // left dead space on a tall phone and overflowed a short one.
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: '100%' }}>
       <div className="flex justify-between items-center px-4" style={{ paddingBottom: 2 }}>
-        <span style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, paddingLeft: 6 }}>{title}</span>
+        <h1 style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 22, color: COLORS.foam, paddingLeft: 6, margin: 0 }}>{title}</h1>
         <button className="tl-btn" onClick={onClose} style={{ background: 'none', border: 'none', padding: 0, minWidth: 44, minHeight: 44, display: 'flex', alignItems: 'center', justifyContent: 'center' }} aria-label="Close globe"><X size={22} color={COLORS.foamDim} /></button>
       </div>
       <div style={{ padding: '0 20px 6px', fontSize: 13, color: COLORS.foamDim, lineHeight: 1.45 }}>

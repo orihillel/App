@@ -15,7 +15,9 @@ import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
 import { shouldRefetchOnResume } from './lib/refresh.js';
 import { parseHash, buildHash } from './lib/router.js';
+import { shareSpot } from './lib/share.js';
 import { nearestSpots, rankNearby, DEFAULT_MAX_KM } from './lib/nearby.js';
+import { mySpotIds, mySpotRows, mySpotsSummary } from './lib/myspots.js';
 import { locate } from './lib/geolocate.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
@@ -29,6 +31,7 @@ import { AlertSheet } from './components/AlertSheet.jsx';
 import { BottomNav } from './components/BottomNav.jsx';
 import { NavDrawer } from './components/NavDrawer.jsx';
 import { NearbyView } from './components/NearbyView.jsx';
+import { MySpotsView } from './components/MySpotsView.jsx';
 
 const GLOBAL_CSS = `
 /* The font @import used to live here, and that was the problem: this string only becomes a
@@ -533,6 +536,14 @@ export default function App() {
     storage.set('surf-profile', JSON.stringify(next)).catch(() => {});
   }
 
+  // Nothing is said on a successful share sheet -- the OS already showed one, and a toast on top
+  // of it is noise. A copy is the opposite: nothing visible happened, so it has to be announced.
+  async function shareActiveSpot() {
+    const result = await shareSpot({ ...spot, id: activeId }, h);
+    if (result === 'copied') setToast('Link copied');
+    else if (result === 'unavailable') setToast("This browser won't let the app share or copy");
+  }
+
   function toggleUnits() {
     const next = units === 'imperial' ? 'metric' : 'imperial';
     setUnits(next);
@@ -607,6 +618,12 @@ export default function App() {
       waveFt: hr ? waveAvg(hr.wave) : null,
       stars,
       note,
+      // The day itself, not just the verdict on it. See makeSession.
+      conditions: hr ? {
+        surfFt: hr.surfFt, period: hr.period, swellDeg: hr.swellDeg,
+        windMph: hr.windMph, windType: hr.type, tidePosition: hr.tidePosition,
+        board: surferProfile.board, skill: surferProfile.skill,
+      } : null,
     });
     const next = addSession(sessions, entry);
     setSessions(next);
@@ -832,6 +849,34 @@ export default function App() {
     [nearbyCandidates, scoredForecast, nowHourTick],
   );
 
+  // Your own spots, always available -- no location permission, no ranking, your order.
+  const myIds = useMemo(() => mySpotIds(order, spots, goToId), [order, spots, goToId]);
+  const myRows = useMemo(
+    () => mySpotRows(myIds, spots, scoredForecast, nowHourTick),
+    [myIds, spots, scoredForecast, nowHourTick],
+  );
+  // The same batched one-hour fetch the globe's markers use, asked for the handful of spots on
+  // this screen rather than a viewport's worth. Spots that already have a full forecast are
+  // skipped inside loadConditionsFor, so opening this after looking at a spot costs nothing.
+  useEffect(() => {
+    if (view === 'myspots' && myIds.length) loadConditionsFor(myIds);
+  }, [view, myIds, loadConditionsFor]);
+
+  // Forget only these spots before asking again. Clearing the whole set would also forget every
+  // marker the globe has ever requested, so one tap here would re-fetch hundreds of spots --
+  // which is the kind of accidental fan-out that has emptied the daily allowance before.
+  const refreshMySpots = useCallback(() => {
+    for (const id of myIds) requestedNow.current.delete(id);
+    setForecast((prev) => {
+      const next = { ...prev };
+      // Only the one-hour readings. A spot with a full forecast keeps it -- this list does not
+      // have anything better to replace it with, and dropping it would blank the spot page.
+      for (const id of myIds) if (next[id] && next[id].now) delete next[id];
+      return next;
+    });
+    loadConditionsFor(myIds);
+  }, [myIds, loadConditionsFor]);
+
   // Both of these sit below the values they depend on rather than beside the other effects.
   // A dependency array is evaluated during render, so an effect placed above a `const` it names
   // reads that binding in its temporal dead zone -- which is not a warning but a hard
@@ -883,6 +928,7 @@ export default function App() {
   function handleNav(label) {
     if (label === 'home') { setView('home'); setActiveId(goToId); setHourIdx(1); route('home', goToId); }
     else if (label === 'map') { setView('globe'); route('globe'); }
+    else if (label === 'myspots') { setView('myspots'); route('myspots'); }
     else if (label === 'nearby') { setView('nearby'); route('nearby'); askLocation(); }
     else if (label === 'alerts') { setView('alerts'); route('alerts'); }
     else if (label === 'profile') { setView('profile'); route('profile'); }
@@ -928,6 +974,14 @@ export default function App() {
   }
 
   function closeSearch() { setSearchOpen(false); setSearchStep('query'); setSearchQuery(''); setSearchError(''); setPending(null); }
+  // The catalog, filtered on every keystroke. Pure and local -- no network, no debounce needed:
+  // measured at 718 spots this is a sub-millisecond string scan, and memoising it keeps it off
+  // the render path for keystrokes that do not change the query.
+  const liveSearchMatches = useMemo(
+    () => (searchStep === 'query' ? searchCatalog(spots, searchQuery) : []),
+    [spots, searchQuery, searchStep],
+  );
+
   async function runSearch() {
     const q = searchQuery.trim();
     if (!q) return;
@@ -1024,8 +1078,12 @@ export default function App() {
       <div className="relative overflow-hidden" style={{ width: '100%', maxWidth: 480, height: '100dvh', background: COLORS.navy, fontFamily: 'Inter, sans-serif', display: 'flex', flexDirection: 'column' }}>
 
         {/* Only this scrolls. The nav below stays put, which it did not when the whole frame
-            was one scrolling column and a tall spot page pushed it off the bottom. */}
-        <div className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingTop: 'env(safe-area-inset-top, 0px)' }}>
+            was one scrolling column and a tall spot page pushed it off the bottom.
+
+            A <main> rather than a <div>: an audit found the app had no landmark elements at all,
+            so a screen reader had nothing to jump to and no way to skip the header on every
+            screen change. Purely semantic -- it carries the same styles it always did. */}
+        <main className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingTop: 'env(safe-area-inset-top, 0px)' }}>
         {!onboarded ? (
           onboardingGlobeOpen ? (
             <Suspense fallback={<GlobeLoading />}>
@@ -1040,6 +1098,12 @@ export default function App() {
           <Suspense fallback={<GlobeLoading />}>
             <Globe order={order} dataRef={dataRef} onClose={() => handleNav('home')} onSelectSpot={viewSpot} units={units} onVisibleSpots={loadConditionsFor} />
           </Suspense>
+        ) : view === 'myspots' ? (
+          <MySpotsView
+            rows={myRows} summary={mySpotsSummary(myRows)} units={units} goToId={goToId}
+            onSelectSpot={viewSpot} onClose={() => handleNav('home')}
+            onRefresh={() => refreshMySpots()}
+          />
         ) : view === 'nearby' ? (
           <NearbyView
             rows={nearbyRows} spots={spots} units={units}
@@ -1067,6 +1131,8 @@ export default function App() {
             best={best}
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             explain={explainText(explainHour(h, spot, surferProfile))}
+            outlook={spotForecast ? spotForecast.outlook : null}
+            onShare={shareActiveSpot}
             agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}
             onLogSession={logSession} calibration={spotCalibration}
@@ -1075,9 +1141,12 @@ export default function App() {
             tideToday={tideToday} tide={tide} tideNext={tideNext} tideNow={tideNow}
           />
         )}
-        </div>
+        </main>
 
-        <div style={{ position: 'relative', height: 0 }}>
+        {/* Announced, so a toast reaches a screen reader instead of appearing only visually.
+            `status` rather than `alert`: these are confirmations ("Link copied"), not warnings
+            that should interrupt whatever is being read. */}
+        <div style={{ position: 'relative', height: 0 }} role="status" aria-live="polite">
           {toast && (
             <div style={{ position: 'absolute', left: '50%', transform: 'translateX(-50%)', bottom: 74, background: 'rgba(8,20,31,0.94)', color: COLORS.foam, fontSize: 12, padding: '9px 16px', borderRadius: 999, whiteSpace: 'nowrap', boxShadow: '0 8px 20px rgba(0,0,0,0.3)', zIndex: 5 }}>
               {toast}
@@ -1101,7 +1170,7 @@ export default function App() {
             searchQuery={searchQuery} setSearchQuery={setSearchQuery} runSearch={runSearch}
             searchStep={searchStep} setSearchStep={setSearchStep} searchError={searchError}
             pending={pending} setPending={setPending} nudge={nudge} confirmAddSpot={confirmAddSpot}
-            matches={searchMatches} onSelectMatch={selectSearchMatch} onSearchAnyway={searchAnywayAsNewPlace}
+            matches={searchMatches} liveMatches={liveSearchMatches} onSelectMatch={selectSearchMatch} onSearchAnyway={searchAnywayAsNewPlace}
             onClose={closeSearch}
           />
         )}

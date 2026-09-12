@@ -6,6 +6,7 @@ import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
 import { confidenceForSeries, confidenceLabel } from './confidence.js';
 import { fetchMarine } from './marine.js';
+import { fetchOutlook } from './outlook.js';
 import { breakingHeightFt, surfRange } from './surf.js';
 
 // What to tell someone when the forecast did not arrive.
@@ -191,7 +192,12 @@ export async function fetchSpotForecast(spot, profile) {
   // fetchRealTide's own body is entirely inside its own try/catch and cannot throw, which a
   // mutation test confirmed by proving an outer one was never actually reachable -- rather than
   // keep it as reassurance nothing exercises, the guarantee is fetchRealTide's contract instead.
-  const [{ marine, wind }, realTide] = await Promise.all([fetchRaw(spot), fetchRealTide(spot)]);
+  // The long-range outlook rides alongside on the same terms as the real tide: a bonus that can
+  // fail without failing the page. See lib/outlook.js for why it is a separate small request
+  // rather than a longer version of this one.
+  const [{ marine, wind }, realTide, outlook] = await Promise.all([
+    fetchRaw(spot), fetchRealTide(spot), fetchOutlook(spot),
+  ]);
   const tideFtAt = realTideLookup(realTide, (marine.hourly || {}).time, (marine.hourly || {}).sea_level_height_msl);
 
   // Which hours to sample, from this spot's own sunrise and sunset rather than a fixed
@@ -368,7 +374,7 @@ export async function fetchSpotForecast(spot, profile) {
   const waterC = sstNow != null ? sstNow : null;
 
   return {
-    hours, weekly, continuous, tideToday, tideFine,
+    hours, weekly, outlook, continuous, tideToday, tideFine,
     best: bestWindow(hours),
     waterC,
     wetsuit: wetsuitFor(waterC),
