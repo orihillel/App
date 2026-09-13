@@ -1,0 +1,8 @@
+[{
+      "relation": ["delegate_permission/common.handle_all_urls"],
+      "target": {
+        "namespace": "android_app",
+        "package_name": "com.surfcast.app",
+        "sha256_cert_fingerprints": ["34:C6:CE:F5:30:83:6A:3C:8C:DB:4E:3C:C2:34:6F:0D:42:D0:55:32:2C:10:1C:7E:AD:57:A4:ED:64:52:71:E9"]
+      }
+    }]

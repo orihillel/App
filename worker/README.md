@@ -84,18 +84,27 @@ You'll need a free [Cloudflare account](https://dash.cloudflare.com/sign-up).
    Copy each `id` it prints into `wrangler.toml`'s matching `[[kv_namespaces]]` block,
    replacing `REPLACE_WITH_YOUR_KV_NAMESPACE_ID` / `REPLACE_WITH_YOUR_USERS_KV_NAMESPACE_ID`.
 
-3. **Generate a VAPID keypair** (identifies this Worker to push services — not tied to your
-   Cloudflare account, just a keypair):
-   ```bash
-   npx web-push generate-vapid-keys
-   ```
-   - Put the **public** key in `wrangler.toml`'s `VAPID_PUBLIC_KEY` (replacing
-     `REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY`) — public keys are safe to commit.
-   - Set the **private** key as a secret, never committed:
+3. **The VAPID keypair** (identifies this Worker to push services — not tied to your
+   Cloudflare account, just a keypair) **is already generated.** The public half is committed
+   in `wrangler.toml`'s `VAPID_PUBLIC_KEY` — public keys are safe to commit — and was verified
+   to actually import and sign through this Worker's own push library before being committed
+   (not just well-formed). Two things still need doing:
+   - Set the **private** key as a secret, never committed — it was handed to you separately
+     from this repository:
      ```bash
      npx wrangler secret put VAPID_PRIVATE_KEY
      # paste the private key when prompted
      ```
+   - Set `VITE_VAPID_PUBLIC_KEY` to the **same public key** as a repo variable (Settings →
+     Secrets and variables → Actions → Variables) — this is what the frontend reads to know
+     where to subscribe; see `deploy.yml`.
+   - Also set `VAPID_SUBJECT` in `wrangler.toml` to a real `mailto:` or `https:` URL you
+     control — it's currently a placeholder, and push services may contact it if something's
+     wrong with how this Worker is using push.
+
+   If you ever need to generate a *new* keypair instead (e.g. the private key was lost), the
+   standard way is `npx web-push generate-vapid-keys`; update both halves together, since an
+   old subscription signed by a since-rotated key stops delivering.
 
 4. **Set up "Continue with Google"** (skip this and step 5 if you only want one provider —
    each works independently; the button for an unconfigured provider just doesn't render):

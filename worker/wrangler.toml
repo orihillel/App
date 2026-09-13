@@ -39,8 +39,11 @@ id = "bd11b99628224918a7785f4d49f325c4"
 # with how it's being used — any mailto: or https: URL you control.
 VAPID_SUBJECT = "mailto:replace-with-your-email@example.com"
 # Safe to commit — VAPID public keys are, by design, not secret. The matching private key is
-# NOT set here; see README.md (`wrangler secret put VAPID_PRIVATE_KEY`).
-VAPID_PUBLIC_KEY = "REPLACE_WITH_YOUR_VAPID_PUBLIC_KEY"
+# NOT set here; see README.md (`wrangler secret put VAPID_PRIVATE_KEY`). This keypair was
+# generated for this project and verified to import and sign through the exact code path
+# src/push.js uses (see the commit that added it) — the private half was handed to whoever ran
+# that setup, once, in chat, and was never committed anywhere.
+VAPID_PUBLIC_KEY = "BBn2VqarPHlQDmSJVOsBFFCycQ8MVaBhcmhHWHt-7ULRB6uj2vq-Mzl8tXOsTxkS3gLaiOvO8a7Uu_APpCUgm38"
 # CORS: only this origin may call the API. This is the GitHub Pages origin the app is served
 # from — origin only, no /App path, since CORS matches on origin.
 ALLOWED_ORIGIN = "https://orihillel.github.io"

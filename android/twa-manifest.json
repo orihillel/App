@@ -1,0 +1,47 @@
+{
+  "packageId": "com.surfcast.app",
+  "host": "orihillel.github.io",
+  "name": "Surfcast — Surf Forecast",
+  "launcherName": "Surfcast",
+  "display": "standalone",
+  "themeColor": "#070F18",
+  "themeColorDark": "#070F18",
+  "navigationColor": "#070F18",
+  "navigationColorDark": "#070F18",
+  "navigationDividerColor": "#070F18",
+  "navigationDividerColorDark": "#070F18",
+  "backgroundColor": "#070F18",
+  "enableNotifications": true,
+  "startUrl": "/App/",
+  "iconUrl": "https://orihillel.github.io/App/icons/icon-512.png",
+  "maskableIconUrl": "https://orihillel.github.io/App/icons/icon-maskable-512.png",
+  "splashScreenFadeOutDuration": 300,
+  "signingKey": {
+    "path": "./surfcast-upload-key.jks",
+    "alias": "upload"
+  },
+  "appVersionCode": 1,
+  "appVersion": "1.0.0",
+  "shortcuts": [],
+  "generatorApp": "manually authored (see android/README.md) -- @bubblewrap/cli 1.25.0's own schema",
+  "webManifestUrl": "https://orihillel.github.io/App/manifest.webmanifest",
+  "fallbackType": "customtabs",
+  "features": {},
+  "alphaDependencies": {
+    "enabled": false
+  },
+  "enableSiteSettingsShortcut": true,
+  "isChromeOSOnly": false,
+  "isMetaQuest": false,
+  "fullScopeUrl": "https://orihillel.github.io/App/",
+  "minSdkVersion": 21,
+  "orientation": "portrait",
+  "fingerprints": [
+    {
+      "name": "Upload key (surfcast-upload-key.jks, alias \"upload\")",
+      "value": "34:C6:CE:F5:30:83:6A:3C:8C:DB:4E:3C:C2:34:6F:0D:42:D0:55:32:2C:10:1C:7E:AD:57:A4:ED:64:52:71:E9"
+    }
+  ],
+  "additionalTrustedOrigins": [],
+  "retainedBundles": []
+}
