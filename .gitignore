@@ -13,3 +13,13 @@ dist-ssr
 # design skill from the .dc.html sources beside it. The sources are the thing worth keeping.
 .design/*.html
 !.design/*.dc.html
+
+# android/'s upload-signing keystore. This is a permanent credential -- whoever holds it can
+# publish updates to the Play Store listing under this app's identity -- never committed, same
+# as the Worker's secrets above. See android/README.md for what to do with it instead.
+android/*.jks
+android/*.keystore
+# Bubblewrap's own build output, if `bubblewrap build` is ever run here.
+android/app/build
+android/build
+android/.gradle

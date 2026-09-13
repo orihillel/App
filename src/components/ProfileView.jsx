@@ -293,8 +293,17 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
         )}
 
         <Heading>DATA</Heading>
-        <div style={{ fontSize: 11, color: COLORS.foamDim, lineHeight: 1.6, paddingBottom: 20 }}>
+        <div style={{ fontSize: 11, color: COLORS.foamDim, lineHeight: 1.6, paddingBottom: 8 }}>
           Wave, swell, wind, and tide data from Open-Meteo's Marine and Weather APIs. Near a NOAA tide station — the US and its territories — tide comes from that station's own harmonic predictions, on the same chart datum as a printed tide table. Everywhere else it is Open-Meteo's modeled sea level: good for the timing of highs and lows, not for an exact height.
+        </div>
+
+        {/* App-store listings and the OAuth consoles both require a reachable privacy policy;
+            static pages rather than app routes so they work even if the app's own JS fails to
+            load, and so an app-store or OAuth reviewer's plain HTTP fetch can read them. */}
+        <div style={{ fontSize: 11, color: COLORS.foamDim, lineHeight: 1.6, paddingBottom: 20 }}>
+          <a href="privacy.html" target="_blank" rel="noopener noreferrer" style={{ color: COLORS.tealBright }}>Privacy Policy</a>
+          {' · '}
+          <a href="terms.html" target="_blank" rel="noopener noreferrer" style={{ color: COLORS.tealBright }}>Terms of Service</a>
         </div>
       </div>
     </div>

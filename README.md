@@ -52,3 +52,31 @@ Real, backend-driven push notifications for alerts (delivered even when the app 
 toggle in Profile. The frontend piece (`src/lib/push.js`, `src/sw.js`) is always present but
 degrades gracefully to "Not available" until its backend is deployed: see `worker/README.md`
 for the one-time Cloudflare setup this needs (a free account; nothing here can deploy itself).
+
+## Legal
+
+`public/privacy.html` and `public/terms.html` — hosted, linked from Profile, and required by
+both the OAuth apps below and any app-store listing. Both have a placeholder contact email;
+replace it before relying on either page for a real launch.
+
+## Accounts ("Continue with Google" / "Continue with Meta")
+
+Optional cross-device sync, same backend as push. See `worker/README.md` for the one-time
+setup this needs — creating an OAuth app with each provider is a human step (an account,
+agreeing to their terms) that nothing in this repo can do for you.
+
+## App stores
+
+`android/` packages this PWA as a real Android app (a Trusted Web Activity — the live site,
+opened full-screen with no browser chrome) for a Google Play listing. See `android/README.md`
+for what's already generated there (a validated project config, a real signing keystore, a
+real Digital Asset Links fingerprint) versus what still needs a human: deciding the package
+id, hosting `assetlinks.json` at the right domain, and the actual Play Console account and
+submission.
+
+There is no equivalent iOS path here. Apple's App Store review explicitly rejects apps that
+are "just a repackaged website" (Guideline 4.2.1), so there's no clean, thin wrapper to
+generate the way `android/` does for Play — a real iOS submission needs enough native
+functionality added (via something like Capacitor) to clear that review, plus a Mac with
+Xcode to build it. Until or unless that's worth doing, this PWA already installs from Safari
+via Add to Home Screen, with push working there too (iOS 16.4+).

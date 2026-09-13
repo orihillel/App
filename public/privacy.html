@@ -1,0 +1,101 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Privacy Policy — Surfcast</title>
+<meta name="theme-color" content="#070F18" />
+<link rel="icon" type="image/png" href="/App/icons/favicon-32.png" />
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #070F18; color: #F4F7F6; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; line-height: 1.6; }
+  .wrap { max-width: 680px; margin: 0 auto; padding: 40px 20px 80px; }
+  h1 { font-size: 26px; margin-bottom: 4px; }
+  .updated { color: rgba(244,247,246,0.58); font-size: 13px; margin-bottom: 32px; }
+  h2 { font-size: 17px; margin-top: 34px; color: #39E6C4; }
+  p, li { color: rgba(244,247,246,0.85); font-size: 15px; }
+  ul { padding-left: 20px; }
+  a { color: #39E6C4; }
+  code { background: rgba(244,247,246,0.08); padding: 1px 5px; border-radius: 4px; font-size: 13px; }
+  .home { display: inline-block; margin-bottom: 24px; color: rgba(244,247,246,0.58); font-size: 13px; text-decoration: none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <a class="home" href="/App/">&larr; Back to Surfcast</a>
+  <h1>Privacy Policy</h1>
+  <p class="updated">Last updated: September 2026</p>
+
+  <p>Surfcast is a surf-forecast app. This page explains, plainly, what it collects, why,
+  and what it never does. If something here is unclear, contact
+  <a href="mailto:replace-with-your-email@example.com">replace-with-your-email@example.com</a>.</p>
+
+  <h2>What stays on your device</h2>
+  <p>By default, everything Surfcast remembers about you stays in your browser's local storage
+  and never reaches any server we run: your go-to spot, any spots you've added, your alerts,
+  your unit preference (feet/mph vs. metres/kph), your surfer profile (board and skill level),
+  and your session log (the days you've logged, with your rating and any note). Uninstalling
+  the app or clearing your browser's site data deletes all of it.</p>
+
+  <h2>Location, if you use "Best nearby"</h2>
+  <p>If you tap "Best nearby," your browser asks you for permission to share your location, the
+  same standard prompt any website would show. Your coordinates are sent, on that request only,
+  to Open-Meteo (the weather service this app is built on) and to our own backend to fetch tide
+  and buoy readings near you. We do not store your location, log it, or associate it with any
+  account. If you decline the permission, this feature simply doesn't work — nothing else in
+  the app needs your location.</p>
+
+  <h2>If you sign in with Google or Meta (optional)</h2>
+  <p>Signing in is entirely optional and exists for one reason: to sync your saved spots, alerts
+  and preferences across your devices. If you choose to sign in:</p>
+  <ul>
+    <li>We receive your name and profile picture from Google or Meta. We do <strong>not</strong>
+    request or store your email address, even on providers that offer it.</li>
+    <li>We store your name, picture, and the app data above (spots, alerts, units) under an
+    identifier tied to your provider account — not to any other identity we hold.</li>
+    <li>This data lives in Cloudflare's storage (the infrastructure our backend runs on) and is
+    used for nothing except serving it back to your own signed-in devices.</li>
+  </ul>
+  <p>You can ask us to delete your account and everything stored under it at any time by emailing
+  <a href="mailto:replace-with-your-email@example.com">replace-with-your-email@example.com</a>
+  from the address associated with your login.</p>
+
+  <h2>If you turn on push notifications (optional)</h2>
+  <p>If you enable an alert with push notifications, your browser generates a push subscription
+  (an endpoint address and encryption keys — not personal information) which we store alongside
+  the alert conditions you set (spot, minimum wave height, lead time), so a scheduled check can
+  notify you when they're met. Turning push off, or deleting the alert, deletes this record.</p>
+
+  <h2>What we don't do</h2>
+  <ul>
+    <li>No analytics or usage tracking of any kind.</li>
+    <li>No advertising, no ad networks, no ad identifiers.</li>
+    <li>No cookies — the app uses local storage on your own device instead.</li>
+    <li>We never sell, rent, or share your data with advertisers or data brokers.</li>
+  </ul>
+
+  <h2>Third-party services this app talks to</h2>
+  <p>Surfcast is built on public weather and tide data. Fetching it means your device's
+  coordinates (never anything more) are sent to the services below when you view a forecast:</p>
+  <ul>
+    <li><strong>Open-Meteo</strong> — wave, wind and marine forecast data.</li>
+    <li><strong>NOAA / NDBC</strong> (via our own backend) — real tide predictions and live buoy
+    readings, for spots near a US station.</li>
+    <li><strong>Google / Meta</strong> — only if you choose to sign in, to verify who you are.</li>
+    <li><strong>Cloudflare</strong> — hosts the backend that proxies the above and stores account
+    data for people who sign in or enable push.</li>
+  </ul>
+
+  <h2>Children</h2>
+  <p>Surfcast is not directed at children under 13, and we do not knowingly collect data from
+  anyone under that age.</p>
+
+  <h2>Changes to this policy</h2>
+  <p>If this changes in a way that affects what we collect or why, we'll update the date at the
+  top of this page.</p>
+
+  <h2>Contact</h2>
+  <p><a href="mailto:replace-with-your-email@example.com">replace-with-your-email@example.com</a></p>
+</div>
+</body>
+</html>
