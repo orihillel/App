@@ -303,5 +303,68 @@ describe('searchCatalog', () => {
     expect(searchCatalog(null, 'pipeline')).toEqual([]);
     expect(searchCatalog(SPOTS, null)).toEqual([]);
     expect(searchCatalog(SPOTS, undefined)).toEqual([]);
+    expect(searchCatalog(SPOTS, '!!!')).toEqual([]);
+  });
+
+  // Naming the country is the obvious way to say which Herzliya you mean, and it used to return
+  // nothing at all: the query was matched as one string against "Herzliya, Israel", and the
+  // comma sits between the two words nobody types.
+  describe('by city, state and country', () => {
+    const names = (q) => searchCatalog(SPOTS, q).map((r) => r.spot.name);
+
+    it('finds a spot when the city and country are typed together', () => {
+      expect(names('Herzliya Israel')).toContain('Acadia');
+      expect(names('Ashkelon Israel')).toContain('Ashkelon');
+      expect(names('Cornwall England')).toContain('Perranporth');
+    });
+
+    it('does not care what order the words come in', () => {
+      expect(names('Israel Herzliya')).toEqual(names('Herzliya Israel'));
+    });
+
+    it('finds a spot by a country its region never spells out', () => {
+      // "San Clemente, CA" says neither California nor USA.
+      expect(names('San Clemente California')).toContain('Lower Trestles');
+      expect(names('Trestles USA')).toContain('Lower Trestles');
+      expect(names('Pipeline United States')).toContain('Pipeline');
+      expect(names('Thurso United Kingdom')).toContain('Thurso East');
+    });
+
+    it('leads with the spot whose name the query named', () => {
+      // Every spot on the coast answers to "USA", so the word that is doing the work is the
+      // name. Ranking these level puts whatever sorts first alphabetically on top -- "Malibu
+      // USA" led with County Line, which is not what anyone asked for.
+      expect(names('Malibu USA')[0]).toBe('Malibu (Surfrider Beach)');
+      expect(names('Ericeira Portugal')[0]).toBe('Ericeira');
+      expect(names('Raglan New Zealand')[0]).toBe('Raglan');
+      expect(names('Bells Beach Australia')[0]).toBe('Bells Beach');
+    });
+
+    it('needs every word to land somewhere', () => {
+      expect(names('Herzliya Portugal')).toEqual([]);
+      expect(names('Pipeline zzzzzznotaplace')).toEqual([]);
+    });
+  });
+
+  // 83 of the 718 spots carry a character that is not on an English keyboard, including the most
+  // famous wave in the world.
+  describe('accents and punctuation', () => {
+    const names = (q) => searchCatalog(SPOTS, q).map((r) => r.spot.name);
+
+    it('finds an accented spot from what a phone keyboard types', () => {
+      expect(names('Nazare')).toContain('Nazaré');
+      expect(names('Sao Paulo')).toContain('Maresias');
+      expect(names('Klitmoller')).toContain('Klitmøller');
+      expect(names('Thorlakshofn')).toContain('Þorlákshöfn');
+    });
+
+    it('still finds it when the accent is typed properly', () => {
+      expect(names('Nazaré')).toContain('Nazaré');
+    });
+
+    it('closes up an apostrophe rather than breaking the word in two', () => {
+      expect(names('Peahi')).toContain('Peʻahi (Jaws)');
+      expect(names('Haatafu')).toContain("Ha'atafu");
+    });
   });
 });

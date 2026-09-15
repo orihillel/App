@@ -1,3 +1,5 @@
+import { foldText, spotSearchText } from './placesearch.js';
+
 // `swellWindow: [from, to]` is the compass arc (clockwise) a spot actually receives swell
 // from, and `bestTide` is the tide it works best on ('low' | 'mid' | 'high' | 'all'). Both are
 // optional: spots without them fall back to an arc derived from `offshoreDeg` — see
@@ -129,29 +131,40 @@ export const HOUR_LABELS = ['5a', '7a', '9a', '11a', '1p', '3p', '5p', '7p'];
 export const HOUR_INDICES = [5, 7, 9, 11, 13, 15, 17, 19];
 export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
-// Find built-in spots by name or region.
+// Find built-in spots by name, city, state or country.
 //
 // The search sheet only ever geocoded arbitrary place names, which was fine when the catalog
 // was a few dozen spots you could scroll past. At 300+ there is otherwise no way to reach one
 // by name, and searching for a spot that is already here would offer to add a *duplicate* of it
 // as a custom spot.
 //
+// Every word of the query has to land somewhere, but they may land in different places and in
+// any order, so "Herzliya Israel" reaches a spot whose region reads "Herzliya, Israel". Matching
+// the query as one string could not: the comma sits between the two words the user typed, and a
+// single `includes` spans it for nobody. That is not an edge case — naming the country is the
+// obvious way to disambiguate a city, and it silently returned nothing at all.
+//
 // Ranked so an exact name match beats a name that merely starts with the query, which beats one
-// that contains it, which beats a region match — otherwise typing "Bells" can put a beach in
-// another hemisphere above Bells Beach.
+// that contains it, which beats a match that needed the region — otherwise typing "Bells" can
+// put a beach in another hemisphere above Bells Beach.
 export function searchCatalog(spots, query, limit = 8) {
-  const q = String(query || '').trim().toLowerCase();
+  const q = foldText(query);
   if (q.length < 2 || !spots) return [];
+  const tokens = q.split(' ');
   const scored = [];
   for (const [id, s] of Object.entries(spots)) {
     if (!s || !s.name) continue;
-    const name = s.name.toLowerCase();
-    const region = String(s.region || '').toLowerCase();
+    const name = foldText(s.name);
+    const haystack = spotSearchText(s);
     let rank = null;
     if (name === q) rank = 0;
     else if (name.startsWith(q)) rank = 1;
     else if (name.includes(q)) rank = 2;
-    else if (region.includes(q)) rank = 3;
+    else if (tokens.every((t) => haystack.includes(t))) {
+      // A query whose words are spread across the name and the region still ranks above one the
+      // name had no part in, so "Bells Beach Australia" leads with Bells Beach.
+      rank = tokens.some((t) => name.includes(t)) ? 3 : 4;
+    }
     if (rank != null) scored.push({ id, spot: s, rank });
   }
   scored.sort((a, b) => a.rank - b.rank || a.spot.name.localeCompare(b.spot.name));
