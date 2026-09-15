@@ -1,11 +1,12 @@
 import { useState, useEffect } from 'react';
-import { Menu, Search, Star, Share2, Navigation, MapPin, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
+import { Menu, Search, Star, Share2, Navigation, MapPin, Camera, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
 import { calibrationLabel } from '../lib/calibration.js';
 import { swellTrend } from '../lib/swelltrend.js';
+import { camSearchUrl } from '../lib/webcam.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
 
@@ -258,6 +259,20 @@ export function HomeView({
             <span style={{ fontSize: 15, fontWeight: 600, color: COLORS.tealBright }}>Directions</span>
             <span style={{ fontSize: 13.5, color: COLORS.foamDim }}>opens in Maps</span>
           </a>
+
+          {/* No catalog of surf cams by spot exists to draw from -- see lib/webcam.js -- so this
+              searches rather than claims a feed exists, the same honesty directionsUrl() above
+              already has by never asserting anything about what's at the destination. */}
+          {camSearchUrl(spot) ? (
+            <a
+              className="tl-btn flex items-center" href={camSearchUrl(spot)} target="_blank" rel="noopener noreferrer"
+              style={{ gap: 9, marginTop: 4, minHeight: 44, textDecoration: 'none' }}
+            >
+              <Camera size={17} color={COLORS.tealBright} style={{ flexShrink: 0 }} />
+              <span style={{ fontSize: 15, fontWeight: 600, color: COLORS.tealBright }}>Find a live cam</span>
+              <span style={{ fontSize: 13.5, color: COLORS.foamDim }}>searches the web</span>
+            </a>
+          ) : null}
         </div>
       </div>
 
