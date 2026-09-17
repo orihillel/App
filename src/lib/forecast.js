@@ -5,7 +5,7 @@ import { hourLabel12 } from './format.js';
 import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
 import { confidenceForSeries, confidenceLabel } from './confidence.js';
-import { fetchMarine } from './marine.js';
+import { fetchMarine, mergeWaveModels } from './marine.js';
 import { breakingHeightFt, surfRange } from './surf.js';
 
 // What to tell someone when the forecast did not arrive.
@@ -42,7 +42,8 @@ async function fetchDirect(spot) {
     throw err;
   }
   const [marine, wind] = await Promise.all([marineRes.json(), windRes.json()]);
-  return { marine, wind };
+  // Named models come back under suffixed keys; everything downstream reads plain ones.
+  return { marine: mergeWaveModels(marine), wind };
 }
 
 // Where a spot's two upstream payloads come from.
@@ -66,7 +67,11 @@ async function fetchRaw(spot) {
     } catch { /* Worker unreachable -- fall through and ask Open-Meteo directly */ }
     if (res && res.ok) {
       const body = await res.json().catch(() => null);
-      if (body && body.marine && body.wind) return { marine: body.marine, wind: body.wind };
+      // Merged here as well as on the direct path: the Worker fetches through the same
+      // fetchMarine and hands back whatever shape that produced, so a Worker asking for named
+      // models would otherwise deliver suffixed keys to a browser expecting plain ones -- which
+      // does not throw, it just makes every reading null.
+      if (body && body.marine && body.wind) return { marine: mergeWaveModels(body.marine), wind: body.wind };
       // A 200 that isn't a forecast means this Worker predates the endpoint. Go direct.
     } else if (res && res.status !== 404) {
       const body = await res.json().catch(() => null);
