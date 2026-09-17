@@ -6,13 +6,14 @@ import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleT
 import { scoreToColor } from '../lib/rating.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import {
-  base64ToBytes, decodeHeights, decodeDirections, fillGridGaps, makeGridSampler,
+  base64ToBytes, decodeHeights, decodeSpeeds, decodeDirections, fillGridGaps, makeGridSampler,
   GRID_LAT_STEP,
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
-import { fetchWaveGrid, fetchWaveFrames } from '../lib/buoy.js';
+import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, windTravelBearing } from '../lib/windscale.js';
+import { fetchWaveGrid, fetchWaveFrames, fetchWindGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
@@ -61,6 +62,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // that are the point of this screen under a wash of colour.
   const [wavesOn, setWavesOn] = useState(false);
   const [waveMeta, setWaveMeta] = useState(null);
+  // Which reading of the ocean is painted: the swell, or the wind over it. Both are drawn by
+  // the same machinery -- one texture, one mask, one arrow field -- because they are the same
+  // shape of data, and only the numbers, the ramp and which way an arrow means change.
+  const [layer, setLayer] = useState('swell'); // swell | wind
+  const [windMeta, setWindMeta] = useState(null);
+  const [windState, setWindState] = useState('idle'); // idle | loading | ready | unavailable
   // The animated week. `frames` is the decoded set, `frameIdx` which one is drawn, `playing`
   // whether the timer is advancing it. Held here rather than in the WebGL effect so the
   // controls can read them; the effect exposes one imperative function to draw a frame.
@@ -82,6 +89,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // bridge the parent uses for forecast data: a ref the render loop reads.
   const wavesOnRef = useRef(false);
   wavesOnRef.current = wavesOn;
+  // Same bridge as wavesOnRef: the WebGL effect is built once at mount and cannot read state.
+  const layerRef = useRef('swell');
+  layerRef.current = layer;
+  // The effect hands these out so the controls can ask for a layer without reaching into it.
+  const applyLayerRef = useRef(null);
+  const loadWindRef = useRef(null);
   // The render loop skips frames when nothing has moved, which is what keeps an idle globe off
   // the battery. Toggling the overlay changes what should be drawn without moving anything, so
   // it has to say so explicitly or the screen would not update until the next drag.
@@ -93,6 +106,28 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   useEffect(() => {
     if (!wavesOn) { setPlaying(false); setPos(0); }
   }, [wavesOn]);
+
+  // Turning the overlay off returns to the swell. The layer is a reading of the live map, and
+  // coming back to "Show live swell" on the wind would contradict the button that opened it.
+  useEffect(() => {
+    if (!wavesOn) setLayer('swell');
+  }, [wavesOn]);
+
+  // Pick a layer, fetching it first if this is the first time it has been asked for.
+  //
+  // The week's animation belongs to the swell alone -- a wind week is another 5,000 units a day
+  // against an allowance the swell week already half spends -- so leaving it playing under the
+  // wind would animate swell frames with a wind legend over them. It stops and rewinds instead,
+  // and the control disappears rather than sitting there doing nothing.
+  const selectLayer = useCallback((next) => {
+    setLayer(next);
+    if (next === 'wind') {
+      setPlaying(false);
+      setPos(0);
+      if (loadWindRef.current) loadWindRef.current();
+    }
+    if (applyLayerRef.current) applyLayerRef.current(next);
+  }, []);
 
   // Fetch and decode the week, once, the first time the animation is asked for.
   //
@@ -538,6 +573,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let waveCanvasCtx = null;
     let waveImageData = null;
     let waveLand = null;
+    // The two live readings, decoded and kept, so switching layers is a repaint rather than a
+    // refetch. Each is `{ values, dirs, toTravel, colorFn }` -- everything that differs between
+    // them, in one place, so nothing downstream has to branch on which layer is showing.
+    let liveLayers = {};
+    let windRequested = false;
 
     // The arrows over the colour: which way each patch of swell is travelling.
     //
@@ -561,7 +601,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // is 186 cells. Sampling at half resolution asks 64,800 questions of 186 numbers instead of
     // 259,200, and the answer still passes through a mipmapped linear filter on its way to a
     // sphere, so the difference on screen is far smaller than the difference in cost.
-    function paintWaveCanvas(ctx, heights, step, coarsen = 1) {
+    function paintWaveCanvas(ctx, heights, step, coarsen = 1, colorFn = waveColor) {
       // One buffer for the life of the overlay. createImageData allocates a megabyte, and doing
       // that 28 times hands the collector a megabyte of garbage per animation.
       if (!waveImageData || waveImageData.width !== WAVE_TEX_W) {
@@ -578,7 +618,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const yMax = Math.min(WAVE_TEX_H, y + n);
         for (let x = 0; x < WAVE_TEX_W; x += n) {
           const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
-          const c = waveColor(sampler.height(heights, lat, lon));
+          const c = colorFn(sampler.height(heights, lat, lon));
           const xMax = Math.min(WAVE_TEX_W, x + n);
           for (let yy = y; yy < yMax; yy++) {
             let o = (yy * WAVE_TEX_W + x) * 4;
@@ -592,12 +632,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       ctx.putImageData(waveImageData, 0, 0);
     }
 
-    function buildWaveTexture(heights, step) {
+    function buildWaveTexture(heights, step, colorFn = waveColor) {
       const cv = document.createElement('canvas');
       cv.width = WAVE_TEX_W;
       cv.height = WAVE_TEX_H;
       const ctx = cv.getContext('2d');
-      paintWaveCanvas(ctx, heights, step);
+      paintWaveCanvas(ctx, heights, step, 1, colorFn);
       waveCanvasCtx = ctx;
       const tex = new THREE.CanvasTexture(cv);
       if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
@@ -695,13 +735,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Order is preserved from lib/swellarrows.js, whose sequence is arranged so that any prefix
     // still covers the whole globe — that is what lets the draw count follow the zoom without
     // rebuilding anything.
-    function buildArrowField(directions, land, step) {
+    // `toTravel` turns the bearing the source reports -- which every marine and weather feed
+    // gives as where the thing comes *from* -- into the direction it is going, which is how an
+    // arrow on a map reads. Passed in rather than assumed because the swell layer and the wind
+    // layer each have their own, and using one for the other draws every arrow backwards
+    // without erroring.
+    function buildArrowField(directions, land, step, toTravel = swellTravelBearing) {
       const points = [];
       const sampler = makeGridSampler(step);
       for (const p of fibonacciSphere(ARROW_FIELD)) {
         if (land && !isWater(land.mask, land.width, land.height, p.lat, p.lon)) continue;
         const from = sampler.direction(directions, p.lat, p.lon);
-        const bearing = swellTravelBearing(from);
+        const bearing = toTravel(from);
         if (bearing == null) continue;
         points.push({ ...p, bearing });
       }
@@ -798,6 +843,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // Directions are optional: a grid cached before the Worker started fetching them has
           // heights and nothing else, and the colours are worth drawing on their own.
           const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
+          // Kept so switching back from the wind is a repaint rather than another fetch.
+          liveLayers.swell = {
+            values: waveMaskTexture ? fillGridGaps(raw) : raw,
+            dirs: directions, colorFn: waveColor, toTravel: swellTravelBearing,
+          };
           arrowPoints = directions ? buildArrowField(directions, land, GRID_LAT_STEP) : [];
           if (arrowPoints.length) {
             arrowMesh = new THREE.InstancedMesh(
@@ -810,7 +860,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                 color: 0xf4f7f6, transparent: true, opacity: 0.72, depthWrite: false,
                 side: THREE.DoubleSide,
               }),
-              arrowPoints.length,
+              // Allocated at the cap, not at this field's size. The instance count actually
+              // drawn is set per frame from the zoom (see updateArrows), and sizing the buffer
+              // to whichever field happened to be built first meant a later one that produced
+              // a different number of points could not be shown at all -- which is how a layer
+              // switch used to leave the previous layer's arrows on screen under the new
+              // layer's legend. 6,000 matrices is 384KB; the bug it removes is a wind map
+              // captioned as swell.
+              ARROW_FIELD,
             );
             arrowMesh.renderOrder = 2; // over the overlay and the coastline, never under them
             arrowMesh.frustumCulled = false;
@@ -830,6 +887,73 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         })
         .catch(() => setWaveMeta({ ok: false }));
     }
+
+    // Repaint the overlay from whichever live layer is selected.
+    //
+    // The mesh, the texture, the coastline mask and the arrow field are all built once and
+    // reused: a layer is the same picture drawn from different numbers with a different ramp,
+    // so switching costs a repaint and an arrow re-orientation rather than a rebuild. Returns
+    // whether it could draw, so a caller that asked for a layer with no data can say so
+    // instead of leaving the previous layer up under the new label -- which would be the worst
+    // outcome available: the wind map, captioned as swell.
+    function applyLiveLayer(name) {
+      const set = liveLayers[name];
+      if (!set || !waveCanvasCtx || !waveTexture) return false;
+      paintWaveCanvas(waveCanvasCtx, set.values, GRID_LAT_STEP, 1, set.colorFn);
+      waveTexture.needsUpdate = true;
+      if (set.dirs && arrowMesh) {
+        // No count check. The two layers genuinely disagree about where an arrow can be drawn
+        // -- a direction field has nothing to say where opposing swells or a col in the wind
+        // cancel out, and they cancel in different places -- so requiring the same number of
+        // points meant the arrows silently stayed on the layer being switched away from.
+        arrowPoints = buildArrowField(set.dirs, waveLand, GRID_LAT_STEP, set.toTravel);
+        arrowScaleAt = 0; // force the next layout pass to re-orient every instance
+      }
+      state.dataDirty = true;
+      if (markDirtyRef.current) markDirtyRef.current();
+      return true;
+    }
+    applyLayerRef.current = applyLiveLayer;
+
+    // Fetch the wind grid, once, the first time the layer is asked for.
+    //
+    // On demand rather than alongside the swell, because it is a second pass over the upstream
+    // API: a viewer who only ever looks at the swell should not spend a wind build they never
+    // see. See worker/src/windGrid.js for the budget this is protecting.
+    function ensureWindLayer() {
+      if (windRequested) return;
+      windRequested = true;
+      setWindState('loading');
+      fetchWindGrid()
+        .then((grid) => {
+          if (cancelled) return;
+          if (!grid || !grid.data) {
+            setWindState('unavailable');
+            setWindMeta({ ok: false, build: grid && grid.build });
+            // Retryable: a cooldown or a half-built grid resolves on its own, and a viewer who
+            // asked early should be able to ask again.
+            windRequested = false;
+            return;
+          }
+          const speeds = decodeSpeeds(base64ToBytes(grid.data));
+          const dirs = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
+          liveLayers.wind = {
+            // Gaps are filled only when the coastline mask is there to stop the fill at the
+            // shore, exactly as the swell does -- without one, "no reading" is the only thing
+            // marking out land and filling it paints the map over every continent.
+            values: waveMaskTexture ? fillGridGaps(speeds) : speeds,
+            dirs, colorFn: windColor, toTravel: windTravelBearing,
+          };
+          setWindMeta({
+            ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
+            arrows: !!dirs, noDirections: !grid.dirs,
+          });
+          setWindState('ready');
+          if (layerRef.current === 'wind') applyLiveLayer('wind');
+        })
+        .catch(() => { windRequested = false; setWindState('unavailable'); setWindMeta({ ok: false }); });
+    }
+    loadWindRef.current = ensureWindLayer;
 
     // Draw one frame of the animated week.
     //
@@ -856,11 +980,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // move. A frame whose directions are missing leaves the last ones alone rather than
       // clearing the sky.
       if (frame.dirs && arrowMesh) {
-        const next = buildArrowField(frame.dirs, waveLand, step);
-        if (next.length === arrowPoints.length) {
-          arrowPoints = next;
-          arrowScaleAt = 0; // force the next layout pass to re-orient every instance
-        }
+        // Also unguarded by count, for the same reason: two frames six hours apart cancel in
+        // different places, and freezing the arrows on whichever frame matched the buffer size
+        // is an animation that stops telling the truth halfway through.
+        arrowPoints = buildArrowField(frame.dirs, waveLand, step);
+        arrowScaleAt = 0;
       }
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
@@ -1609,11 +1733,34 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             color: wavesOn ? COLORS.tealBright : COLORS.foamDim,
           }}
         >
-          {wavesOn ? 'Hide live swell' : 'Show live swell'}
+          {wavesOn ? 'Hide live overlay' : 'Show live swell'}
         </button>
+        {/* Which reading of the ocean is painted. Only offered once the overlay is on, because
+            it switches what that overlay draws and there is nothing to switch until then. */}
+        {wavesOn && waveMeta && waveMeta.ok && (
+          <div role="group" aria-label="Overlay layer" className="flex" style={{ gap: 8, marginBottom: 10 }}>
+            {[['swell', 'Swell'], ['wind', 'Wind']].map(([id, label]) => {
+              const on = layer === id;
+              return (
+                <button
+                  key={id} className="tl-btn" aria-pressed={on}
+                  onClick={() => selectLayer(id)}
+                  style={{
+                    flex: 1, minHeight: 44, borderRadius: 8, fontSize: 14, fontWeight: 600,
+                    background: on ? COLORS.navyCard : 'none',
+                    border: '1px solid ' + (on ? COLORS.tealBright : COLORS.navyBorder),
+                    color: on ? COLORS.tealBright : COLORS.foamDim,
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {/* The animated week. Only offered once the live overlay is actually drawn: it repaints
             that overlay's own texture, so there is nothing for it to animate until then. */}
-        {wavesOn && waveMeta && waveMeta.ok && (
+        {wavesOn && waveMeta && waveMeta.ok && layer === 'swell' && (
           <div style={{ marginBottom: 10 }}>
             {framesState === 'ready' && frames ? (
               <div>
@@ -1676,7 +1823,51 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             )}
           </div>
         )}
-        {wavesOn && (
+        {/* The wind layer's own legend, and its own failure states. A separate branch rather
+            than a parameterised one: the two layers fail for different reasons and have
+            different things to say about it, and collapsing them would mean the wind's
+            problems being described in the swell's words. */}
+        {wavesOn && layer === 'wind' && (
+          <div style={{ marginBottom: 12 }}>
+            {windState === 'loading' ? (
+              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>Loading wind map…</div>
+            ) : windMeta && windMeta.ok ? (
+              <>
+                <div style={{ height: 8, borderRadius: 4, background: windScaleGradient() }} />
+                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
+                  {windScaleTicks(units).map((t) => (
+                    <span key={t.label} style={{ fontSize: 9, color: COLORS.foamDim }}>{t.label}</span>
+                  ))}
+                </div>
+                <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
+                  {windLegendCaption(windMeta, units)}
+                </div>
+                <div style={{ fontSize: 9, color: COLORS.foamDim, marginTop: 3, textAlign: 'center', opacity: 0.8 }}>
+                  Strong is not the same as bad — a hard offshore is the best wind there is, and which way it blows only means something at a spot.
+                </div>
+              </>
+            ) : (
+              <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center', lineHeight: 1.5 }}>
+                Wind map unavailable right now — the swell layer and the rest of the globe are unaffected.
+                {windMeta && windMeta.build && (
+                  <div style={{ marginTop: 3, opacity: 0.8 }}>
+                    {'Fetched ' + (windMeta.build.batchesDone ?? 0) + ' of ' + (windMeta.build.batchesTotal ?? 0) + ' batches'}
+                    {windMeta.build.lastStatus ? ' · HTTP ' + windMeta.build.lastStatus : ''}
+                    {windMeta.build.lastError ? ' · ' + String(windMeta.build.lastError).slice(0, 120) : ''}
+                    {windMeta.build.cooling && (
+                      <div style={{ marginTop: 2 }}>
+                        {'Not retrying for another '
+                          + Math.max(1, Math.ceil((windMeta.build.retryInSeconds || 0) / 60))
+                          + ' min — retrying now would only spend more of the same limit.'}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
+        )}
+        {wavesOn && layer === 'swell' && (
           <div style={{ marginBottom: 12 }}>
             {waveMeta && waveMeta.ok === false ? (
               <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center', lineHeight: 1.5 }}>

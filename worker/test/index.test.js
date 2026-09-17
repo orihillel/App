@@ -3,7 +3,8 @@ import { createFakeKv } from './fakeKv.js';
 import { CATALOG } from '../../src/lib/spots.catalog.js';
 import { putSubscription, getSubscription } from '../src/store.js';
 import { GRID_KEY } from '../src/waveGrid.js';
-import { gridCellCount, encodeHeights, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
+import { WIND_KEY } from '../src/windGrid.js';
+import { gridCellCount, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
 
 vi.mock('../src/push.js', () => ({
   sendPushNotification: vi.fn(),
@@ -127,6 +128,65 @@ describe('HTTP routes', () => {
       expect(body.grid).toBeNull();
       expect(body.build).toBeTruthy();
       expect(body.build.lastError).toBeTruthy(); // says what went wrong, not just that it did
+    });
+  });
+
+  // The wind layer's own endpoint, asserted the same way and for the same reason: it is another
+  // explicit field list, and that is exactly how the wave directions went missing on the way
+  // out once already.
+  describe('GET /windgrid', () => {
+    let realFetch;
+    beforeEach(() => {
+      realFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn(async () => { throw new Error('no upstream in tests'); });
+    });
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    const storedWind = (extra = {}) => ({
+      generatedAt: Date.now(), cells: gridCellCount(), coverage: 1,
+      data: bytesToBase64(encodeSpeeds(new Array(gridCellCount()).fill(24))),
+      dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(270))),
+      ...extra,
+    });
+
+    it('sends every field the app reads, directions included', async () => {
+      const env = makeEnv();
+      const grid = storedWind();
+      await env.SUBSCRIPTIONS.put(WIND_KEY, JSON.stringify(grid));
+      const res = await worker.fetch(new Request('https://worker.example/windgrid'), env);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.data).toBe(grid.data);
+      expect(body.dirs).toBe(grid.dirs);
+      expect(body.cells).toBe(grid.cells);
+      expect(body.generatedAt).toBe(grid.generatedAt);
+      expect(body.stale).toBe(false);
+      expect(body.coverage).toBe(1);
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('does not answer the wind route from the wave grid', async () => {
+      // Two grids, two KV keys, one shape. Crossing them does not throw -- it paints the swell
+      // map and calls it wind, which is the one failure nobody would spot from the screen.
+      const env = makeEnv();
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify({
+        generatedAt: Date.now(), cells: gridCellCount(), coverage: 1,
+        data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+        dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(225))),
+      }));
+      const res = await worker.fetch(new Request('https://worker.example/windgrid'), env);
+      const body = await res.json();
+      expect(body.grid).toBeNull(); // nothing cached under the wind key, and no upstream here
+    });
+
+    it('answers with the build diagnostics, not a bare error, when there is nothing to serve', async () => {
+      const env = makeEnv();
+      const res = await worker.fetch(new Request('https://worker.example/windgrid'), env);
+      expect(res.status).toBe(200);
+      const body = await res.json();
+      expect(body.grid).toBeNull();
+      expect(body.build).toBeTruthy();
+      expect(body.build.lastError).toBeTruthy();
     });
   });
 

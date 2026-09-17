@@ -105,6 +105,30 @@ export async function fetchWaveFrames() {
   }
 }
 
+// The wind over the same grid, for the globe's other layer.
+//
+// Its own request because it is its own build on its own cadence in the Worker: a globe showing
+// only the swell must not pay for a wind pass nobody asked for. Same contract as the grid
+// below, diagnostics and all, so the UI can say why there is no wind map rather than only that
+// there isn't one.
+export async function fetchWindGrid() {
+  const base = workerBase();
+  if (!base) return null;
+  try {
+    const res = await fetch(base.replace(/\/$/, '') + '/windgrid');
+    if (!res.ok) return null;
+    const data = await res.json();
+    if (!data || typeof data.data !== 'string') return { data: null, build: data && data.build };
+    return {
+      data: data.data, cells: data.cells, generatedAt: data.generatedAt,
+      dirs: typeof data.dirs === 'string' ? data.dirs : null,
+      stale: !!data.stale, build: data.build || null,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function fetchWaveGrid() {
   const base = workerBase();
   // No Worker configured: no overlay, and no toggle offered for one. The globe is unaffected.

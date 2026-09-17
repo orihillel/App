@@ -332,6 +332,35 @@ export function fillGridGaps(heights, rounds = 2, step = GRID_LAT_STEP) {
   return current;
 }
 
+// Wind speed, one byte a cell, for the globe's other overlay.
+//
+// Kilometres an hour at one per byte, which is what Open-Meteo returns natively, so nothing is
+// converted before it is stored and there is one less place for a unit to be lost. A whole km/h
+// is finer than a global model resolves wind to, and 254 km/h is past anything ever recorded at
+// sea level -- the cap clamps rather than wraps, because a wind that pegs the scale is still a
+// wind and drawing it as a calm would be the worst possible failure.
+//
+// Shares NO_DATA with the heights: land and ice have no wind reading here for the same reason
+// they have no wave height, and the overlay leaves both transparent.
+export function encodeSpeeds(kph) {
+  const bytes = new Uint8Array(kph.length);
+  for (let i = 0; i < kph.length; i++) {
+    const v = kph[i];
+    bytes[i] = (v == null || !Number.isFinite(v) || v < 0)
+      ? NO_DATA
+      : Math.min(254, Math.round(v));
+  }
+  return bytes;
+}
+
+export function decodeSpeeds(bytes) {
+  const out = new Array(bytes.length);
+  for (let i = 0; i < bytes.length; i++) {
+    out[i] = bytes[i] === NO_DATA ? null : bytes[i];
+  }
+  return out;
+}
+
 // Wave direction, one byte a cell, alongside the heights.
 //
 // 255 is reserved for "no reading", leaving 0-254 for the compass — about 1.4 degrees a step,

@@ -11,6 +11,7 @@ import { getUser, upsertUserProfile, putUserAppData } from './userStore.js';
 import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './buoySources.js';
 import { loadTideStations, nearestTideStation, loadPredictions } from './noaaTide.js';
 import { loadGrid } from './waveGrid.js';
+import { loadWindGrid } from './windGrid.js';
 import { loadFrames, advanceFrames } from './waveFrames.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
@@ -235,6 +236,28 @@ async function handleWaveGrid(request, env) {
   }
 }
 
+// The wind over the same ocean, for the globe's other layer.
+//
+// Its own endpoint rather than another field on /wavegrid, because it is another pass over the
+// upstream API on a different cadence, and folding it in would make every viewer who only wants
+// the swell pay for wind they never asked to see.
+async function handleWindGrid(request, env) {
+  try {
+    const { grid, build } = await loadWindGrid(env);
+    if (!grid) return json({ grid: null, build }, env);
+    // Named individually, the way /wavegrid had to learn: adding a field to the grid does not
+    // add it to the wire, and the last time that was missed the globe drew no arrows and it
+    // looked like every other reason for no arrows.
+    return json({
+      generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data,
+      dirs: grid.dirs ?? null,
+      stale: !!grid.stale, coverage: grid.coverage ?? null, build,
+    }, env);
+  } catch (e) {
+    return json({ grid: null, build: { lastError: String((e && e.message) || e) } }, env);
+  }
+}
+
 // The animated week. Separate from /wavegrid rather than folded into it: the two are built on
 // different grids at different cadences, and an app that only wants the live overlay should not
 // have to download 28 frames to get it.
@@ -392,6 +415,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/conditions') return handleConditions(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid/frames') return handleWaveFrames(request, env);
+    if (request.method === 'GET' && url.pathname === '/windgrid') return handleWindGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
   },
