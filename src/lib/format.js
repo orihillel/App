@@ -1,11 +1,21 @@
-export function formatWaveRange(str, units) {
+// `scale` is the reader's own sense of size (lib/waveheight.js), applied here because this is
+// the edge: the stored range stays in the model's feet and only what reaches the screen moves.
+// At the default 1 every branch below is the identity it always was.
+//
+// Rescaling can round both ends to the same number -- two-foot surf read at half scale -- and
+// "1-1" is not a range, so a collapsed one prints as the single number it actually says.
+function joinRange(lo, hi) { return lo === hi ? lo : lo + '-' + hi; }
+
+export function formatWaveRange(str, units, scale = 1) {
   const parts = String(str).split('-').map(Number);
   if (parts.length !== 2 || isNaN(parts[0]) || isNaN(parts[1])) return str;
-  if (units === 'metric') return (parts[0] * 0.3048).toFixed(1) + '-' + (parts[1] * 0.3048).toFixed(1);
-  return parts[0] + '-' + parts[1];
+  const lo = parts[0] * scale, hi = parts[1] * scale;
+  if (units === 'metric') return joinRange((lo * 0.3048).toFixed(1), (hi * 0.3048).toFixed(1));
+  return joinRange(String(Math.round(lo)), String(Math.round(hi)));
 }
-export function formatWaveNum(ft, units) {
-  return units === 'metric' ? (ft * 0.3048).toFixed(1) : Math.round(ft);
+export function formatWaveNum(ft, units, scale = 1) {
+  const v = ft * scale;
+  return units === 'metric' ? (v * 0.3048).toFixed(1) : Math.round(v);
 }
 export function formatHeight(ft, units) {
   return units === 'metric' ? (ft * 0.3048).toFixed(1) : ft.toFixed(1);

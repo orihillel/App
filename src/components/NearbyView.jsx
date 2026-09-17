@@ -10,7 +10,7 @@ function km(distance, units) {
 }
 
 // "Where should I go right now", as a list. The ordering is lib/nearby.js's; this only draws it.
-export function NearbyView({ rows, units, status, message, onRetry, onSelectSpot, onClose, spots, radiusLabel }) {
+export function NearbyView({ rows, units, waveScale = 1, status, message, onRetry, onSelectSpot, onClose, spots, radiusLabel }) {
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -79,7 +79,7 @@ export function NearbyView({ rows, units, status, message, onRetry, onSelectSpot
                   {h && (
                     <div className="flex items-center" style={{ gap: 12, marginTop: 9, flexWrap: 'wrap' }}>
                       <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 15, fontWeight: 700, color: COLORS.foam }}>
-                        {formatWaveRange(h.wave, units)}<span style={{ fontSize: 11, color: COLORS.foamDim, marginLeft: 3 }}>{waveUnit(units)}</span>
+                        {formatWaveRange(h.wave, units, waveScale)}<span style={{ fontSize: 11, color: COLORS.foamDim, marginLeft: 3 }}>{waveUnit(units)}</span>
                       </span>
                       {h.period != null && <span style={{ fontSize: 12, color: COLORS.foamDim }}>{h.period}s</span>}
                       {h.windSpd != null && (

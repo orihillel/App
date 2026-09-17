@@ -2,7 +2,7 @@ import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { formatWaveNum, heightUnit, leadTimeLabel } from '../lib/format.js';
 
-export function AlertsView({ alerts, spots, units, checkAlertMatch, openNewAlert, deleteAlert, onClose }) {
+export function AlertsView({ alerts, spots, units, waveScale = 1, checkAlertMatch, openNewAlert, deleteAlert, onClose }) {
   return (
     <div>
       <div className="flex justify-between items-center px-6 pt-2 pb-3">
@@ -24,7 +24,7 @@ export function AlertsView({ alerts, spots, units, checkAlertMatch, openNewAlert
               <div className="flex items-start justify-between">
                 <div>
                   <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 14, color: COLORS.foam }}>{s ? s.name : 'Unknown spot'}</div>
-                  <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 2 }}>{leadTimeLabel(a.leadTime)} · {formatWaveNum(a.minWaveFt, units)}{heightUnit(units)}+</div>
+                  <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 2 }}>{leadTimeLabel(a.leadTime)} · {formatWaveNum(a.minWaveFt, units, waveScale)}{heightUnit(units)}+</div>
                 </div>
                 <button className="tl-btn" onClick={() => deleteAlert(a.id)} style={{ background: 'none', border: 'none', padding: 4 }}><X size={15} color={COLORS.foamDim} /></button>
               </div>

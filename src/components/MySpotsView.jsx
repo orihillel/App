@@ -5,7 +5,7 @@ import { formatWaveRange, waveUnit, formatSpeed, speedUnit } from '../lib/format
 
 // "How are my spots doing", as a list. The ordering and the summary line are lib/myspots.js's;
 // this only draws them.
-export function MySpotsView({ rows, summary, units, goToId, onSelectSpot, onClose, onRefresh }) {
+export function MySpotsView({ rows, summary, units, waveScale = 1, goToId, onSelectSpot, onClose, onRefresh }) {
   return (
     <div>
       <header className="flex justify-between items-center px-6 pt-2 pb-1">
@@ -61,7 +61,7 @@ export function MySpotsView({ rows, summary, units, goToId, onSelectSpot, onClos
               {hour ? (
                 <span className="flex items-center" style={{ gap: 12, marginTop: 9 }}>
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 17, color: COLORS.foam }}>
-                    {formatWaveRange(hour.wave, units)}<span style={{ fontSize: 11, color: COLORS.foamDim, marginLeft: 3 }}>{waveUnit(units)}</span>
+                    {formatWaveRange(hour.wave, units, waveScale)}<span style={{ fontSize: 11, color: COLORS.foamDim, marginLeft: 3 }}>{waveUnit(units)}</span>
                   </span>
                   {hour.period != null ? (
                     <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 12.5, color: COLORS.foamDim }}>{hour.period}s {hour.swellDir}</span>
