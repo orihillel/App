@@ -4,7 +4,6 @@ import { daylightHours } from './daylight.js';
 import { hourLabel12 } from './format.js';
 import { bestWindow } from './bestwindow.js';
 import { swellTrains, wetsuitFor } from './swell.js';
-import { confidenceForSeries, confidenceLabel } from './confidence.js';
 import { fetchMarine, mergeWaveModels } from './marine.js';
 import { breakingHeightFt, surfRange } from './surf.js';
 
@@ -378,58 +377,6 @@ export async function fetchSpotForecast(spot, profile) {
     waterC,
     wetsuit: wetsuitFor(waterC),
   };
-}
-
-// Model agreement, fetched separately and allowed to fail.
-//
-// Open-Meteo will serve individual models via `&models=`, and returns each one under a
-// suffixed key (wave_height_<model>). The exact marine model identifiers could not be checked
-// from the sandbox this was written in — open-meteo.com is blocked by its proxy — so rather
-// than depend on getting a name right, this tries a few candidate pairs and reads whatever
-// per-model keys come back, by pattern rather than by name. If none of them work the whole
-// feature simply does not render: a wrong guess costs one failed request and nothing else.
-//
-// The original three guesses were checked later, by searching Open-Meteo's own docs rather
-// than calling the API (still blocked here). None of them survive: `gfs_wave025` and bare
-// `ewam`/`gwam` are not real identifiers, and `ecmwf_wam,gfs_wave` is missing the suffix every
-// real one carries -- so this most likely never rendered the badge at all, on any spot,
-// silently, exactly as it was built to fail. The two front candidates below come from that
-// same search and are two independently-run centres (NOAA and ECMWF; then MeteoFrance and
-// ECMWF), which is the pairing the badge is meant to compare in the first place. The old
-// guesses stay on the end rather than being deleted -- Open-Meteo's own docs disagree with
-// each other on some of these across pages, which reads as identifiers that have moved before,
-// so a candidate that is wrong today costs nothing kept and might be right on some future
-// deploy that broke a newer one.
-const CONFIDENCE_MODEL_PAIRS = [
-  'ecmwf_wam025,ncep_gfswave025',
-  'dwd_ewam,dwd_gwam',
-  'meteofrance_wave,ecmwf_wam025',
-  'ecmwf_wam025,gfs_wave025', 'ewam,gwam', 'ecmwf_wam,gfs_wave',
-];
-
-export async function fetchModelAgreement(spot, hourIndices, { fetchImpl = fetch } = {}) {
-  for (const pair of CONFIDENCE_MODEL_PAIRS) {
-    try {
-      const url = 'https://marine-api.open-meteo.com/v1/marine?latitude=' + spot.lat +
-        '&longitude=' + spot.lon + '&hourly=wave_height&timezone=auto&forecast_days=3&models=' + pair;
-      const res = await fetchImpl(url);
-      if (!res.ok) continue;
-      const json = await res.json();
-      const hourly = json.hourly || {};
-      // Read the per-model series by shape rather than by name, so this does not depend on
-      // having guessed the identifiers correctly.
-      const series = Object.keys(hourly)
-        .filter((k) => k.startsWith('wave_height_') && Array.isArray(hourly[k]))
-        .map((k) => hourly[k]);
-      if (series.length < 2) continue;
-      const pick = (arr) => hourIndices.map((i) => (arr[i] != null ? arr[i] : null));
-      const level = confidenceForSeries(pick(series[0]), pick(series[1]));
-      if (level) return { level, label: confidenceLabel(level) };
-    } catch {
-      // Offline, blocked, or an identifier this build guessed wrong: try the next pair.
-    }
-  }
-  return null;
 }
 
 export async function geocodePlace(query) {

@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  addSample, freshSamples, calibration, applyCalibration, calibrationLabel,
+  addSample, freshSamples, calibration, applyCalibration,
   recalibrateHours, recalibrateContinuous,
   MIN_SAMPLES, MAX_SAMPLES, MAX_SAMPLE_AGE_MS,
 } from './calibration.js';
@@ -140,22 +140,6 @@ describe('applyCalibration', () => {
   });
 });
 
-describe('calibrationLabel', () => {
-  it('reports a correction worth knowing about', () => {
-    expect(calibrationLabel(calibration(samples(20, 1.3)))).toMatch(/30% bigger/);
-    expect(calibrationLabel(calibration(samples(20, 0.7)))).toMatch(/30% smaller/);
-  });
-  it('stays quiet about a correction inside the noise of reading a wave', () => {
-    expect(calibrationLabel(calibration(samples(20, 1.04)))).toBeNull();
-  });
-  it('stays quiet until it is settled', () => {
-    expect(calibrationLabel(calibration(samples(3, 1.4)))).toBeNull();
-    expect(calibrationLabel(null)).toBeNull();
-  });
-  it('says how much evidence it is based on', () => {
-    expect(calibrationLabel(calibration(samples(20, 1.3)))).toMatch(/20 checks/);
-  });
-});
 
 describe('recalibrateHours', () => {
   const SPOT = { offshoreDeg: 60 };

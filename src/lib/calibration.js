@@ -79,19 +79,15 @@ export function applyCalibration(waveFt, cal) {
   return waveFt * cal.ratio;
 }
 
-// "Runs 15% bigger than forecast here" — worth saying only once it is both settled and large
-// enough to matter. A 4% correction is inside the noise of reading a wave height anyway.
-export function calibrationLabel(cal) {
-  if (!cal || !cal.ready || Math.abs(cal.percent) < 8) return null;
-  const dir = cal.percent > 0 ? 'bigger' : 'smaller';
-  return 'Runs ' + Math.abs(cal.percent) + '% ' + dir + ' than forecast here (' + cal.samples + ' checks)';
-}
-
 // Corrects a day's sampled hours from a settled calibration -- the part that was missing.
-// applyCalibration existed and calibrationLabel said "runs 15% bigger than forecast here", and
-// between them nothing actually made the wave height, the rating badge, or the best-window pick
-// reflect it. A spot the app had already proven runs consistently big kept scoring itself
-// against the uncorrected number everywhere except one footnote.
+// applyCalibration existed, and a line on the card announced that a spot "runs 15% bigger than
+// forecast here", and between them nothing actually made the wave height, the rating badge or
+// the best-window pick reflect it. A spot the app had already proven runs consistently big kept
+// scoring itself against the uncorrected number everywhere except one footnote.
+//
+// That footnote is gone now and this is not: the correction is the useful half. What a spot's
+// learned bias is worth is a wave height that already accounts for it, not a sentence saying it
+// was not accounted for.
 //
 // Recomputes wave, score and rating from the calibrated height using the exact inputs
 // fetchSpotForecast scored the hour with the first time -- the dominant swell train's period

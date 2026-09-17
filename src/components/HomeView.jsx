@@ -1,10 +1,9 @@
 import { useState, useEffect } from 'react';
-import { Menu, Search, Star, Share2, Navigation, MapPin, Camera, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus, TrendingUp } from 'lucide-react';
+import { Menu, Search, Star, Share2, Navigation, MapPin, Camera, RefreshCw, ChevronLeft, ChevronRight, Clock, Thermometer, AlertTriangle, Plus } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { cToF } from '../lib/swell.js';
 import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
-import { calibrationLabel } from '../lib/calibration.js';
 import { swellTrend } from '../lib/swelltrend.js';
 import { camSearchUrl } from '../lib/webcam.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
@@ -34,7 +33,7 @@ export function HomeView({
   units, waveScale = 1, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry, errorReason,
-  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain, onShare,
+  waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, buoy, onLogSession, explain, onShare,
   activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
@@ -209,26 +208,6 @@ export function HomeView({
                 </button>
               ) : null}
 
-              {/* The consistent part of the model's error at this spot, learned from buoy readings
-                  and reported here rather than in the buoy panel: it qualifies the forecast above,
-                  and it still holds on a day the buoy happens to be offline. */}
-              {calibrationLabel(calibration) && !stale ? (
-                <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
-                  <TrendingUp size={12} color={COLORS.tealBright} style={{ flexShrink: 0 }} />
-                  <span style={{ fontSize: 12.5, color: COLORS.foamDim }}>{calibrationLabel(calibration)}</span>
-                </div>
-              ) : null}
-
-              {/* Every number here is a model output, and a model is a guess. Two days out the
-                  major models agree within inches; seven days out they can differ by a factor of
-                  two, and showing that as one confident number is misleading exactly when it
-                  matters. Only rendered when they actually disagree. */}
-              {agreement && agreement.level !== 'high' && !stale ? (
-                <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>
-                  <AlertTriangle size={12} color={agreement.level === 'low' ? COLORS.coral : COLORS.gold} style={{ flexShrink: 0 }} />
-                  <span style={{ fontSize: 12.5, color: COLORS.foamDim }}>{agreement.label}</span>
-                </div>
-              ) : null}
 
               {waterC != null && !stale ? (
                 <div className="flex items-center" style={{ gap: 7, marginTop: 12 }}>

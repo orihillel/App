@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } fro
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
 import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
-import { fetchSpotForecast, fetchNowForSpots, fetchNowViaWorker, fetchModelAgreement, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
+import { fetchSpotForecast, fetchNowForSpots, fetchNowViaWorker, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
 import { addSample, calibration, recalibrateHours, recalibrateContinuous } from './lib/calibration.js';
@@ -140,12 +140,8 @@ export default function App() {
   const [order, setOrder] = useState(() => ORDER.filter((id) => SEED_SPOTS[id]));
   const [catalogReady, setCatalogReady] = useState(false);
   const [activeId, setActiveId] = useState('trestles');
-  // Model agreement, cached per spot. Fetched only for the spot being looked at — it is a
-  // second request per spot, and doing it for all 230 during the bulk load would double that
-  // traffic for a signal nobody is reading on 229 of them.
-  const [agreement, setAgreement] = useState({});
-  // Live buoy reading, cached per spot and fetched only for the spot being viewed — same
-  // reasoning as the model agreement above.
+  // Live buoy reading, cached per spot and fetched only for the spot being viewed: a reading
+  // for a spot nobody is looking at is a request spent on nothing.
   const [buoy, setBuoy] = useState({});
   // Logged sessions: what you actually surfed, kept alongside what the app predicted at the
   // time so a rating can be checked against reality over a season. See lib/sessions.js.
@@ -393,25 +389,6 @@ export default function App() {
   // `forecast`, which changes on every one of the 230 spots loading in the background, so a
   // guard that only checked the stored result would refire dozens of times before the first
   // response landed — measured at 20 requests for one spot.
-  const agreementRequested = useRef(new Set());
-  useEffect(() => {
-    const spotObj = spots[activeId];
-    const full = forecast[activeId] && !forecast[activeId].now ? forecast[activeId] : null;
-    const hours = full && full.hours;
-    // Model agreement compares a series; the batched one-hour reading is not one, so this
-    // waits for the real forecast rather than asking about a single point.
-    if (!spotObj || !hours || agreementRequested.current.has(activeId)) return;
-    agreementRequested.current.add(activeId);
-    (async () => {
-      // Never allowed to fail the page: a null result just means no badge.
-      let result = null;
-      try {
-        result = await fetchModelAgreement(spotObj, hours.map((hr) => hr.hour));
-      } catch { /* leave it null */ }
-      setAgreement((prev) => ({ ...prev, [activeId]: result }));
-    })();
-  }, [activeId, spots, forecast]);
-
   // Whatever spot is on screen gets fetched now, regardless of where the background backfill
   // has got to. Reordering the queue only helps the spot that was active when the loader
   // started; switching spots (picking one in onboarding, stepping through with the arrows,
@@ -1169,7 +1146,6 @@ export default function App() {
             waterC={spotForecast ? spotForecast.waterC : null} wetsuit={spotForecast ? spotForecast.wetsuit : null}
             explain={explainText(explainHour(h, spot, surferProfile))}
             onShare={shareActiveSpot}
-            agreement={agreement[activeId] || null}
             buoy={buoy[activeId] || null}
             onLogSession={logSession} calibration={spotCalibration}
             activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
