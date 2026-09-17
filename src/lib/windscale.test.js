@@ -111,6 +111,14 @@ describe('windLegendCaption', () => {
       .toContain('no wind directions in this grid yet');
   });
 
+  it('stops claiming "now" once a forecast frame is on screen', () => {
+    // The map is four days ahead of the build that produced it; the age of the build is not
+    // the interesting fact any more, and printing it would be a lie about what is drawn.
+    const c = windLegendCaption({ generatedAt: Date.now(), frameLabel: 'forecast for Thu 6am' }, 'metric');
+    expect(c).toContain('forecast for Thu 6am');
+    expect(c).not.toContain('just now');
+  });
+
   it('admits when it is showing the last good data, or a coarse edge', () => {
     const c = windLegendCaption({ generatedAt: Date.now(), stale: true, coarse: true }, 'metric');
     expect(c).toContain('last good data');

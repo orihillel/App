@@ -70,11 +70,11 @@ export function compareLabel(comparison) {
 // The animated week behind the overlay's play control: 28 frames, six hours apart, on their
 // own coarser grid. Separate request from fetchWaveGrid because it is a separate build at a
 // separate cadence, and a globe that is not animating should not download 28 frames to draw one.
-export async function fetchWaveFrames() {
+export async function fetchWaveFrames(kind = 'wave') {
   const base = workerBase();
   if (!base) return null;
   try {
-    const res = await fetch(base.replace(/\/$/, '') + '/wavegrid/frames');
+    const res = await fetch(base.replace(/\/$/, '') + (kind === 'wind' ? '/windgrid/frames' : '/wavegrid/frames'));
     // The status, not just the failure. Returning a bare null here threw away the one fact
     // that separates "the Worker predates this endpoint" from "the Worker is erroring" from
     // "there is no Worker" -- and left the screen saying "unavailable" with nothing under it,

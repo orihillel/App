@@ -98,7 +98,11 @@ export function windTravelBearing(fromDeg) {
 // The line under the wind legend. Same shape as the swell one, so the two read as one system.
 export function windLegendCaption(meta, units, now = Date.now()) {
   const parts = ['Open-ocean wind speed (' + windScaleUnitLabel(units) + ')'];
-  parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
+  // While the week is animating the map is not "now" and must not say it is. The frame's own
+  // time replaces the grid's age, because how old the build is stops being the interesting
+  // fact once the picture on screen is four days ahead of it.
+  if (meta && meta.frameLabel) parts.push(meta.frameLabel);
+  else parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
   if (meta && meta.stale) parts.push('last good data');
   if (meta && meta.coarse) parts.push('coarse edge — coastline unavailable');
   if (meta && meta.arrows) parts.push('arrows show where the wind is blowing');
