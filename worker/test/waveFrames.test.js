@@ -3,6 +3,7 @@ import {
   frameTimes, fetchFrame, framesAreUsable, loadFrames, advanceFrames, framesPerPass,
   FRAME_COUNT, FRAME_STEP_H, MAX_TIMESTEPS_PER_FRAME, FRAMES_MIN_COVERAGE,
   FRAMES_REFRESH_MS, UNITS_PER_PASS, UNITS_PER_MINUTE, FRAMES_KEY, FRAMES_PARTIAL_KEY,
+  WAVE_SOURCE, WIND_SOURCE, WIND_FRAME_LAT_STEP, markFramesWanted, framesAreWanted, WANTED_TTL_MS,
 } from '../src/waveFrames.js';
 import { createFakeKv } from './fakeKv.js';
 import { gridCells, FRAME_LAT_STEP } from '../../src/lib/wavegrid.js';
@@ -220,5 +221,91 @@ describe('loadFrames only ever reads', () => {
     await e.SUBSCRIPTIONS.put(FRAMES_KEY, week(t0));
     expect((await loadFrames(e, { now: t0 })).frames.stale).toBe(false);
     expect((await loadFrames(e, { now: t0 + FRAMES_REFRESH_MS + 1 })).frames.stale).toBe(true);
+  });
+});
+
+// The wind week rides the same builder as the swell week. These assert the parts that differ --
+// endpoint, variables, encoding, keys, grid -- and, more importantly, that the parts that do not
+// differ are genuinely shared rather than a second copy that will drift.
+describe('the wind week', () => {
+  const NOW_W = Date.parse('2026-09-05T12:00:00Z');
+  const envW = () => ({ SUBSCRIPTIONS: createFakeKv() });
+  const FAST = { sleep: async () => {}, gapMs: 0 };
+
+  it('costs less than the swell week, which is why it fits beside it', () => {
+    // 186 x 28 = 5,208 for the swell week; two of those is 10,416 against ~10,000 a day. The
+    // wind week's coarser grid is what makes a second week affordable at all.
+    const swell = gridCells(FRAME_LAT_STEP).length;
+    const wind = gridCells(WIND_FRAME_LAT_STEP).length;
+    expect(wind).toBeLessThan(swell);
+    expect(swell * FRAME_COUNT + wind * FRAME_COUNT).toBeLessThan(10000);
+  });
+
+  it('asks the forecast endpoint for wind, one hour at a time', async () => {
+    let seen = '';
+    const fetchImpl = async (url) => {
+      seen = url;
+      return { ok: true, status: 200, json: async () => [{ hourly: { time: ['2026-09-05T12:00'], wind_speed_10m: [30], wind_direction_10m: [270] } }] };
+    };
+    await fetchFrame([{ lat: 0, lon: 0 }], '2026-09-05T12:00', { fetchImpl, source: WIND_SOURCE });
+    expect(seen).toContain('api.open-meteo.com/v1/forecast');
+    expect(seen).toContain('hourly=wind_speed_10m,wind_direction_10m');
+    expect(seen).toContain('start_hour=');
+    expect(seen).toContain('end_hour=');
+  });
+
+  it('keeps the timestep guard, which is the expensive mistake to repeat', async () => {
+    // A frame that answers with the whole series instead of the hour it asked for would spend
+    // 105 x 168 units without erroring.
+    const fetchImpl = async () => ({
+      ok: true,
+      status: 200,
+      json: async () => [{ hourly: { time: ['a', 'b', 'c'], wind_speed_10m: [1, 2, 3], wind_direction_10m: [1, 2, 3] } }],
+    });
+    const r = await fetchFrame([{ lat: 0, lon: 0 }], '2026-09-05T12:00', { fetchImpl, source: WIND_SOURCE });
+    expect(r.overrun).toBe(3);
+    expect(r.ok).toBe(false);
+  });
+
+  it('stores the wind week under its own keys, never the swell week\'s', async () => {
+    const env = envW();
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return { ok: true, status: 200, json: async () => Array.from({ length: n }, () => ({ hourly: { time: ['x'], wind_speed_10m: [25], wind_direction_10m: [270] } })) };
+    };
+    await advanceFrames(env, { now: NOW_W, fetchImpl, source: WIND_SOURCE, ...FAST });
+    const keys = [...env.SUBSCRIPTIONS._store.keys()];
+    expect(keys.some((k) => k.startsWith('windframes:'))).toBe(true);
+    expect(keys.some((k) => k.startsWith('waveframes:'))).toBe(false);
+  });
+
+  it('records the grid it was sampled on, so the app cannot decode it as the swell week', async () => {
+    const env = envW();
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return { ok: true, status: 200, json: async () => Array.from({ length: n }, () => ({ hourly: { time: ['x'], wind_speed_10m: [25], wind_direction_10m: [270] } })) };
+    };
+    const out = await advanceFrames(env, { now: NOW_W, fetchImpl, source: WIND_SOURCE, ...FAST });
+    expect(out.latStep).toBe(WIND_FRAME_LAT_STEP);
+    expect(out.cells).toBe(gridCells(WIND_FRAME_LAT_STEP).length);
+  });
+
+  it('is only worth building once somebody has opened it', async () => {
+    const env = envW();
+    expect(await framesAreWanted(env, WIND_SOURCE, NOW_W)).toBe(false);
+    await markFramesWanted(env, WIND_SOURCE, NOW_W);
+    expect(await framesAreWanted(env, WIND_SOURCE, NOW_W)).toBe(true);
+  });
+
+  it('stops being worth building once nobody has asked for two days', async () => {
+    const env = envW();
+    await markFramesWanted(env, WIND_SOURCE, NOW_W);
+    expect(await framesAreWanted(env, WIND_SOURCE, NOW_W + WANTED_TTL_MS - 1000)).toBe(true);
+    expect(await framesAreWanted(env, WIND_SOURCE, NOW_W + WANTED_TTL_MS + 1000)).toBe(false);
+  });
+
+  it('never gates the swell week behind a flag, because it is the default layer', async () => {
+    const env = envW();
+    expect(await framesAreWanted(env, WAVE_SOURCE, NOW_W)).toBe(true);
   });
 });

@@ -18,7 +18,7 @@
 // fetches, with room to spare. The planned count is checked before the build starts rather
 // than discovered when the platform kills it half way.
 import {
-  gridCells, FRAME_LAT_STEP, encodeHeights, encodeDirections, bytesToBase64,
+  gridCells, FRAME_LAT_STEP, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
 
 export const FRAMES_KEY = 'waveframes:v2';
@@ -77,8 +77,76 @@ export const MAX_FETCHES = 45;
 export const MAX_TIMESTEPS_PER_FRAME = 1;
 
 const MARINE_URL = 'https://marine-api.open-meteo.com/v1/marine';
+const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FRAME_GAP_MS = 120;
+
+// What a week is made of, as data rather than as a second copy of this file.
+//
+// The swell week and the wind week differ in four things -- which endpoint, which two
+// variables, how the values are packed into bytes, and which keys they live under -- and in
+// nothing else. Everything that was hard to get right here is the part they share: the pacing
+// across cron ticks, the accumulating partial, the timestep-overrun guard, the coverage gate.
+// A sibling module would have been a second copy of exactly that, and the next fix to the
+// pacing would have landed in one of them.
+//
+// The wind week runs a coarser grid than the swell week, and the arithmetic decides it rather
+// than taste, the same way FRAME_LAT_STEP was decided. A 28-frame week costs cells x 28: at
+// the swell week's 15 degrees that is 186 x 28 = 5,208, and two of those is 10,416 against a
+// daily allowance of about 10,000 -- the second week would not fit beside the first. At 20
+// degrees the grid is 105 cells and the wind week costs 2,940, which does. The overlay is
+// interpolated to a 720x360 texture before it is drawn, so the cost is detail in the field
+// rather than blocks on the screen.
+export const WIND_FRAME_LAT_STEP = 20;
+
+export const WAVE_SOURCE = {
+  id: 'wave',
+  url: MARINE_URL,
+  vars: ['wave_height', 'wave_direction'],
+  encodeValues: encodeHeights,
+  latStep: FRAME_LAT_STEP,
+  doneKey: 'waveframes:v2',
+  partialKey: 'waveframes:partial:v2',
+  failKey: 'waveframes:fail:v2',
+  // The swell week is built unconditionally: it is the overlay's default layer, so someone is
+  // always about to want it.
+  wantedKey: null,
+};
+
+export const WIND_SOURCE = {
+  id: 'wind',
+  url: FORECAST_URL,
+  vars: ['wind_speed_10m', 'wind_direction_10m'],
+  encodeValues: encodeSpeeds,
+  latStep: WIND_FRAME_LAT_STEP,
+  doneKey: 'windframes:v1',
+  partialKey: 'windframes:partial:v1',
+  failKey: 'windframes:fail:v1',
+  // Unlike the swell week, this one is only assembled once somebody has actually asked for the
+  // wind layer, and stops being rebuilt when nobody has asked for two days. 2,940 units a day
+  // is affordable for a week people watch and pure waste for one they do not.
+  wantedKey: 'windframes:wanted:v1',
+};
+
+export const WANTED_TTL_MS = 48 * 60 * 60 * 1000;
+
+// Record that somebody opened this week, so the cron knows it is worth assembling.
+export async function markFramesWanted(env, source = WIND_SOURCE, now = Date.now()) {
+  if (!source.wantedKey) return;
+  try {
+    await env.SUBSCRIPTIONS.put(source.wantedKey, JSON.stringify({ at: now }));
+  } catch { /* the flag is an optimisation; a week nobody asked for simply is not built */ }
+}
+
+export async function framesAreWanted(env, source = WIND_SOURCE, now = Date.now()) {
+  if (!source.wantedKey) return true;
+  try {
+    const rec = await env.SUBSCRIPTIONS.get(source.wantedKey, { type: 'json' });
+    return !!(rec && Number.isFinite(rec.at) && now - rec.at < WANTED_TTL_MS);
+  } catch {
+    return false;
+  }
+}
 
 // The hours the frames describe: from the 6-hourly boundary at or before now, stepping forward.
 // Anchored to a boundary rather than to the current minute so every device animating the same
@@ -97,11 +165,12 @@ export function frameTimes(now = Date.now(), count = FRAME_COUNT) {
 // One frame: every cell's height and direction at a single hour.
 //
 // Never throws -- it reports. `overrun` is the one answer the caller must not continue past.
-export async function fetchFrame(cells, isoHour, { fetchImpl = fetch } = {}) {
-  const url = MARINE_URL
+export async function fetchFrame(cells, isoHour, { fetchImpl = fetch, source = WAVE_SOURCE } = {}) {
+  const [valueVar, dirVar] = source.vars;
+  const url = source.url
     + '?latitude=' + cells.map((c) => c.lat.toFixed(2)).join(',')
     + '&longitude=' + cells.map((c) => c.lon.toFixed(2)).join(',')
-    + '&hourly=wave_height,wave_direction'
+    + '&hourly=' + valueVar + ',' + dirVar
     + '&start_hour=' + encodeURIComponent(isoHour)
     + '&end_hour=' + encodeURIComponent(isoHour);
 
@@ -131,7 +200,7 @@ export async function fetchFrame(cells, isoHour, { fetchImpl = fetch } = {}) {
   for (let i = 0; i < cells.length; i++) {
     const loc = list[i];
     const hourly = loc && loc.hourly;
-    if (!hourly || !Array.isArray(hourly.time) || !Array.isArray(hourly.wave_height)) {
+    if (!hourly || !Array.isArray(hourly.time) || !Array.isArray(hourly[valueVar])) {
       values.push(null); directions.push(null); continue;
     }
     // The guard. Checked per location because the first one is enough to know, and checking it
@@ -144,12 +213,12 @@ export async function fetchFrame(cells, isoHour, { fetchImpl = fetch } = {}) {
       };
     }
     answered++;
-    values.push(num(hourly.wave_height[0]));
-    directions.push(Array.isArray(hourly.wave_direction) ? num(hourly.wave_direction[0]) : null);
+    values.push(num(hourly[valueVar][0]));
+    directions.push(Array.isArray(hourly[dirVar]) ? num(hourly[dirVar][0]) : null);
   }
   return {
     values, directions, ok: answered > 0, status,
-    error: answered > 0 ? null : 'response carried no readable wave height',
+    error: answered > 0 ? null : 'response carried no readable ' + valueVar,
   };
 }
 
@@ -166,17 +235,18 @@ export function framesPerPass(cellCount, unitsPerPass = UNITS_PER_PASS) {
 // tomorrow's 6am into yesterday's slot 4.
 export async function advanceFrames(env, opts = {}) {
   const now = opts.now || Date.now();
-  const cells = gridCells(FRAME_LAT_STEP);
+  const source = opts.source || WAVE_SOURCE;
+  const cells = gridCells(source.latStep);
   const times = frameTimes(now, opts.frameCount || FRAME_COUNT);
   const perPass = opts.framesPerPass || framesPerPass(cells.length, opts.unitsPerPass);
 
   let partial = null;
   let done = null;
   try {
-    partial = await env.SUBSCRIPTIONS.get(FRAMES_PARTIAL_KEY, { type: 'json' });
+    partial = await env.SUBSCRIPTIONS.get(source.partialKey, { type: 'json' });
   } catch { /* KV unreadable: start a fresh partial */ }
   try {
-    done = await env.SUBSCRIPTIONS.get(FRAMES_KEY, { type: 'json' });
+    done = await env.SUBSCRIPTIONS.get(source.doneKey, { type: 'json' });
   } catch { /* no finished week to build on */ }
 
   // A partial whose first frame is no longer the current boundary is describing a week that has
@@ -210,7 +280,7 @@ export async function advanceFrames(env, opts = {}) {
     let any = false;
     for (let start = 0; start < cells.length; start += (opts.batchSize || FRAME_BATCH_SIZE)) {
       const batch = cells.slice(start, start + (opts.batchSize || FRAME_BATCH_SIZE));
-      const r = await fetchFrame(batch, t, opts);
+      const r = await fetchFrame(batch, t, { ...opts, source });
       if (r.overrun) { aborted = 'timestep-overrun'; lastStatus = r.status; lastError = r.error; break; }
       if (!r.ok) { lastStatus = r.status; lastError = r.error; continue; }
       any = true;
@@ -225,7 +295,7 @@ export async function advanceFrames(env, opts = {}) {
     if (!any) break;
     have.set(t, {
       t,
-      data: bytesToBase64(encodeHeights(heights)),
+      data: bytesToBase64(source.encodeValues(heights)),
       dirs: bytesToBase64(encodeDirections(directions)),
     });
     fetched++;
@@ -236,7 +306,7 @@ export async function advanceFrames(env, opts = {}) {
   const next = {
     generatedAt: now,
     cells: cells.length,
-    latStep: FRAME_LAT_STEP,
+    latStep: source.latStep,
     stepHours: FRAME_STEP_H,
     frames,
     wanted: times.length,
@@ -250,25 +320,25 @@ export async function advanceFrames(env, opts = {}) {
   const complete = frames.length >= times.length && !aborted;
   try {
     if (complete) {
-      await env.SUBSCRIPTIONS.put(FRAMES_KEY, JSON.stringify(next));
-      await env.SUBSCRIPTIONS.delete(FRAMES_PARTIAL_KEY);
-      await env.SUBSCRIPTIONS.delete(FRAMES_FAIL_KEY);
+      await env.SUBSCRIPTIONS.put(source.doneKey, JSON.stringify(next));
+      await env.SUBSCRIPTIONS.delete(source.partialKey);
+      await env.SUBSCRIPTIONS.delete(source.failKey);
     } else if (aborted) {
       // The premise is wrong, not the pacing. Keep nothing and cool off.
-      await env.SUBSCRIPTIONS.delete(FRAMES_PARTIAL_KEY);
-      await env.SUBSCRIPTIONS.put(FRAMES_FAIL_KEY, JSON.stringify({ at: now, build: { aborted, lastStatus, lastError } }));
+      await env.SUBSCRIPTIONS.delete(source.partialKey);
+      await env.SUBSCRIPTIONS.put(source.failKey, JSON.stringify({ at: now, build: { aborted, lastStatus, lastError } }));
     } else {
-      await env.SUBSCRIPTIONS.put(FRAMES_PARTIAL_KEY, JSON.stringify(next));
+      await env.SUBSCRIPTIONS.put(source.partialKey, JSON.stringify(next));
     }
   } catch { /* the pass still happened; the next one will re-derive from whatever stuck */ }
 
   return { ...next, complete, fetchedThisPass: fetched, remaining: Math.max(0, times.length - frames.length) };
 }
 
-export function framesAreUsable(entry) {
+export function framesAreUsable(entry, source = WAVE_SOURCE) {
   return !!entry
     && Array.isArray(entry.frames) && entry.frames.length > 1
-    && entry.cells === gridCells(FRAME_LAT_STEP).length
+    && entry.cells === gridCells(source.latStep).length
     && typeof entry.coverage === 'number' && entry.coverage >= FRAMES_MIN_COVERAGE
     && !entry.aborted;
 }
@@ -285,24 +355,25 @@ export function framesAreUsable(entry) {
 // feature to guesswork.
 export async function loadFrames(env, opts = {}) {
   const now = opts.now || Date.now();
+  const source = opts.source || WAVE_SOURCE;
   let cached = null;
   try {
-    cached = await env.SUBSCRIPTIONS.get(FRAMES_KEY, { type: 'json' });
+    cached = await env.SUBSCRIPTIONS.get(source.doneKey, { type: 'json' });
   } catch { /* KV unavailable */ }
 
-  if (framesAreUsable(cached)) {
+  if (framesAreUsable(cached, source)) {
     const stale = now - cached.generatedAt >= FRAMES_REFRESH_MS;
     return { frames: { ...cached, stale }, build: null };
   }
 
   let partial = null;
   try {
-    partial = await env.SUBSCRIPTIONS.get(FRAMES_PARTIAL_KEY, { type: 'json' });
+    partial = await env.SUBSCRIPTIONS.get(source.partialKey, { type: 'json' });
   } catch { /* no partial readable */ }
 
   let failure = null;
   try {
-    failure = await env.SUBSCRIPTIONS.get(FRAMES_FAIL_KEY, { type: 'json' });
+    failure = await env.SUBSCRIPTIONS.get(source.failKey, { type: 'json' });
   } catch { /* no cooldown record */ }
 
   const ready = partial && Array.isArray(partial.frames) ? partial.frames.length : 0;

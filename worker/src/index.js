@@ -12,7 +12,7 @@ import { loadAllStations, nearestWaveStation, isFresh, toObservation } from './b
 import { loadTideStations, nearestTideStation, loadPredictions } from './noaaTide.js';
 import { loadGrid } from './waveGrid.js';
 import { loadWindGrid } from './windGrid.js';
-import { loadFrames, advanceFrames } from './waveFrames.js';
+import { loadFrames, advanceFrames, markFramesWanted, framesAreWanted, WIND_SOURCE } from './waveFrames.js';
 
 // Don't re-notify for an alert that's still matching on every cron run — once it's fired,
 // leave it alone for this long before it can fire again.
@@ -261,9 +261,13 @@ async function handleWindGrid(request, env) {
 // The animated week. Separate from /wavegrid rather than folded into it: the two are built on
 // different grids at different cadences, and an app that only wants the live overlay should not
 // have to download 28 frames to get it.
-async function handleWaveFrames(request, env) {
+async function handleWaveFrames(request, env, source = undefined) {
   try {
-    const { frames, build } = await loadFrames(env);
+    // Asking for the wind week is what makes it worth assembling: the cron only advances a week
+    // somebody has opened in the last two days, because 2,940 units a day is affordable for a
+    // week people watch and pure waste for one they do not.
+    if (source && source.wantedKey) await markFramesWanted(env, source);
+    const { frames, build } = await loadFrames(env, { source });
     if (!frames) return json({ frames: null, build }, env);
     return json({
       generatedAt: frames.generatedAt,
@@ -416,6 +420,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/wavegrid') return handleWaveGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/wavegrid/frames') return handleWaveFrames(request, env);
     if (request.method === 'GET' && url.pathname === '/windgrid') return handleWindGrid(request, env);
+    if (request.method === 'GET' && url.pathname === '/windgrid/frames') return handleWaveFrames(request, env, WIND_SOURCE);
     if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
     return json({ error: 'Not found' }, env, 404);
   },
@@ -438,6 +443,15 @@ export default {
     // so the week assembles over a handful of ticks and no pass ever exceeds the limit. A pass
     // over a week that is already complete and fresh costs nothing.
     ctx.waitUntil(advanceFrames(env).catch(() => {}));
+    // The wind week, on the same pacing and the same reasoning, but only once somebody has
+    // opened it. Both weeks unconditionally would be 5,208 + 2,940 units a day against an
+    // allowance of about 10,000, and the wind one would be spent whether or not a single person
+    // ever pressed play on it.
+    ctx.waitUntil(
+      framesAreWanted(env, WIND_SOURCE)
+        .then((wanted) => (wanted ? advanceFrames(env, { source: WIND_SOURCE }) : null))
+        .catch(() => {}),
+    );
     for await (const { endpoint, record } of listSubscriptions(env)) {
       ctx.waitUntil(checkSubscription(env, endpoint, record));
     }
