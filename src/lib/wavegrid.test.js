@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, makeGridSampler, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP,
+  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, makeGridSampler, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP, encodeSpeeds, decodeSpeeds,
 } from './wavegrid.js';
 
 describe('the grid itself', () => {
@@ -462,5 +462,36 @@ describe('makeGridSampler', () => {
     expect(s.height(null, 0, 0)).toBeNull();
     expect(s.height(heights, NaN, 0)).toBeNull();
     expect(s.direction(null, 0, 0)).toBeNull();
+  });
+});
+
+describe('encodeSpeeds / decodeSpeeds', () => {
+  it('round-trips a wind speed to the nearest km/h', () => {
+    expect(decodeSpeeds(encodeSpeeds([0, 12, 37.4, 88.6]))).toEqual([0, 12, 37, 89]);
+  });
+
+  it('keeps no-reading distinct from dead calm', () => {
+    // The whole point of the reserved byte: one must be left transparent, the other painted
+    // the bottom of the ramp. Collapsing them paints wind over every continent.
+    const bytes = encodeSpeeds([null, 0, undefined, NaN, -3]);
+    expect(bytes[0]).toBe(NO_DATA);
+    expect(bytes[1]).not.toBe(NO_DATA);
+    expect(bytes[2]).toBe(NO_DATA);
+    expect(bytes[3]).toBe(NO_DATA);
+    expect(bytes[4]).toBe(NO_DATA);
+    expect(decodeSpeeds(bytes)).toEqual([null, 0, null, null, null]);
+  });
+
+  it('clamps a wind past the top of the byte rather than wrapping it', () => {
+    // 300km/h must not come back as a calm. A wind that pegs the scale is still a wind.
+    const out = decodeSpeeds(encodeSpeeds([300, 254, 255]));
+    expect(out[0]).toBe(254);
+    expect(out[1]).toBe(254);
+    expect(out[2]).toBe(254);
+  });
+
+  it('survives a trip through base64, which is how it reaches the browser', () => {
+    const speeds = [0, 5, 42, 130, null, 254];
+    expect(decodeSpeeds(base64ToBytes(bytesToBase64(encodeSpeeds(speeds))))).toEqual(speeds);
   });
 });
