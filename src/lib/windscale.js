@@ -24,19 +24,33 @@ import { gridAgeLabel } from './wavescale.js';
 export { gridAgeLabel };
 
 // Stops in km/h, which is what the grid stores and what Open-Meteo returns natively.
+// One hue family, climbing in lightness the whole way. The first version of this ramp wandered
+// through violet at nearly constant lightness and the middle of it collapsed: 15kph to 20kph
+// measured a perceptual distance of 4.5 on screen, against roughly 2 for "just noticeably
+// different" — and 10 to 30kph is the band that decides whether a morning is glassy or blown
+// out, so it was illegible exactly where it mattered most.
+//
+// Built in OKLCH on an even lightness ramp from 0.22 to 0.88, hues 285-312, with the stops
+// placed where the decisions are rather than on round numbers -- five of the ten sit between 5
+// and 30kph, so a five-knot difference in the band that decides glassy from blown out is a
+// whole step of the ramp rather than a fraction of one. Worst adjacent pair on screen has gone
+// from a perceptual distance of 4.5 to 8.3, against roughly 2 for "just noticeably different".
+//
+// It runs violet rather than magenta and stops short of the swell ramp's top lightness on
+// purpose: taken all the way, both ramps end in the same pale wash, and a storm wind and a
+// storm sea would paint nearly the same colour at the moment someone is looking hardest at
+// which is which.
 const STOPS = [
-  [0, [24, 28, 58]],
-  [8, [58, 52, 128]],
-  [16, [104, 72, 168]],
-  [25, [152, 88, 184]],
-  [35, [206, 100, 170]],
-  [45, [236, 122, 132]],
-  // The top stays saturated violet rather than fading to white, which is where a ramp usually
-  // ends. The swell ramp already ends pale pink, and at the top of both scales the two were
-  // close enough to be confusable — a storm sea and a storm wind painted nearly the same
-  // colour, at exactly the moment someone is looking hardest at which is which.
-  [60, [232, 130, 220]],
-  [90, [214, 180, 255]],
+  [0, [40, 8, 56]],
+  [5, [61, 18, 88]],
+  [10, [83, 30, 123]],
+  [15, [103, 48, 157]],
+  [20, [121, 69, 189]],
+  [25, [139, 91, 221]],
+  [30, [155, 117, 249]],
+  [40, [170, 151, 253]],
+  [55, [188, 182, 253]],
+  [90, [211, 211, 254]],
 ];
 
 export const WIND_SCALE_MAX = STOPS[STOPS.length - 1][0];

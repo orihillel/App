@@ -25,9 +25,12 @@ describe('waveColor', () => {
   });
 
   it('interpolates between stops rather than banding', () => {
+    // 1.25m sits strictly between two stops. 1.5m used to and no longer does -- it is a stop of
+    // its own now, so asking it to lie between its neighbours tests the stop table, not the
+    // interpolation this is about.
     const a = waveColor(1.0);
-    const mid = waveColor(1.5);
-    const b = waveColor(2.0);
+    const mid = waveColor(1.25);
+    const b = waveColor(1.5);
     for (let i = 0; i < 3; i++) {
       const lo = Math.min(a[i], b[i]);
       const hi = Math.max(a[i], b[i]);
@@ -195,5 +198,84 @@ describe('waveLegendCaption while the week is animating', () => {
   });
   it('falls back to the build age when no frame is being shown', () => {
     expect(waveLegendCaption(meta, 'imperial')).toContain('just now');
+  });
+});
+
+// The fault that made adjacent sea states hard to tell apart on the globe: the ramp folded back
+// on itself in lightness. 3m green and 6m orange measured within 0.003 of each other, and an 8m
+// red was darker than a 2m teal -- so above 2m the only thing separating one height from the
+// next was hue, which is exactly what a translucent overlay over a blue globe destroys.
+describe('the ramp reads as magnitude, not just as hue', () => {
+  // The globe's ocean colour and the overlay's opacity, from Globe.jsx. What reaches the eye is
+  // the blend of the two, and the blend is where a ramp's separation is won or lost.
+  const OCEAN = [23, 90, 130];
+  const OPACITY = 0.85;
+
+  function srgbToLinear(u) {
+    const v = u / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  }
+
+  // CIE Lab distance, which is the ordinary way to ask "can someone tell these apart".
+  function onGlobeDistance(a, b) {
+    const blend = (c) => c.map((v, i) => OPACITY * v + (1 - OPACITY) * OCEAN[i]);
+    const lab = (c) => {
+      const [R, G, B] = blend(c).map(srgbToLinear);
+      let X = (R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047;
+      let Y = R * 0.2126 + G * 0.7152 + B * 0.0722;
+      let Z = (R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883;
+      const g = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+      X = g(X); Y = g(Y); Z = g(Z);
+      return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+    };
+    const [l1, a1, b1] = lab(a), [l2, a2, b2] = lab(b);
+    return Math.hypot(l1 - l2, a1 - a2, b1 - b2);
+  }
+
+  // OKLCH lightness: the channel that survives compositing over the ocean underneath.
+  function lightness([r, g, b]) {
+    const f = (u) => { u /= 255; return u <= 0.04045 ? u / 12.92 : Math.pow((u + 0.055) / 1.055, 2.4); };
+    const R = f(r), G = f(g), B = f(b);
+    const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+    const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+    const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+    return 0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s;
+  }
+
+  // Up to 4.5m -- which is every sea anyone in this catalog paddles out into -- lightness alone
+  // carries the magnitude, so the ramp keeps working when the overlay is blended over the ocean
+  // and the hue is half washed out.
+  it('never gets darker as the surf gets bigger, through the whole surfable range', () => {
+    for (let m = 0; m < 4.5; m += 0.25) {
+      const lo = lightness(waveColor(m));
+      const hi = lightness(waveColor(m + 0.25));
+      expect(hi, m + 'm -> ' + (m + 0.25) + 'm').toBeGreaterThan(lo);
+    }
+  });
+
+  // The number that actually decides whether a reader can tell two sea states apart: the
+  // distance between them *as painted*, which is the ramp composited over the ocean sphere at
+  // the overlay's opacity -- not the raw colours, which nobody ever sees.
+  it('keeps half-metre steps apart once the overlay is blended over the globe', () => {
+    for (let m = 0.5; m < 4; m += 0.5) {
+      // Well past the ~2 that counts as "just noticeably different": this has to survive being
+      // read off a moving sphere at a glance.
+      expect(onGlobeDistance(waveColor(m), waveColor(m + 0.5)), m + 'm -> ' + (m + 0.5) + 'm')
+        .toBeGreaterThan(8);
+    }
+  });
+
+  // Past 4.5m lightness turns over, and it has to: sRGB has no saturated orange or red above
+  // about 0.85, so a ramp that kept climbing would go pale exactly where it should read as
+  // dangerous. Hue takes the job over instead, and the separation stays large -- which is the
+  // property that actually matters, so that is what is asserted rather than the mechanism.
+  it('stays far apart above the surfable range even though lightness turns over', () => {
+    const dist = (a, b) => {
+      const A = waveColor(a), B = waveColor(b);
+      return Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]);
+    };
+    for (const [a, b] of [[4.5, 6], [6, 8], [8, 12]]) {
+      expect(dist(a, b), a + 'm -> ' + b + 'm').toBeGreaterThan(60);
+    }
   });
 });
