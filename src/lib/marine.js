@@ -37,8 +37,8 @@ const PEAK_HOURLY = [...BASE_HOURLY, 'swell_wave_peak_period', 'wind_wave_peak_p
 // costs one request rather than two.
 //
 // These identifiers could not be checked against the live API from here -- open-meteo.com is
-// refused by this environment's egress -- and that is exactly how the confidence badge's model
-// names were wrong for months without anything saying so. So they are asked for, never
+// refused by this environment's egress -- and this app has already shipped one set of model
+// names that were wrong for months with nothing saying so. So they are asked for, never
 // assumed: a name this upstream does not know produces a 400, which is caught below and costs
 // the finer grid and nothing else. See `waveModelsUsed` for how to tell which one answered.
 export const WAVE_MODELS = ['meteofrance_wave', 'ncep_gfswave025'];
@@ -61,9 +61,9 @@ export function _resetPeakSupport() { peakSupported = null; modelsSupported = nu
 //
 // The variable names could not be checked against the live API from here -- open-meteo.com is
 // refused by this environment's egress -- and they are corroborated only by third-party
-// documentation. That is the same position the confidence badge's model identifiers were in,
-// and every one of those guesses turned out wrong. The difference is the blast radius: a bad
-// model name there produced no badge, quietly, while a bad variable name in this list makes
+// documentation. That is the same position this app's earlier model identifiers were in, and
+// every one of those guesses turned out wrong. The difference is the blast radius: a bad
+// model name is caught and dropped, quietly, while a bad variable name in this list makes
 // Open-Meteo reject the whole request and takes the entire forecast with it. So it is asked
 // for, not assumed, and the first rejection settles it for the life of the process.
 //
@@ -126,8 +126,8 @@ export function mergeWaveModels(marine, models = WAVE_MODELS) {
 
   const merged = { ...hourly };
   // Which models actually contributed a wave height, so "did the finer grid answer here?" is a
-  // fact the app can report rather than a thing nobody can tell. The confidence badge was wrong
-  // for months precisely because nothing recorded this.
+  // fact rather than a thing nobody can tell. The last set of model names this app shipped was
+  // wrong for months precisely because nothing recorded which one answered.
   const used = new Set();
   for (const [base, series] of bases) {
     const length = series.reduce((n, s) => (s ? Math.max(n, s.length) : n), 0);
@@ -142,8 +142,8 @@ export function mergeWaveModels(marine, models = WAVE_MODELS) {
       }
     }
     merged[base] = out;
-    // The per-model series stay in place. They cost nothing to keep and the confidence badge
-    // reads exactly this shape.
+    // The per-model series stay in place: they cost nothing to keep, and they are what makes
+    // waveModelsUsed checkable against the raw response rather than only asserted.
   }
   return { ...marine, hourly: merged, waveModelsUsed: [...used] };
 }
