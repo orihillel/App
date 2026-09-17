@@ -31,7 +31,7 @@ const TAP = {
 };
 
 export function HomeView({
-  units, toggleUnits, openSearch, openMenu,
+  units, waveScale = 1, toggleUnits, openSearch, openMenu,
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry, errorReason,
   waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, agreement, buoy, onLogSession, calibration, explain, onShare,
@@ -146,7 +146,7 @@ export function HomeView({
 
               <div style={{ opacity: stale ? 0.72 : 1 }}>
                 <div className="flex items-baseline" style={{ gap: 8, marginTop: 12 }}>
-                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: stale ? 34 : 54, color: COLORS.foam, lineHeight: 1, letterSpacing: '-0.01em' }}>{formatWaveRange(h.wave, units)}</span>
+                  <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: stale ? 34 : 54, color: COLORS.foam, lineHeight: 1, letterSpacing: '-0.01em' }}>{formatWaveRange(h.wave, units, waveScale)}</span>
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: stale ? 15 : 18, color: COLORS.foamDim, letterSpacing: '0.04em' }}>{waveUnit(units)}</span>
                 </div>
 
@@ -204,7 +204,7 @@ export function HomeView({
                   <Clock size={14} color={ratingBg(best.rating)} style={{ flexShrink: 0 }} />
                   <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foam, fontWeight: 700 }}>{best.label}</span>
                   <span style={{ fontSize: 13, color: COLORS.foamDim, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                    best today · {formatWaveRange(best.wave, units)}{heightUnit(units)} {best.windType}
+                    best today · {formatWaveRange(best.wave, units, waveScale)}{heightUnit(units)} {best.windType}
                   </span>
                 </button>
               ) : null}
@@ -334,7 +334,7 @@ export function HomeView({
       <div className="mx-4" style={{ marginTop: 14, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
         <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
           <span style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>WAVE HEIGHT TODAY</span>
-          {h ? <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foamDim }}>{formatWaveRange(h.wave, units)}{heightUnit(units)} now</span> : null}
+          {h ? <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 13, color: COLORS.foamDim }}>{formatWaveRange(h.wave, units, waveScale)}{heightUnit(units)} now</span> : null}
         </div>
         {hourData && waveChart ? (
           <>
@@ -432,7 +432,7 @@ export function HomeView({
       ) : null}
 
       <div className="grid grid-cols-3 px-4" style={{ gap: 8, marginTop: 14, paddingBottom: 14 }}>
-        <Stat label="SWELL" value={h ? formatWaveRange(h.wave, units) + heightUnit(units) : null} sub={h ? h.period + 's ' + h.swellDir : null}
+        <Stat label="SWELL" value={h ? formatWaveRange(h.wave, units, waveScale) + heightUnit(units) : null} sub={h ? h.period + 's ' + h.swellDir : null}
           trend={swellTrend(hourData, hourIdx)} />
         <Stat label="WIND" value={h ? formatSpeed(h.windSpd, units) + speedUnit(units) : null} sub={h ? h.windDir + ' · ' + h.type : null} subColor={h ? windColor(h.type) : null} />
         <div style={{ background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '10px 11px' }}>

@@ -5,20 +5,31 @@ import { ORDER as SEED_ORDER, searchCatalog } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
 import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
+import { MIN_SCALE, MAX_SCALE, SCALE_STEP, DEFAULT_SCALE, scaleLabel, scaleDescription } from '../lib/waveheight.js';
+import { formatWaveRange } from '../lib/format.js';
 import { ratingBg } from '../lib/rating.js';
 import { AuthButtons } from './AuthButtons.jsx';
 
-// The band in whichever units are on screen. Rounded to the nearest half-foot / quarter-metre
-// because the band's edges are a judgement about boards, not a measurement -- printing
-// "1.8-4.8ft" would claim a precision the numbers behind it do not have.
-function formatBand(band, units) {
+// The band in whichever units are on screen, and on the same reading scale as every other
+// height in the app -- the band is expressed in the feet the card prints, so leaving it at the
+// model's scale would have the sentence below quoting a range the user never sees.
+//
+// Rounded to the nearest half-foot / quarter-metre because the band's edges are a judgement
+// about boards, not a measurement -- printing "1.8-4.8ft" would claim a precision the numbers
+// behind it do not have.
+function formatBand(band, units, scale = 1) {
+  const lo = band.lo * scale, hi = band.hi * scale;
   if (units === 'metric') {
     const round = (ft) => (Math.round((ft / 3.28084) * 4) / 4).toFixed(2).replace(/0$/, '');
-    return round(band.lo) + '-' + round(band.hi) + 'm';
+    return round(lo) + '-' + round(hi) + 'm';
   }
   const round = (ft) => String(Math.round(ft * 2) / 2);
-  return round(band.lo) + '-' + round(band.hi) + 'ft';
+  return round(lo) + '-' + round(hi) + 'ft';
 }
+
+// A real example rather than only a percentage: "85%" of a number you have not seen yet is not
+// something anyone can picture, and this is the same range rendered both ways.
+const SAMPLE_RANGE = '4-6';
 
 const TAP = {
   background: 'none', border: 'none', padding: 0,
@@ -26,7 +37,7 @@ const TAP = {
   flexShrink: 0,
 };
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession, surferProfile = DEFAULT_PROFILE, updateProfile }) {
+export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, waveScale = DEFAULT_SCALE, updateWaveScale, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession, surferProfile = DEFAULT_PROFILE, updateProfile }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
@@ -162,7 +173,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
         {/* The consequence, stated plainly, so the two controls above are not a black box: this
             is the range every rating in the app is now measured against. */}
         <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.5 }}>
-          Rating spots for {formatBand(bandFor(surferProfile), units)} surf. Bigger or smaller than that scores lower.
+          Rating spots for {formatBand(bandFor(surferProfile), units, waveScale)} surf. Bigger or smaller than that scores lower.
         </div>
 
         <Heading>UNITS</Heading>
@@ -175,6 +186,42 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
             style={{ flex: 1, background: units === 'metric' ? COLORS.tealBright : COLORS.navyCard, color: units === 'metric' ? COLORS.navy : COLORS.foam, border: '1px solid ' + (units === 'metric' ? COLORS.tealBright : COLORS.navyBorder), borderRadius: 8, minHeight: 44, fontSize: 14.5, fontWeight: 600 }}>
             Meters · kph
           </button>
+        </div>
+
+        {/* No two surfers call the same wave the same size, and the app's number is a model of a
+            coastline rather than a measurement of the peak. This is where someone puts their own
+            reading of it -- and it is deliberately only a reading: it moves the heights on
+            screen and leaves the ratings, the alerts and the buoy calibration alone. */}
+        <Heading>WAVE HEIGHT</Heading>
+        <div style={{ marginBottom: 18 }}>
+          <div className="flex items-baseline justify-between" style={{ marginBottom: 2 }}>
+            <span style={{ fontSize: 13, color: COLORS.foamDim }}>
+              A {formatWaveRange(SAMPLE_RANGE, units)}{units === 'metric' ? 'm' : 'ft'} forecast reads as
+            </span>
+            <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 16, fontWeight: 700, color: COLORS.tealBright }}>
+              {formatWaveRange(SAMPLE_RANGE, units, waveScale)}{units === 'metric' ? 'm' : 'ft'}
+            </span>
+          </div>
+          <input
+            className="tl-range" type="range"
+            min={MIN_SCALE} max={MAX_SCALE} step={SCALE_STEP} value={waveScale}
+            onChange={(e) => updateWaveScale && updateWaveScale(Number(e.target.value))}
+            aria-label="How you read wave height"
+            aria-valuetext={scaleLabel(waveScale) + ' of the forecast height'}
+          />
+          <div className="flex items-baseline justify-between" style={{ fontSize: 11.5, color: COLORS.foamDim }}>
+            <span>{scaleLabel(waveScale)}{scaleDescription(waveScale) ? ' · ' + scaleDescription(waveScale) : ' · as forecast'}</span>
+            {waveScale !== DEFAULT_SCALE ? (
+              <button className="tl-btn" onClick={() => updateWaveScale && updateWaveScale(DEFAULT_SCALE)}
+                style={{ background: 'none', border: 'none', padding: '4px 0', color: COLORS.tealBright, fontSize: 11.5, fontWeight: 600 }}>
+                Reset
+              </button>
+            ) : null}
+          </div>
+          <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 6, lineHeight: 1.5 }}>
+            Changes the heights you read, not the forecast behind them. Ratings, alerts and the
+            buoy comparison all still use the measured numbers.
+          </div>
         </div>
 
         <Heading>ALERTS</Heading>

@@ -14,6 +14,7 @@ import { linePath, waveAvg, fillGaps } from './lib/format.js';
 import { nextTideEvent, tideState } from './lib/tides.js';
 import { stepDirection } from './lib/spotnav.js';
 import { shouldRefetchOnResume } from './lib/refresh.js';
+import { DEFAULT_SCALE, normalizeScale, toModelFt } from './lib/waveheight.js';
 import { parseHash, buildHash } from './lib/router.js';
 import { shareSpot } from './lib/share.js';
 import { nearestSpots, rankNearby, DEFAULT_MAX_KM } from './lib/nearby.js';
@@ -56,6 +57,17 @@ html, body { margin: 0; padding: 0; background: #070F18; }
 /* A cluster marker's count, centred on the dot rather than floating above it like a name. */
 .tl-count { font-weight: 700; font-size: 11px; padding: 2px 6px; min-width: 9px; text-align: center;
   background: rgba(7,15,24,0.92); border: 1px solid rgba(244,247,246,0.28); }
+/* The wave-height slider. A bare range input renders in the browser's own blue-on-grey, which
+   is the one control in the app that would not look like the app. Thumb sized past the 44px tap
+   floor the rest of the controls hold to -- it is dragged with a thumb, not clicked with a
+   mouse -- by padding the track's hit area rather than drawing a 44px circle. */
+.tl-range { -webkit-appearance: none; appearance: none; width: 100%; background: none; height: 44px; cursor: pointer; }
+.tl-range::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: rgba(244,247,246,0.18); }
+.tl-range::-moz-range-track { height: 4px; border-radius: 999px; background: rgba(244,247,246,0.18); }
+.tl-range::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px;
+  border-radius: 999px; background: #39E6C4; border: none; margin-top: -9px; }
+.tl-range::-moz-range-thumb { width: 22px; height: 22px; border-radius: 999px; background: #39E6C4; border: none; }
+.tl-range:focus-visible { outline: 2px solid #F4F7F6; outline-offset: 2px; border-radius: 8px; }
 @keyframes tl-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 0.8; } }
 .tl-pulse { animation: tl-pulse 1.4s ease-in-out infinite; }
 @media (prefers-reduced-motion: reduce) {
@@ -188,6 +200,9 @@ export default function App() {
   // toggle drives wind speed and water temperature as well as wave height. A stored preference
   // (loaded just below) always wins over the guess. See lib/locale.js.
   const [units, setUnits] = useState(defaultUnits);
+  // How this person reads a wave, as a multiplier on every height the app prints. Purely a
+  // display preference: nothing stored or scored moves with it. See lib/waveheight.js.
+  const [waveScale, setWaveScale] = useState(DEFAULT_SCALE);
 
   // Account login (Google/Meta) + cross-device sync — see src/lib/auth.js and worker/README.md.
   // Entirely optional: with no session, the app behaves exactly as it always has (local-only).
@@ -509,6 +524,15 @@ export default function App() {
     })();
     (async () => {
       try {
+        const res = await storage.get('surf-wave-scale');
+        // normalizeScale rather than a raw parse, for the same reason as the profile below:
+        // this value survives app versions, and one outside the slider's range would print
+        // heights the control could no longer walk back to.
+        if (res && res.value != null) setWaveScale(normalizeScale(res.value));
+      } catch { /* nothing saved yet — the default 1 stands */ }
+    })();
+    (async () => {
+      try {
         const res = await storage.get('surf-profile');
         // normalizeProfile, not a raw parse: this is localStorage, it survives app versions, and
         // a board id that no longer exists must fall back rather than score as nothing.
@@ -550,6 +574,14 @@ export default function App() {
     storage.set('surf-units', next).catch(() => {});
   }
 
+  // No refetch and no rescore, for the same reason changing your board does not refetch: this
+  // moves what the numbers are printed as, not what they are.
+  function updateWaveScale(value) {
+    const next = normalizeScale(value);
+    setWaveScale(next);
+    storage.set('surf-wave-scale', String(next)).catch(() => {});
+  }
+
   function completeOnboarding(id) {
     setGoToId(id);
     setOnboarded(true);
@@ -575,6 +607,7 @@ export default function App() {
     if (!appData) return;
     if (appData.goToId) setGoToId(appData.goToId);
     if (appData.units === 'metric' || appData.units === 'imperial') setUnits(appData.units);
+    if (appData.waveScale != null) setWaveScale(normalizeScale(appData.waveScale));
     if (Array.isArray(appData.alerts)) { setAlerts(appData.alerts); persistAlertsLocally(appData.alerts); }
     if (Array.isArray(appData.sessions)) { setSessions(appData.sessions); persistSessionsLocally(appData.sessions); }
     if (Array.isArray(appData.customSpots) && appData.customSpots.length) {
@@ -642,6 +675,7 @@ export default function App() {
       customSpots: order.filter((id) => !ORDER.includes(id)).map((id) => spots[id]).filter(Boolean),
       alerts,
       units,
+      waveScale,
       sessions,
       ...overrides,
     };
@@ -665,7 +699,7 @@ export default function App() {
     const t = setTimeout(() => pushAppData(session.sessionToken, currentAppData()), 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, goToId, order, spots, alerts, units]);
+  }, [session, goToId, order, spots, alerts, units, waveScale]);
 
   async function persistAlertsLocally(next) {
     try { await storage.set('surf-alerts', JSON.stringify(next)); } catch { /* best-effort */ }
@@ -962,7 +996,10 @@ export default function App() {
   function closeAlertSheet() { setAlertSheetOpen(false); setAlertDraft(null); }
   function saveAlert() {
     if (!alertDraft) return;
-    const next = [...alerts, { id: 'alert-' + Date.now(), ...alertDraft }];
+    // The sheet collects this in the heights this person reads; it is stored in the model's
+    // own feet, because that is what matches it. See toModelFt.
+    const minWaveFt = toModelFt(alertDraft.minWaveFt, waveScale);
+    const next = [...alerts, { id: 'alert-' + Date.now(), ...alertDraft, minWaveFt }];
     setAlerts(next);
     persistAlerts(next);
     closeAlertSheet();
@@ -1100,28 +1137,28 @@ export default function App() {
           </Suspense>
         ) : view === 'myspots' ? (
           <MySpotsView
-            rows={myRows} summary={mySpotsSummary(myRows)} units={units} goToId={goToId}
+            rows={myRows} summary={mySpotsSummary(myRows)} units={units} waveScale={waveScale} goToId={goToId}
             onSelectSpot={viewSpot} onClose={() => handleNav('home')}
             onRefresh={() => refreshMySpots()}
           />
         ) : view === 'nearby' ? (
           <NearbyView
-            rows={nearbyRows} spots={spots} units={units}
+            rows={nearbyRows} spots={spots} units={units} waveScale={waveScale}
             status={locating === 'locating' ? 'locating' : locating ? 'error' : (!here ? 'locating' : (nearbyRows.length ? 'ready' : 'empty'))}
             message={locating && locating.message} onRetry={() => askLocation(true)}
             radiusLabel={units === 'metric' ? DEFAULT_MAX_KM + ' km' : Math.round(DEFAULT_MAX_KM * 0.621371) + ' mi'}
             onSelectSpot={viewSpot} onClose={() => handleNav('home')}
           />
         ) : view === 'alerts' ? (
-          <AlertsView alerts={alerts} spots={spots} units={units} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
+          <AlertsView alerts={alerts} spots={spots} units={units} waveScale={waveScale} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
-          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
+          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} waveScale={waveScale} updateWaveScale={updateWaveScale} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
             pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
             session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast}
             sessions={sessions} surferProfile={surferProfile} updateProfile={updateProfile} deleteSession={deleteSession} />
         ) : (
           <HomeView
-            units={units} toggleUnits={toggleUnits} openSearch={openSearch} openMenu={() => setMenuOpen(true)}
+            units={units} waveScale={waveScale} toggleUnits={toggleUnits} openSearch={openSearch} openMenu={() => setMenuOpen(true)}
             spot={spot} isGoTo={isGoTo} makeGoTo={makeGoTo} showSpotNav={order.length > 1}
             onPrevSpot={() => stepSpot(-1)} onNextSpot={() => stepSpot(1)}
             canPrevSpot={canStepBack} canNextSpot={canStepOn}

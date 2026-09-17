@@ -15,12 +15,45 @@ describe('formatWaveRange', () => {
   it('returns the input as-is if it is not a valid "n-n" range', () => {
     expect(formatWaveRange('not-a-range', 'imperial')).toBe('not-a-range');
   });
+
+  describe('with a personal reading scale', () => {
+    it('leaves everything exactly as it was at the default scale', () => {
+      // Passing 1 explicitly must be indistinguishable from not passing it at all, or the
+      // setting silently changes the app for everyone who never opened it.
+      expect(formatWaveRange('3-5', 'imperial', 1)).toBe(formatWaveRange('3-5', 'imperial'));
+      expect(formatWaveRange('3-5', 'metric', 1)).toBe(formatWaveRange('3-5', 'metric'));
+    });
+
+    it('moves both ends of the range', () => {
+      expect(formatWaveRange('4-6', 'imperial', 0.5)).toBe('2-3');
+      expect(formatWaveRange('4-6', 'imperial', 1.5)).toBe('6-9');
+    });
+
+    it('scales before converting, so metric gets the same treatment', () => {
+      expect(formatWaveRange('4-6', 'metric', 0.5)).toBe('0.6-0.9');
+    });
+
+    it('prints a single number when the two ends round together', () => {
+      // Two-foot surf read at half scale is one foot to one foot. "1-1" is not a range.
+      expect(formatWaveRange('2-3', 'imperial', 0.5)).toBe('1-2');
+      expect(formatWaveRange('1-2', 'imperial', 0.5)).toBe('1');
+    });
+
+    it('still refuses a range it cannot parse', () => {
+      expect(formatWaveRange('not-a-range', 'imperial', 0.5)).toBe('not-a-range');
+    });
+  });
 });
 
 describe('formatWaveNum / formatHeight / formatSpeed', () => {
   it('rounds feet to a whole number, converts to meters at one decimal', () => {
     expect(formatWaveNum(4.6, 'imperial')).toBe(5);
     expect(formatWaveNum(4, 'metric')).toBe('1.2');
+  });
+  it('applies a personal reading scale, and is unchanged at the default', () => {
+    expect(formatWaveNum(4, 'imperial', 1)).toBe(formatWaveNum(4, 'imperial'));
+    expect(formatWaveNum(4, 'imperial', 0.5)).toBe(2);
+    expect(formatWaveNum(4, 'metric', 0.5)).toBe('0.6');
   });
   it('keeps one decimal place in imperial, converts in metric', () => {
     expect(formatHeight(3, 'imperial')).toBe('3.0');
