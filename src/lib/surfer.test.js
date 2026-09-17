@@ -1,8 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import {
-  DEFAULT_PROFILE, BOARD_IDS, SKILL_IDS, normalizeProfile, bandFor, weightsFor, sizeFit,
-  boardLabel, skillLabel,
-} from './surfer.js';
+import { DEFAULT_PROFILE, BOARD_IDS, SKILL_IDS, normalizeProfile, bandFor, weightsFor, sizeFit,
+  boardLabel, skillLabel, windBandFor, windFit } from './surfer.js';
 
 describe('normalizeProfile', () => {
   it('falls back to the default for anything it does not recognise', () => {
@@ -75,11 +73,20 @@ describe('weightsFor', () => {
     expect(w('bodyboard')).toBe(Math.min(...all));
   });
 
-  it('makes period matter least to a foil and most to a shortboard', () => {
+  it('makes period matter least to a foil and most to a shortboard, among paddled craft', () => {
     const p = (board) => weightsFor({ board }).periodWeight;
-    const all = BOARD_IDS.map(p);
-    expect(p('foil')).toBe(Math.min(...all));
-    expect(p('shortboard')).toBe(Math.max(...all));
+    const paddled = BOARD_IDS.filter((id) => !windBandFor({ board: id }));
+    expect(p('foil')).toBe(Math.min(...paddled.map(p)));
+    expect(p('shortboard')).toBe(Math.max(...BOARD_IDS.map(p)));
+  });
+
+  it('makes period matter even less to anything the wind powers', () => {
+    // A craft that makes its own speed does not need the wave to have any. None of them should
+    // care about swell period more than the paddled craft that cares about it least.
+    const p = (board) => weightsFor({ board }).periodWeight;
+    for (const id of BOARD_IDS.filter((b) => windBandFor({ board: b }))) {
+      expect(p(id), id).toBeLessThanOrEqual(p('foil'));
+    }
   });
 
   it('leaves the default profile on neutral weights, so nothing is scaled until asked', () => {
@@ -155,5 +162,78 @@ describe('labels', () => {
     for (const id of SKILL_IDS) expect(skillLabel(id)).toBeTruthy();
     expect(boardLabel('nope')).toBe(boardLabel(DEFAULT_PROFILE.board));
     expect(skillLabel('nope')).toBe(skillLabel(DEFAULT_PROFILE.skill));
+  });
+});
+
+// The four wind-powered craft invert the single most important term in the score. Everything a
+// surfer wants from the wind, they do not: a glassy morning is the best day of a surfer's week
+// and the one day a kite cannot leave the beach.
+describe('wind-powered craft', () => {
+  const POWERED = ['wingfoil', 'windsurf', 'kitesurf', 'kitefoil'];
+  const PADDLED = ['shortboard', 'longboard', 'fish', 'bodyboard', 'sup', 'foil', 'softtop'];
+
+  it('gives a wind band to exactly the craft that ride the wind', () => {
+    for (const id of POWERED) expect(windBandFor({ board: id }), id).toBeTruthy();
+    for (const id of PADDLED) expect(windBandFor({ board: id }), id).toBeNull();
+  });
+
+  it('every band is ordered and inside what anyone actually sails in', () => {
+    for (const id of POWERED) {
+      const { lo, hi } = windBandFor({ board: id });
+      expect(hi, id).toBeGreaterThan(lo);
+      expect(lo, id).toBeGreaterThan(5);
+      expect(hi, id).toBeLessThan(45);
+    }
+  });
+
+  it('needs the least wind on a foil and the most on a rig', () => {
+    // A foil flies in what nobody else can use; a sail needs real wind to plane at all.
+    const lo = (id) => windBandFor({ board: id }).lo;
+    expect(lo('kitefoil')).toBe(Math.min(...POWERED.map(lo)));
+    expect(lo('windsurf')).toBe(Math.max(...POWERED.map(lo)));
+  });
+
+  describe('windFit', () => {
+    const band = { lo: 12, hi: 32 };
+
+    it('treats glass as the day you cannot go, not the best day of the week', () => {
+      const flat = windFit(1, 'offshore', band);
+      expect(flat.points).toBeLessThan(0);
+      expect(flat.text).toContain('nothing to ride');
+    });
+
+    it('falls away fast below the band rather than easing off', () => {
+      // Half the minimum is not half a session.
+      expect(windFit(6, 'cross', band).points).toBeLessThan(windFit(11, 'cross', band).points);
+      expect(windFit(11, 'cross', band).points).toBeLessThan(windFit(15, 'cross', band).points);
+    });
+
+    it('rewards being in the band, best of all cross-shore', () => {
+      expect(windFit(20, 'cross', band).points).toBeGreaterThan(0);
+      expect(windFit(20, 'cross', band).points).toBeGreaterThan(windFit(20, 'onshore', band).points);
+    });
+
+    it('penalises an offshore inside the band, because that one is a hazard', () => {
+      // Lose power on a straight offshore and what is blowing you flat is blowing you out to
+      // sea. Every school refuses to launch in it; the app should not be recommending it.
+      expect(windFit(20, 'offshore', band).points).toBeLessThan(0);
+      expect(windFit(20, 'offshore', band).text).toContain('off the beach');
+    });
+
+    it('turns against being overpowered above the band', () => {
+      expect(windFit(40, 'cross', band).points).toBeLessThan(windFit(30, 'cross', band).points);
+      expect(windFit(50, 'cross', band).points).toBeLessThan(0);
+    });
+
+    it('has a floor at both ends, so wind alone cannot swamp every other term', () => {
+      expect(windFit(0, 'cross', band).points).toBeGreaterThan(-10);
+      expect(windFit(200, 'cross', band).points).toBeGreaterThan(-10);
+    });
+
+    it('says nothing at all for a craft with no band, so the surf model still runs', () => {
+      expect(windFit(20, 'cross', null)).toBeNull();
+      expect(windFit(null, 'cross', band)).toBeNull();
+      expect(windFit(NaN, 'cross', band)).toBeNull();
+    });
   });
 });

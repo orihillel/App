@@ -63,6 +63,45 @@ const BOARDS = {
     // and a foil in a crowded head-high lineup is a hazard rather than a good time.
     periodWeight: 0.4, windWeight: 1.2,
   },
+  // The wind-powered craft. Everything below here rides the wind rather than despite it, and
+  // that inverts the single most important term in the score: `wind` is a band they need, not a
+  // penalty they tolerate. A glassy morning is the best day of the week for a surfer and the one
+  // day a kite cannot leave the beach, so these carry a `wind` band the way every board carries
+  // a size band, and scoreBreakdown reads it instead of the surf wind heuristic.
+  //
+  // The size bands are small on purpose. None of these needs a wave to have a session -- flat
+  // water is a legitimate day out for all four -- so `under` is the gentlest in the file and the
+  // band describes the surf they *prefer*, not the surf they require.
+  wingfoil: {
+    label: 'Wing foil',
+    lo: 0.5, hi: 4, under: 0.15, over: 1.1,
+    periodWeight: 0.3, windWeight: 1,
+    // A wing is the most forgiving of the four: a big wing gets going in very little and a
+    // small one handles a lot, so the band is the widest here.
+    wind: { lo: 11, hi: 30 },
+  },
+  windsurf: {
+    label: 'Windsurf',
+    lo: 1, hi: 10, under: 0.25, over: 0.5,
+    periodWeight: 0.3, windWeight: 1,
+    // Wave sailing wants real wind -- a rig needs more to plane than a kite or a wing needs to
+    // fly -- and handles the top of the range better than anything else here.
+    wind: { lo: 15, hi: 38 },
+  },
+  kitesurf: {
+    label: 'Kitesurf',
+    lo: 0.5, hi: 8, under: 0.2, over: 0.7,
+    periodWeight: 0.3, windWeight: 1,
+    wind: { lo: 12, hi: 32 },
+  },
+  kitefoil: {
+    label: 'Kite foil',
+    lo: 0.5, hi: 3, under: 0.1, over: 1.4,
+    periodWeight: 0.25, windWeight: 1,
+    // A foil needs the least wind of anything in this list and is the first to be overpowered,
+    // which is the whole reason people ride them on the marginal days.
+    wind: { lo: 8, hi: 24 },
+  },
   softtop: {
     label: 'Soft-top / learning',
     lo: 1, hi: 2.5, under: 0.2, over: 2.4,
@@ -111,6 +150,51 @@ export function bandFor(profile) {
   // and a test that walks every board x skill combination asserting hi >= lo catches a future
   // config that does invert, which a silent runtime clamp would have hidden instead.
   return { lo: b.lo * s.loMul, hi: b.hi * s.hiMul, under: b.under, over: b.over * s.overMul };
+}
+
+// The wind band a craft needs, or null for anything that rides a wave under its own weight.
+export function windBandFor(profile) {
+  const b = BOARDS[normalizeProfile(profile).board];
+  return b.wind || null;
+}
+
+// What the wind is worth to a craft that is powered by it.
+//
+// The surf wind model next door is built on one assumption -- less wind is better, and offshore
+// is best of all -- and every part of that is wrong here. No wind is not a good day, it is not a
+// day at all. Offshore is not the prize, it is the hazard: lose power on a straight offshore and
+// the thing blowing you flat is also blowing you out to sea, which is why every school on earth
+// teaches cross- and side-onshore and refuses to launch in an offshore.
+//
+// Returns the same shape the surf model produces -- points and a phrase -- so scoreBreakdown can
+// swap one for the other without the rest of the score knowing which kind of craft it is scoring.
+const NO_WIND_FLOOR = -6;
+
+export function windFit(windMph, type, band) {
+  if (!band || windMph == null || !Number.isFinite(windMph)) return null;
+  const { lo, hi } = band;
+
+  // Below the band, falling away fast: half the minimum is not half a session, it is none.
+  if (windMph < lo) {
+    const short = lo - windMph;
+    const points = Math.max(NO_WIND_FLOOR, 2 - short * (8 / lo));
+    return {
+      points,
+      text: windMph < 3 ? 'glassy — nothing to ride' : 'under-powered at ' + Math.round(windMph) + 'mph',
+    };
+  }
+
+  // Above it, overpowered: survivable for a while, then not.
+  if (windMph > hi) {
+    const over = windMph - hi;
+    return { points: Math.max(-5, 1 - over * 0.35), text: 'overpowered at ' + Math.round(windMph) + 'mph' };
+  }
+
+  // In the band. Direction decides how much of it is usable, and the offshore penalty is a
+  // safety judgement rather than a comfort one.
+  if (type === 'offshore') return { points: -1, text: 'offshore — blows you off the beach' };
+  if (type === 'cross') return { points: 3, text: 'cross-shore, powered up' };
+  return { points: 2, text: 'onshore, powered up' };
 }
 
 export function weightsFor(profile) {

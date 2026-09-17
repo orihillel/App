@@ -1,6 +1,6 @@
 import { COLORS } from './colors.js';
 import { swellWindowFor, swellExposure, tideFit } from './spotmodel.js';
-import { sizeFit, weightsFor, bandFor } from './surfer.js';
+import { sizeFit, weightsFor, bandFor, windBandFor, windFit } from './surfer.js';
 
 export const COMPASS = ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'];
 export function degToCompass(deg) {
@@ -43,7 +43,13 @@ export function scoreBreakdown(waveFt, windMph, type, period, swellDeg, offshore
 
   let windPoints;
   let windText;
-  if (windMph < 3) {
+  // A craft that rides the wind reads it from its own band instead (see windFit): for those,
+  // wind is the thing they came for, and every branch below has its sign the wrong way round.
+  const powered = windFit(windMph, type, windBandFor(profile));
+  if (powered) {
+    windPoints = powered.points;
+    windText = powered.text;
+  } else if (windMph < 3) {
     windPoints = 3; windText = 'glassy'; // direction barely matters at this speed
   } else if (type === 'offshore') {
     if (windMph <= 10) { windPoints = 3; windText = 'light offshore'; }
@@ -59,8 +65,9 @@ export function scoreBreakdown(waveFt, windMph, type, period, swellDeg, offshore
     else { windPoints = -3; windText = 'strong onshore'; }
   }
   // Scaled only where it hurts. A SUP minds an onshore far more than a bodyboard does, but
-  // nobody gets *extra* credit for glass because of what they ride.
-  add('wind', windPoints < 0 ? windPoints * windWeight : windPoints, windText);
+  // nobody gets *extra* credit for glass because of what they ride. A wind-powered craft has
+  // already had its own band applied and is not scaled again.
+  add('wind', !powered && windPoints < 0 ? windPoints * windWeight : windPoints, windText);
 
   // Size, against the band this board and skill actually want — see lib/surfer.js. This used to
   // be an unconditional "bigger is better", which is only true for one kind of surfer.
