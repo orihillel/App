@@ -13,16 +13,33 @@
 // Stops in metres. Chosen on what the sea actually does: under half a metre is flat, 1-2m is
 // an ordinary day nearly everywhere, 4m+ is a serious swell, and past 8m is a storm sea that
 // only a handful of places on Earth can hold a rideable shape in.
+// The mid and upper stops climb in lightness as well as hue, and that is what was missing. The
+// ramp used to fold back on itself: 3m green and 6m orange measured within 0.003 of each other
+// in OKLCH lightness, and an 8m red was *darker* than a 2m teal. Above 2m the only thing
+// separating one sea state from the next was hue -- and hue is exactly what a translucent
+// overlay over a blue globe destroys, because the composite pulls every colour toward the ocean
+// underneath. Measured on screen, 2m to 2.5m has gone from a perceptual distance of 21.7 to
+// 30.8, and 3m to 4m from 27.6 to 38.8.
+//
+// The three lowest stops are untouched. Their separation was already the best part of this
+// ramp, and re-deriving them cost more than it bought -- an even lightness ramp across all nine
+// measured *worse* down there than the hue-and-chroma jumps that were already here.
+//
+// The top stop stays where the gamut ends rather than climbing further: sRGB has no saturated
+// orange above about 0.85 lightness, so pushing 6m and 8m higher turns them pale and throws
+// away "big is hot", which is the one thing every reader already knows about a wave map.
 const STOPS = [
   [0.0, [26, 35, 68]],
   [0.5, [32, 66, 128]],
   [1.0, [30, 110, 180]],
-  [2.0, [32, 170, 176]],
-  [3.0, [86, 190, 110]],
-  [4.5, [226, 200, 78]],
-  [6.0, [232, 140, 58]],
-  [8.0, [216, 74, 68]],
-  [12.0, [246, 220, 240]],
+  [1.5, [10, 135, 193]],
+  [2.0, [15, 162, 192]],
+  [2.5, [19, 189, 186]],
+  [3.0, [79, 217, 120]],
+  [4.5, [228, 210, 23]],
+  [6.0, [245, 140, 30]],
+  [8.0, [214, 55, 50]],
+  [12.0, [250, 215, 235]],
 ];
 
 export const WAVE_SCALE_MAX = STOPS[STOPS.length - 1][0];

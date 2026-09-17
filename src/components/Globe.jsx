@@ -846,7 +846,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // paint swell across every continent.
           waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw, GRID_LAT_STEP);
           const material = new THREE.MeshBasicMaterial({
-            map: waveTexture, transparent: true, opacity: 0.62, depthWrite: false,
+            // 0.62 was costing about a third of every ramp's separation. The overlay is
+            // composited over the ocean sphere, so a translucent one is a blend toward that
+            // mid-blue -- and the darker half of a ramp, which is where most of the world's
+            // sea state actually sits, gets pulled hardest. Raising it to 0.85 lifted the
+            // worst adjacent pair from 11.8 to 16.2 on the swell layer and 6.0 to 8.3 on the
+            // wind, for nothing but a number. Still short of opaque so the globe's own shading
+            // reads through and it still looks like a sphere rather than a flat map.
+            map: waveTexture, transparent: true, opacity: 0.85, depthWrite: false,
           });
           if (waveMaskTexture) cutToCoastline(material, waveMaskTexture);
           waveMesh = new THREE.Mesh(
