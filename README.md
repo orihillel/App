@@ -69,14 +69,20 @@ agreeing to their terms) that nothing in this repo can do for you.
 
 `android/` packages this PWA as a real Android app (a Trusted Web Activity — the live site,
 opened full-screen with no browser chrome) for a Google Play listing. See `android/README.md`
-for what's already generated there (a validated project config, a real signing keystore, a
-real Digital Asset Links fingerprint) versus what still needs a human: deciding the package
-id, hosting `assetlinks.json` at the right domain, and the actual Play Console account and
-submission.
+for what's already generated there (a validated project config, a real upload keystore, and a
+Digital Asset Links file built from it) versus what still needs a human: deciding the package
+id, hosting `assetlinks.json` at the right domain, swapping in the app signing key fingerprint
+Play issues at first upload, and the actual Play Console account and submission.
 
-There is no equivalent iOS path here. Apple's App Store review explicitly rejects apps that
-are "just a repackaged website" (Guideline 4.2.1), so there's no clean, thin wrapper to
-generate the way `android/` does for Play — a real iOS submission needs enough native
-functionality added (via something like Capacitor) to clear that review, plus a Mac with
-Xcode to build it. Until or unless that's worth doing, this PWA already installs from Safari
-via Add to Home Screen, with push working there too (iOS 16.4+).
+There is no equivalent iOS path here. Apple's App Store review sets a minimum-functionality
+bar a thin wrapper doesn't clear. Guideline 4.2 asks for "features, content, and UI that
+elevate it beyond a repackaged website", and 4.2.2 rules out apps that are "primarily … web
+clippings, content aggregators, or a collection of links". Guideline 4.3(b) — "don't submit
+apps that are indistinguishable from what's already widely available" — is a second risk in a
+category this crowded, and one a wrapper makes worse rather than better, since a wrapper is by
+construction the same thing as the website.
+
+So there's no clean, thin wrapper to generate the way `android/` does for Play — a real iOS
+submission needs enough native functionality added (via something like Capacitor) to clear
+that review, plus a Mac with Xcode to build it. Until or unless that's worth doing, this PWA
+already installs from Safari via Add to Home Screen, with push working there too (iOS 16.4+).
