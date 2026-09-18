@@ -130,3 +130,31 @@ describe('scoreToColor', () => {
     expect(scoreToColor(NaN)).not.toMatch(/NaN/);
   });
 });
+
+// The wind band has to actually reach the score. It is computed in surfer.js and applied here,
+// and a version of this feature that got the band right and never consulted it would look
+// completely correct in every surfer.js test while rating every kite day exactly like a surf day.
+describe('a wind-powered craft is scored on different conditions', () => {
+  const kite = { board: 'kitesurf', skill: 'intermediate' };
+  const surf = { board: 'shortboard', skill: 'intermediate' };
+  // 3ft, in the swell window, no tide opinion — so the wind is the only thing that differs.
+  const score = (windMph, type, profile) =>
+    conditionsScore(3, windMph, type, 10, 270, 90, null, null, profile);
+
+  it('reads a glassy morning as the day a kite cannot go out', () => {
+    expect(score(1, 'offshore', surf)).toBeGreaterThan(score(1, 'offshore', kite));
+  });
+
+  it('reads a windy cross-shore afternoon the other way round', () => {
+    expect(score(20, 'cross', kite)).toBeGreaterThan(score(20, 'cross', surf));
+  });
+
+  it('prefers the windy afternoon to the glass, which no surfer profile does', () => {
+    expect(score(20, 'cross', kite)).toBeGreaterThan(score(1, 'cross', kite));
+    expect(score(1, 'offshore', surf)).toBeGreaterThan(score(20, 'cross', surf));
+  });
+
+  it('still marks a straight offshore down even when it is blowing the right strength', () => {
+    expect(score(20, 'cross', kite)).toBeGreaterThan(score(20, 'offshore', kite));
+  });
+});

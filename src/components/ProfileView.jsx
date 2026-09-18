@@ -4,9 +4,9 @@ import { COLORS } from '../lib/colors.js';
 import { ORDER as SEED_ORDER, searchCatalog } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
-import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
+import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, windBandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
 import { MIN_SCALE, MAX_SCALE, SCALE_STEP, DEFAULT_SCALE, scaleLabel, scaleDescription } from '../lib/waveheight.js';
-import { formatWaveRange } from '../lib/format.js';
+import { formatWaveRange, formatSpeed, speedUnit } from '../lib/format.js';
 import { ratingBg } from '../lib/rating.js';
 import { AuthButtons } from './AuthButtons.jsx';
 
@@ -174,6 +174,12 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
             is the range every rating in the app is now measured against. */}
         <div style={{ fontSize: 12.5, color: COLORS.foamDim, marginBottom: 18, lineHeight: 1.5 }}>
           Rating spots for {formatBand(bandFor(surferProfile), units, waveScale)} surf. Bigger or smaller than that scores lower.
+          {/* A craft that rides the wind is scored on having it, not on being spared it, and the
+              sentence above would otherwise read as though a glassy morning were the goal. */}
+          {windBandFor(surferProfile) ? (
+            <> Wants {formatSpeed(windBandFor(surferProfile).lo, units)}–{formatSpeed(windBandFor(surferProfile).hi, units)}{speedUnit(units)} of
+              {' '}cross- or onshore wind; glassy scores lowest and a straight offshore counts against it.</>
+          ) : null}
         </div>
 
         <Heading>UNITS</Heading>
