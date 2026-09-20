@@ -816,7 +816,12 @@ export default function App() {
     ? recalibrateHours(spotForecast.hours, spotCalibration, spot, surferProfile) : null;
   const contData = (spotForecast && spotForecast.continuous && spotForecast.continuous.length)
     ? recalibrateContinuous(spotForecast.continuous, spotCalibration) : null;
-  const contWaveLine = contData ? linePath(contData.map((p) => p.waveFt), 300, 70, 10) : null;
+  // The week chart plots breaking height, not the offshore significant height it used to, so
+  // that the curve and the number above it are the same quantity. They were not: the card has
+  // shown breaking height since lib/surf.js landed, while this line and its tap readout stayed
+  // on the raw model value underneath it. On a short-period sea the two differ by around 20%,
+  // which is enough to read the chart as disagreeing with the headline for the same hour.
+  const contWaveLine = contData ? linePath(contData.map((p) => p.surfFt), 300, 70, 10) : null;
   const contTideLine = contData ? linePath(fillGaps(contData.map((p) => p.tideFt)), 300, 70, 10) : null;
   const contWindLine = contData ? linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10) : null;
   const contSelected = contData && contSelectedIdx != null ? contData[contSelectedIdx] : null;

@@ -387,7 +387,7 @@ export function HomeView({
               ))}
             </div>
             <div style={{ marginTop: 4, fontSize: 12.5, color: contSelected ? COLORS.foam : COLORS.foamDim, fontFamily: 'JetBrains Mono, monospace', minHeight: 16 }}>
-              {contSelected ? (contSelected.day + ' ' + hourLabel12(contSelected.hour) + ' · ' + formatWaveNum(contSelected.waveFt, units) + heightUnit(units) + (contSelected.tideFt != null ? ' · ' + formatHeight(contSelected.tideFt, units) + heightUnit(units) + ' tide' : '') + (contSelected.windSpd != null ? ' · ' + formatSpeed(contSelected.windSpd, units) + speedUnit(units) + ' ' + degToCompass(contSelected.windDeg) : '')) : 'Tap the chart for a specific time'}
+              {contSelected ? (contSelected.day + ' ' + hourLabel12(contSelected.hour) + ' · ' + formatWaveNum(contSelected.surfFt, units, waveScale) + heightUnit(units) + (contSelected.tideFt != null ? ' · ' + formatHeight(contSelected.tideFt, units) + heightUnit(units) + ' tide' : '') + (contSelected.windSpd != null ? ' · ' + formatSpeed(contSelected.windSpd, units) + speedUnit(units) + ' ' + degToCompass(contSelected.windDeg) : '')) : 'Tap the chart for a specific time'}
             </div>
           </>
         ) : (
