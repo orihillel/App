@@ -49,7 +49,7 @@ describe('windColor', () => {
 describe('windScaleTicks', () => {
   it('is round numbers in the units on screen, not a conversion showing its working', () => {
     expect(windScaleTicks('metric').map((t) => t.label)).toEqual(['0', '10', '20', '30', '50', '70', '90']);
-    expect(windScaleTicks('imperial').map((t) => t.label)).toEqual(['0', '5', '10', '20', '30', '40', '55']);
+    expect(windScaleTicks('imperial').map((t) => t.label)).toEqual(['0', '5', '10', '15', '20', '30', '45']);
   });
 
   it('carries the kph each tick actually sits at, so the bar can place it', () => {
@@ -128,5 +128,43 @@ describe('windLegendCaption', () => {
   it('says the age is unknown rather than inventing one', () => {
     expect(windLegendCaption({}, 'metric')).toContain('age unknown');
     expect(windLegendCaption(null, 'metric')).toContain('age unknown');
+  });
+});
+
+// The wind ramp was confined to one violet hue family so it could never be mistaken for the
+// swell ramp. The two layers cannot be on screen together -- Globe.jsx holds a single `layer`
+// state -- so that confinement was buying nothing and costing two thirds of the ramp's range.
+// These numbers lock in what freeing it bought.
+describe('the wind ramp has a real hue sweep now', () => {
+  const OCEAN = [23, 90, 130];
+  const lin = (u) => { const v = u / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const blend = (c) => c.map((v, i) => Math.round(0.85 * v + 0.15 * OCEAN[i]));
+  function lab(c) {
+    const [R, G, B] = blend(c).map(lin);
+    const g = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const X = g((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047);
+    const Y = g(R * 0.2126 + G * 0.7152 + B * 0.0722);
+    const Z = g((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
+    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+  }
+  const dE = (a, b) => { const p = lab(a), q = lab(b); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
+
+  // 15-30kph is where a morning stops being glassy and starts being blown out.
+  it('keeps every five-knot step in the decisive band clearly apart', () => {
+    for (let k = 5; k + 5 <= 35; k += 5) {
+      expect(dE(windColor(k), windColor(k + 5)), k + ' -> ' + (k + 5) + 'kph').toBeGreaterThan(10);
+    }
+  });
+
+  it('travels far enough overall to carry the levels asked of it', () => {
+    let arc = 0;
+    for (let k = 0; k + 1 <= WIND_SCALE_MAX; k += 1) arc += dE(windColor(k), windColor(k + 1));
+    expect(arc).toBeGreaterThan(150);
+  });
+
+  it('never collides with the globe underneath it', () => {
+    let closest = Infinity;
+    for (let k = 0; k <= WIND_SCALE_MAX; k += 0.5) closest = Math.min(closest, dE(windColor(k), OCEAN));
+    expect(closest).toBeGreaterThan(8);
   });
 });
