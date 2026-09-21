@@ -12,8 +12,8 @@ import {
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
-import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
-import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, windTravelBearing } from '../lib/windscale.js';
+import { waveColor, waveColorBanded, waveScaleGradient, waveScaleBandGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
+import { windColor, windColorBanded, windScaleGradient, windScaleBandGradient, windScaleTicks, windLegendCaption, windTravelBearing } from '../lib/windscale.js';
 import { fetchWaveGrid, fetchWaveFrames, fetchWindGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
@@ -158,6 +158,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // Same bridge as wavesOnRef: the WebGL effect is built once at mount and cannot read state.
   const layerRef = useRef('swell');
   layerRef.current = layer;
+  // Smooth ramp or discrete bands. Bands are the default: a band edge is a hard line of 11.6dE
+  // or more, where the same difference spread across a smooth gradient is a change nobody
+  // notices, and on a grid sampled every 1,100km there is little real shape a blend would show
+  // that the bands hide. The smooth reading stays one tap away for anyone who prefers it.
+  const [banded, setBanded] = useState(true);
+  const bandedRef = useRef(true);
+  bandedRef.current = banded;
   // The effect hands these out so the controls can ask for a layer without reaching into it.
   const applyLayerRef = useRef(null);
   const loadWindRef = useRef(null);
@@ -276,7 +283,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Exactly on a frame, draw it; between two, draw the blend. See lib/waveframes.js.
     const frame = t > 0 && i < last ? lerpFrames(frames.list[i], frames.list[i + 1], t) : frames.list[i];
     applyFrameRef.current(frame, frames.latStep, frames.layer || 'swell');
-  }, [frames, pos, framesState]);
+  }, [frames, pos, framesState, banded]);
+
+  // Switching between smooth and banded repaints whatever is on the sphere. The animated week
+  // goes through the effect above, which already has `banded` in its dependencies; this covers
+  // the live map, which nothing else would redraw.
+  useEffect(() => {
+    if (framesState === 'ready' && frames) return;
+    if (applyLayerRef.current) applyLayerRef.current(layerRef.current);
+  }, [banded, framesState, frames]);
   // What the last tap on the ocean read. Held as state rather than drawn into the scene so it
   // is selectable text at a real font size -- the entire point of it is to be legible when the
   // colours are not.
@@ -680,10 +695,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // How each layer is drawn: its ramp, and which way its direction field means. One table,
     // read by both the live overlay and the animated week, so a layer cannot be painted with
     // one layer's colours and the other's arrows.
+    // Each layer's ramp in both readings -- smooth and banded -- and which way its direction
+    // field means. Read through drawFor() so the two paint paths cannot disagree about which
+    // one is showing.
     const LAYER_DRAW = {
-      swell: { colorFn: waveColor, toTravel: swellTravelBearing },
-      wind: { colorFn: windColor, toTravel: windTravelBearing },
+      swell: { colorFn: waveColor, bandedFn: waveColorBanded, toTravel: swellTravelBearing },
+      wind: { colorFn: windColor, bandedFn: windColorBanded, toTravel: windTravelBearing },
     };
+    function drawFor(name) {
+      const d = LAYER_DRAW[name] || LAYER_DRAW.swell;
+      return { toTravel: d.toTravel, colorFn: bandedRef.current ? d.bandedFn : d.colorFn };
+    }
 
     // The arrows over the colour: which way each patch of swell is travelling.
     //
@@ -707,7 +729,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // is 186 cells. Sampling at half resolution asks 64,800 questions of 186 numbers instead of
     // 259,200, and the answer still passes through a mipmapped linear filter on its way to a
     // sphere, so the difference on screen is far smaller than the difference in cost.
-    function paintWaveCanvas(ctx, heights, step, coarsen = 1, colorFn = waveColor) {
+    function paintWaveCanvas(ctx, heights, step, coarsen, colorFn) {
       // One buffer for the life of the overlay. createImageData allocates a megabyte, and doing
       // that 28 times hands the collector a megabyte of garbage per animation.
       if (!waveImageData || waveImageData.width !== WAVE_TEX_W) {
@@ -738,7 +760,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       ctx.putImageData(waveImageData, 0, 0);
     }
 
-    function buildWaveTexture(heights, step, colorFn = waveColor) {
+    function buildWaveTexture(heights, step, colorFn) {
       const cv = document.createElement('canvas');
       cv.width = WAVE_TEX_W;
       cv.height = WAVE_TEX_H;
@@ -931,7 +953,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // Gaps are only filled when there is a mask to stop the fill at the shore. Without
           // one, "no reading" is the only thing marking out land at all, and filling it would
           // paint swell across every continent.
-          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw, GRID_LAT_STEP);
+          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw, GRID_LAT_STEP, drawFor('swell').colorFn);
           const material = new THREE.MeshBasicMaterial({
             // 0.62 was costing about a third of every ramp's separation. The overlay is
             // composited over the ocean sphere, so a translucent one is a blend toward that
@@ -1018,7 +1040,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // outcome available: the wind map, captioned as swell.
     function applyLiveLayer(name) {
       const set = liveLayers[name];
-      const draw = LAYER_DRAW[name];
+      const draw = LAYER_DRAW[name] && drawFor(name);
       if (!set || !draw || !waveCanvasCtx || !waveTexture) return false;
       paintWaveCanvas(waveCanvasCtx, set.values, GRID_LAT_STEP, 1, draw.colorFn);
       painted = { read: set.raw || set.values, dirs: set.dirs, step: GRID_LAT_STEP, layer: name, frame: null };
@@ -1086,7 +1108,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // live overlay's -- passing the wrong one does not throw, it paints one ocean's swell onto
     // another, which is why it travels with the data rather than being assumed here.
     function applyWaveFrame(frame, step, name = 'swell') {
-      const draw = LAYER_DRAW[name] || LAYER_DRAW.swell;
+      const draw = drawFor(name);
       if (!frame || !waveCanvasCtx || !waveTexture) return;
       const heights = waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights;
       paintWaveCanvas(waveCanvasCtx, heights, step, ANIM_COARSEN, draw.colorFn);
@@ -1929,6 +1951,30 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             })}
           </div>
         )}
+        {/* Bands or a blend. Offered rather than decided because the two are genuinely better at
+            different jobs -- bands for reading a value off the map, a blend for reading the
+            shape of a field -- and only the person looking knows which they are doing. */}
+        {wavesOn && waveMeta && waveMeta.ok && (
+          <div role="group" aria-label="Colour reading" className="flex" style={{ gap: 8, marginBottom: 10 }}>
+            {[[true, 'Bands'], [false, 'Blend']].map(([val, label]) => {
+              const on = banded === val;
+              return (
+                <button
+                  key={label} className="tl-btn" aria-pressed={on}
+                  onClick={() => setBanded(val)}
+                  style={{
+                    flex: 1, minHeight: 38, borderRadius: 8, fontSize: 13, fontWeight: 600,
+                    background: on ? COLORS.navyCard : 'none',
+                    border: '1px solid ' + (on ? COLORS.tealBright : COLORS.navyBorder),
+                    color: on ? COLORS.tealBright : COLORS.foamDim,
+                  }}
+                >
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        )}
         {/* The animated week. Only offered once the live overlay is actually drawn: it repaints
             that overlay's own texture, so there is nothing for it to animate until then. */}
         {wavesOn && waveMeta && waveMeta.ok && (layer === 'swell' || (windMeta && windMeta.ok)) && (
@@ -2004,7 +2050,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
               <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>Loading wind map…</div>
             ) : windMeta && windMeta.ok ? (
               <>
-                <div style={{ height: 8, borderRadius: 4, background: windScaleGradient() }} />
+                <div style={{ height: 8, borderRadius: 4, background: banded ? windScaleBandGradient() : windScaleGradient() }} />
                 <ScaleTicks ticks={windScaleTicks(units)} />
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
                   {windLegendCaption(
@@ -2065,7 +2111,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
               <div style={{ fontSize: 10, color: COLORS.foamDim, textAlign: 'center' }}>Loading swell map…</div>
             ) : (
               <>
-                <div style={{ height: 8, borderRadius: 4, background: waveScaleGradient() }} />
+                <div style={{ height: 8, borderRadius: 4, background: banded ? waveScaleBandGradient() : waveScaleGradient() }} />
                 <ScaleTicks ticks={waveScaleTicks(units)} />
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
                   {waveLegendCaption(
