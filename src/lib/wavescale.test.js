@@ -62,8 +62,8 @@ describe('waveColor', () => {
 
 describe('legend', () => {
   it('labels round numbers in whichever unit is on screen', () => {
-    expect(waveScaleTicks('metric').map((t) => t.label)).toEqual(['0', '1', '2', '3', '4', '6', '9']);
-    expect(waveScaleTicks('imperial').map((t) => t.label)).toEqual(['0', '3', '6', '10', '15', '20', '30']);
+    expect(waveScaleTicks('metric').map((t) => t.label)).toEqual(['0', '0.5', '1', '2', '3', '4', '6', '9']);
+    expect(waveScaleTicks('imperial').map((t) => t.label)).toEqual(['0', '1', '2', '3', '5', '10', '20', '30']);
     expect(waveScaleUnitLabel('imperial')).toBe('ft');
     expect(waveScaleUnitLabel('metric')).toBe('m');
   });
@@ -71,6 +71,8 @@ describe('legend', () => {
   it('converts imperial ticks to the right position on the ramp', () => {
     const ten = waveScaleTicks('imperial').find((t) => t.label === '10');
     expect(ten.metres).toBeCloseTo(3.048, 2);
+    // And it must land where that height is actually painted, not at ten-twelfths of the bar.
+    expect(ten.pos).toBeCloseTo(0.605, 2);
   });
 
   it('keeps every tick inside the ramp it labels', () => {
@@ -265,17 +267,76 @@ describe('the ramp reads as magnitude, not just as hue', () => {
     }
   });
 
-  // Past 4.5m lightness turns over, and it has to: sRGB has no saturated orange or red above
-  // about 0.85, so a ramp that kept climbing would go pale exactly where it should read as
-  // dangerous. Hue takes the job over instead, and the separation stays large -- which is the
-  // property that actually matters, so that is what is asserted rather than the mechanism.
-  it('stays far apart above the surfable range even though lightness turns over', () => {
-    const dist = (a, b) => {
-      const A = waveColor(a), B = waveColor(b);
-      return Math.hypot(A[0] - B[0], A[1] - B[1], A[2] - B[2]);
-    };
-    for (const [a, b] of [[4.5, 6], [6, 8], [8, 12]]) {
-      expect(dist(a, b), a + 'm -> ' + b + 'm').toBeGreaterThan(60);
+  // Lightness used to turn over above 4.5m -- yellow lighter than orange lighter than red, 35
+  // consecutive reversals -- and the old version of this test asserted that hue took the job
+  // over and the separation held. It did hold, but ordering carried by hue alone is the weakest
+  // arrangement available: hue is what translucent compositing, ambient light and
+  // colour-blindness each attack first. The ramp now climbs in lightness from end to end, so
+  // the guarantee can be the strong one instead of the consolation.
+  it('climbs in lightness the whole way, with no reversal anywhere', () => {
+    let prev = null;
+    for (let m = 0; m <= WAVE_SCALE_MAX; m += 0.1) {
+      const L = lightness(waveColor(m));
+      if (prev !== null) {
+        // OKLCH lightness runs 0-1, so this slack is 8-bit rounding noise. The reversals this
+        // replaces ran to about -0.03 a step and -0.31 in total.
+        expect(L, 'lightness fell at ' + m.toFixed(1) + 'm').toBeGreaterThan(prev - 0.002);
+      }
+      prev = L;
     }
+  });
+
+  it('still separates the big sea states, now by lightness rather than only by hue', () => {
+    for (const [a, b] of [[4.5, 6], [6, 8], [8, 12]]) {
+      expect(onGlobeDistance(waveColor(a), waveColor(b)), a + 'm -> ' + b + 'm')
+        .toBeGreaterThan(8);
+    }
+  });
+});
+
+// The objective the ramp was rebuilt against, asserted as numbers so it cannot quietly drift
+// back. "Uniformity" is the largest step across the common band divided by the smallest: the
+// professional oceanographic palettes sit near 2.0, and the thing that makes a ramp readable is
+// the same range spread evenly, not more range. The ramp this replaced measured 4.26, with its
+// worst step at 5.5 -- below the 5-7 that counts as just-noticeable for a patch the size of a
+// grid cell, which is why most of the ocean looked like one colour.
+describe('the ramp spends its contrast where the ocean actually is', () => {
+  const OCEAN = [23, 90, 130];
+  const lin = (u) => { const v = u / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+  const blend = (c) => c.map((v, i) => Math.round(0.85 * v + 0.15 * OCEAN[i]));
+  function lab(c) {
+    const [R, G, B] = blend(c).map(lin);
+    const g = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
+    const X = g((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047);
+    const Y = g(R * 0.2126 + G * 0.7152 + B * 0.0722);
+    const Z = g((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
+    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
+  }
+  const dE = (a, b) => { const p = lab(a), q = lab(b); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
+
+  // 62.6% of the world's sea states are under 2.5m, so this is the band that decides whether
+  // the map is worth looking at.
+  function commonBandSteps() {
+    const ds = [];
+    for (let m = 0.25; m + 0.25 <= 3 + 1e-9; m += 0.25) ds.push(dE(waveColor(m), waveColor(m + 0.25)));
+    return ds.sort((a, b) => a - b);
+  }
+
+  it('keeps every quarter-metre step in the common band above the small-patch threshold', () => {
+    expect(commonBandSteps()[0]).toBeGreaterThan(7);
+  });
+
+  it('spreads the band evenly rather than spending it all in one jump', () => {
+    const ds = commonBandSteps();
+    expect(ds[ds.length - 1] / ds[0]).toBeLessThan(2.5);
+  });
+
+  // Found by measurement, and it disqualifies several otherwise-excellent published ramps
+  // (viridis and haline both pass straight through this blue): if any colour on the ramp
+  // matches the sphere it is drawn on, the overlay develops a band where it simply vanishes.
+  it('never collides with the globe underneath it', () => {
+    let closest = Infinity;
+    for (let m = 0; m <= WAVE_SCALE_MAX; m += 0.05) closest = Math.min(closest, dE(waveColor(m), OCEAN));
+    expect(closest).toBeGreaterThan(8);
   });
 });

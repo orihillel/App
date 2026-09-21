@@ -69,3 +69,24 @@ export function shortestAngleTo(current, target) {
   if (delta < -Math.PI) delta += TAU;
   return current + delta;
 }
+
+// The inverse of latLonToVector3: where on Earth a point in the globe's own model space is.
+//
+// Needed to answer "what is the wave height here?" from a tap. The raycaster reports a hit in
+// world space, so the caller has to undo the globe's rotation first -- this function knows
+// nothing about how the globe is turned, only about the projection, which is the half that is
+// easy to get subtly wrong. Derived from latLonToVector3 rather than guessed at, and
+// geo3d.test.js round-trips it against that function rather than asserting hand-worked numbers.
+export function vector3ToLatLon(v) {
+  if (!v || ![v.x, v.y, v.z].every(Number.isFinite)) return null;
+  const r = Math.hypot(v.x, v.y, v.z);
+  if (!(r > 0)) return null;
+  // y = r*cos(phi), and clamping guards acos against a length that rounds a hair past r.
+  const phi = Math.acos(Math.max(-1, Math.min(1, v.y / r)));
+  const lat = 90 - (phi * 180) / Math.PI;
+  // x = -r*sin(phi)*cos(theta), z = r*sin(phi)*sin(theta), so theta = atan2(z, -x).
+  const theta = Math.atan2(v.z, -v.x);
+  let lon = (theta * 180) / Math.PI - 180;
+  lon = ((((lon + 180) % 360) + 360) % 360) - 180;
+  return { lat, lon };
+}

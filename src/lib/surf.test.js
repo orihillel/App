@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { breakingHeightFt, setWaveFt, surfRange, REFRACTION, SET_FACTOR } from './surf.js';
+import { formatWaveRange } from './format.js';
 
 const M = 3.28084;
 const ratio = (metres, period) => breakingHeightFt(metres * M, period) / (metres * M);
@@ -62,8 +63,8 @@ describe('setWaveFt', () => {
 
 describe('surfRange', () => {
   it('runs from the ordinary wave to the set, not a fixed band either side', () => {
-    expect(surfRange(4)).toBe('4-5');
-    expect(surfRange(8)).toBe('8-10');
+    expect(surfRange(4)).toBe('4-5.08');
+    expect(surfRange(8)).toBe('8-10.16');
   });
 
   it('widens as the swell grows, which a plus-or-minus-one band never did', () => {
@@ -75,11 +76,61 @@ describe('surfRange', () => {
     for (const ft of [0.4, 1, 1.4, 2, 3.2, 5.5, 12, 30]) {
       const [a, b] = surfRange(ft).split('-').map(Number);
       expect(b).toBeGreaterThan(a);
-      expect(a).toBeGreaterThanOrEqual(1);
+      expect(a).toBeGreaterThan(0);
     }
   });
 
   it('answers for nothing at all rather than printing NaN', () => {
-    for (const bad of [0, -1, null, undefined, NaN]) expect(surfRange(bad)).toBe('0-1');
+    for (const bad of [0, -1, null, undefined, NaN]) expect(surfRange(bad)).toBe('0-0');
+  });
+});
+
+// The bug this guards was reported from a beach in Israel: the sea was ankle-to-shin, maybe
+// 0.2-0.3m, and the app said a third of a metre and up. It was not a model error. surfRange
+// rounded both ends to whole feet and forced them a foot apart, so every sea below about half
+// a metre of breaking height collapsed onto one string, and a metric reader -- which is most
+// of the world, and all of the Mediterranean -- got "0.3-0.6" for all of it.
+describe('small surf survives the trip to the screen', () => {
+  const M = 3.28084;
+  const metric = (metres, period) =>
+    formatWaveRange(surfRange(breakingHeightFt(metres * M, period)), 'metric');
+
+  it('does not floor an ankle-high sea at a third of a metre', () => {
+    // 0.2m at 5s is a calm Eastern Mediterranean morning. The old code said '0.3-0.6'.
+    const shown = metric(0.2, 5).split('-').map(Number);
+    expect(Math.max(...shown)).toBeLessThanOrEqual(0.4);
+  });
+
+  it('has more than three values to say between flat and waist high', () => {
+    // Rounding to whole feet first meant the metric card could only ever print multiples of
+    // 0.3048m: below a metre that is 0.3, 0.6, 0.9 and nothing else -- three strings for the
+    // entire range most people actually surf in. Counting distinct outputs is the direct
+    // measure of that, and it does not depend on where the display rounding happens to land.
+    const seen = new Set();
+    for (let hs = 0.05; hs <= 0.9; hs += 0.025) {
+      for (const v of metric(hs, 5).split('-')) if (Number(v) <= 1) seen.add(v);
+    }
+    expect(seen.size).toBeGreaterThan(6);
+  });
+
+  it('keeps flat flat instead of inventing a foot of surf', () => {
+    const [lo, hi] = surfRange(breakingHeightFt(0.03 * M, 4)).split('-').map(Number);
+    expect(lo).toBeLessThan(0.5);
+    expect(hi).toBeLessThan(0.5);
+  });
+
+  it('still reads as a surf report in feet, where whole feet are the convention', () => {
+    const imperial = (ft) => formatWaveRange(surfRange(ft), 'imperial');
+    expect(imperial(3.2)).toBe('3-4');
+    expect(imperial(8)).toBe('8-10');
+  });
+
+  it('is monotone: a bigger sea never displays smaller', () => {
+    let prev = -Infinity;
+    for (let hs = 0.05; hs <= 4; hs += 0.05) {
+      const hi = Math.max(...metric(hs, 8).split('-').map(Number));
+      expect(hi).toBeGreaterThanOrEqual(prev);
+      prev = hi;
+    }
   });
 });

@@ -2,8 +2,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { X } from 'lucide-react';
 import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
-import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleTo } from '../lib/geo3d.js';
-import { scoreToColor } from '../lib/rating.js';
+import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleTo, vector3ToLatLon } from '../lib/geo3d.js';
+import { scoreToColor, degToCompass } from '../lib/rating.js';
+import { formatReadingValue, formatReadingPlace, readingDescription } from '../lib/oceanreading.js';
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import {
   base64ToBytes, decodeHeights, decodeSpeeds, decodeDirections, fillGridGaps, makeGridSampler,
@@ -55,6 +56,71 @@ const ANIM_COARSEN = 3;
 // `{ spots, order, forecast, clockHour }` — read directly inside the animation loop so every
 // rendered frame reflects whatever is currently in `forecast`, with no separate sync effect
 // to fall out of date.
+// What the overlay reads at one point, in words. The formatting lives in lib/oceanreading.js
+// so the branch that matters -- a cell with no reading -- is covered by tests rather than by a
+// screenshot.
+function OceanReading({ reading, units, onClear }) {
+  const value = formatReadingValue(reading.value, reading.layer, units);
+  const place = formatReadingPlace(reading.lat, reading.lon);
+  return (
+    <div
+      className="flex items-center"
+      style={{
+        gap: 10, marginBottom: 10, padding: '8px 10px', borderRadius: 8,
+        background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder,
+      }}
+    >
+      <span style={{ fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 19, color: COLORS.foam }}>
+        {value || '—'}
+      </span>
+      <span style={{ fontSize: 11.5, color: COLORS.foamDim, flex: 1, lineHeight: 1.35 }}>
+        {readingDescription(reading, degToCompass)}
+        {place ? <><br /><span style={{ opacity: 0.75 }}>{place}</span></> : null}
+      </span>
+      <button
+        className="tl-btn"
+        onClick={onClear}
+        aria-label="Clear reading"
+        style={{ background: 'none', border: 'none', padding: 4, minWidth: 30, minHeight: 30, display: 'flex', alignItems: 'center', justifyContent: 'center' }}
+      >
+        <X size={14} color={COLORS.foamDim} />
+      </button>
+    </div>
+  );
+}
+
+// The numbers under a legend bar.
+//
+// Positioned at each tick's own place along the ramp rather than spread evenly, because
+// neither ramp is evenly spaced in its variable -- that uneven spacing is what gives the
+// common band its contrast. Laying the labels out with space-between, which is what this used
+// to do, put every one of them under a colour that was not the colour it named: on the swell
+// bar "9" sat at the far right when 9m is 92.5% of the way along, and "1" sat a seventh of the
+// way across when 1m is a quarter. The bar was right and the numbers on it were not.
+//
+// Ends are nudged inward so the first and last labels cannot hang off the edge of the bar.
+function ScaleTicks({ ticks }) {
+  return (
+    <div style={{ position: 'relative', height: 12, marginTop: 4 }}>
+      {ticks.map((t) => (
+        <span
+          key={t.label}
+          style={{
+            position: 'absolute',
+            left: (t.pos * 100).toFixed(1) + '%',
+            transform: 'translateX(' + (t.pos <= 0.01 ? '0' : t.pos >= 0.99 ? '-100%' : '-50%') + ')',
+            fontSize: 9,
+            color: COLORS.foamDim,
+            whiteSpace: 'nowrap',
+          }}
+        >
+          {t.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, title = 'All spots', hint, units = 'metric' }) {
   const containerRef = useRef(null);
   // The wave overlay is off by default. It is a second reading of the same globe -- where the
@@ -100,6 +166,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // it has to say so explicitly or the screen would not update until the next drag.
   const markDirtyRef = useRef(null);
   useEffect(() => { if (markDirtyRef.current) markDirtyRef.current(); }, [wavesOn]);
+  // Nothing painted, nothing to have read.
+  useEffect(() => { if (!wavesOn) setReading(null); }, [wavesOn]);
 
   // Turning the overlay off ends the animation and rewinds to now. Otherwise "Show live swell"
   // would bring back whatever hour was last on screen -- a map of Thursday, labelled live.
@@ -121,6 +189,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // and the control disappears rather than sitting there doing nothing.
   const selectLayer = useCallback((next) => {
     setLayer(next);
+    // A reading is of one layer at one moment. Carrying it across a switch would leave a wave
+    // height sitting under the wind legend.
+    setReading(null);
     // The week belongs to the layer that fetched it. Switching drops it and rewinds to now, so
     // the animation cannot carry on painting one layer's frames under the other's legend --
     // the same mistake the arrows used to make.
@@ -206,6 +277,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const frame = t > 0 && i < last ? lerpFrames(frames.list[i], frames.list[i + 1], t) : frames.list[i];
     applyFrameRef.current(frame, frames.latStep, frames.layer || 'swell');
   }, [frames, pos, framesState]);
+  // What the last tap on the ocean read. Held as state rather than drawn into the scene so it
+  // is selectable text at a real font size -- the entire point of it is to be legible when the
+  // colours are not.
+  const [reading, setReading] = useState(null);
   const [globeError, setGlobeError] = useState(false);
   // How many spots currently have a live reading, so the legend can say what its colour scale
   // actually covers instead of implying it covers everything.
@@ -589,6 +664,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // refetch. Each is `{ values, dirs, toTravel, colorFn }` -- everything that differs between
     // them, in one place, so nothing downstream has to branch on which layer is showing.
     let liveLayers = {};
+    // Exactly what is on the sphere right now: the live grid, or a frame of the animated week.
+    // Tap-to-read samples this rather than the live grid, because during the animation those
+    // are different fields and reading the wrong one would answer a question nobody asked --
+    // "what is it there now" when the screen is showing Thursday.
+    let painted = null;
+    // makeGridSampler precomputes row offsets, and the live grid and the week use different
+    // steps, so the two samplers are built once each rather than per tap.
+    const samplers = new Map();
+    function samplerFor(step) {
+      if (!samplers.has(step)) samplers.set(step, makeGridSampler(step));
+      return samplers.get(step);
+    }
     let windRequested = false;
     // How each layer is drawn: its ramp, and which way its direction field means. One table,
     // read by both the live overlay and the animated week, so a layer cannot be painted with
@@ -870,13 +957,23 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // heights and nothing else, and the colours are worth drawing on their own.
           const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
           // Kept so switching back from the wind is a repaint rather than another fetch.
-          liveLayers.swell = { values: waveMaskTexture ? fillGridGaps(raw) : raw, dirs: directions };
+          // `values` is what gets painted, with gaps filled so the overlay has no holes behind
+          // the coastline mask. `raw` is what gets *read*: the gap fill invents a plausible
+          // height for a land cell from its sea neighbours, which is exactly right for a
+          // picture and exactly wrong for a number. Tapping Nevada must say "no reading", not
+          // borrow the Pacific's swell.
+          liveLayers.swell = { values: waveMaskTexture ? fillGridGaps(raw) : raw, raw, dirs: directions };
+          // The first swell draw does not go through applyLiveLayer -- it builds the texture and
+          // the mesh from scratch -- so `painted` has to be set here too. Without this,
+          // tap-to-read stayed silent until the layer had been switched at least once, which is
+          // the one path nobody takes.
+          painted = { read: raw, dirs: directions, step: GRID_LAT_STEP, layer: 'swell', frame: null };
           arrowPoints = directions ? buildArrowField(directions, land, GRID_LAT_STEP) : [];
           if (arrowPoints.length) {
             arrowMesh = new THREE.InstancedMesh(
               arrowGeometry(),
               // Light, not dark. The colour ramp starts at a very dark navy — flat water is
-              // (26,35,68) — and a dark arrow is invisible on exactly the calm ocean that
+              // (0,28,73) — and a dark arrow is invisible on exactly the calm ocean that
               // covers most of the map. A pale arrow reads against everything up to the top of
               // the scale, where the ramp turns pale itself and 10m+ seas are vanishingly rare.
               new THREE.MeshBasicMaterial({
@@ -924,6 +1021,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const draw = LAYER_DRAW[name];
       if (!set || !draw || !waveCanvasCtx || !waveTexture) return false;
       paintWaveCanvas(waveCanvasCtx, set.values, GRID_LAT_STEP, 1, draw.colorFn);
+      painted = { read: set.raw || set.values, dirs: set.dirs, step: GRID_LAT_STEP, layer: name, frame: null };
       waveTexture.needsUpdate = true;
       if (set.dirs && arrowMesh) {
         // No count check. The two layers genuinely disagree about where an arrow can be drawn
@@ -966,6 +1064,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             // shore, exactly as the swell does -- without one, "no reading" is the only thing
             // marking out land and filling it paints the map over every continent.
             values: waveMaskTexture ? fillGridGaps(speeds) : speeds,
+            // Unfilled, for tap-to-read. See the swell layer above.
+            raw: speeds,
             dirs,
           };
           setWindMeta({
@@ -990,6 +1090,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (!frame || !waveCanvasCtx || !waveTexture) return;
       const heights = waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights;
       paintWaveCanvas(waveCanvasCtx, heights, step, ANIM_COARSEN, draw.colorFn);
+      painted = { read: frame.heights, dirs: frame.dirs, step, layer: name, frame: frame.t || null };
       // A mipmap chain is worth building for a picture that is drawn thousands of times and
       // uploaded once. An animation frame is the other way round, and rebuilding the chain on
       // every one of them is the single most expensive thing about a frame change -- measured
@@ -1295,7 +1396,46 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const distance = Math.hypot(dx, dy);
         if (distance < bestDistance) { bestDistance = distance; bestMarker = m; }
       }
-      if (bestMarker) chooseMarker(bestMarker);
+      if (bestMarker) { chooseMarker(bestMarker); return; }
+      readOceanAt(ndc);
+    }
+
+    // What the overlay says at the point under the finger.
+    //
+    // The reason this exists is that colour runs out long before the data does. A ramp gets
+    // eight or nine levels out of a small patch at best, and measured under 50,000 lux -- a
+    // phone held on a beach in sun -- the swell ramp keeps about a third of its contrast and
+    // the step from a 1m sea to a 1.5m one falls to around 4 dE, under the threshold at which
+    // anyone can see it. A number survives all of that, and survives colour-blindness and the
+    // shifting surround that makes matching a patch against a legend unreliable anyway.
+    //
+    // It reads `painted`, so during the animated week it answers for the frame on screen.
+    const readScratch = new THREE.Vector3();
+    function readOceanAt(ndcPoint) {
+      if (!wavesOnRef.current || !painted || !oceanMesh) { setReading(null); return; }
+      raycaster.setFromCamera(ndcPoint, camera);
+      const hit = raycaster.intersectObject(oceanMesh)[0];
+      if (!hit) { setReading(null); return; }
+      // The hit is in world space and the globe is turned; undoing that rotation is what makes
+      // the coordinates mean anything.
+      const here = vector3ToLatLon(globeGroup.worldToLocal(readScratch.copy(hit.point)));
+      if (!here) { setReading(null); return; }
+      const sampler = samplerFor(painted.step);
+      const value = sampler.height(painted.read, here.lat, here.lon);
+      // No reading is a real answer and the honest one: land, ice, or a cell the upstream model
+      // has nothing for. Inventing a zero here would paint every continent as flat calm.
+      if (value == null) {
+        setReading({ lat: here.lat, lon: here.lon, layer: painted.layer, value: null });
+        return;
+      }
+      setReading({
+        lat: here.lat,
+        lon: here.lon,
+        layer: painted.layer,
+        value,
+        fromDeg: painted.dirs ? sampler.direction(painted.dirs, here.lat, here.lon) : null,
+        frame: painted.frame,
+      });
     }
 
     // Tapping one spot opens it. Tapping a cluster cannot -- it stands for anything up to
@@ -1747,6 +1887,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         </div>
       )}
       <div className="mx-6" style={{ padding: '10px 0 4px' }}>
+        {/* Directly under the globe rather than beside the legend it relates to: a tap has to
+            produce something you can see without scrolling, or the feature may as well not
+            exist on a phone. */}
+        {wavesOn && reading && (
+          <OceanReading reading={reading} units={units} onClear={() => setReading(null)} />
+        )}
         <button
           className="tl-btn"
           onClick={() => setWavesOn((v) => !v)}
@@ -1859,11 +2005,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             ) : windMeta && windMeta.ok ? (
               <>
                 <div style={{ height: 8, borderRadius: 4, background: windScaleGradient() }} />
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                  {windScaleTicks(units).map((t) => (
-                    <span key={t.label} style={{ fontSize: 9, color: COLORS.foamDim }}>{t.label}</span>
-                  ))}
-                </div>
+                <ScaleTicks ticks={windScaleTicks(units)} />
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
                   {windLegendCaption(
                     framesState === 'ready' && frames && frames.layer === 'wind' && frameIdx > 0
@@ -1924,11 +2066,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             ) : (
               <>
                 <div style={{ height: 8, borderRadius: 4, background: waveScaleGradient() }} />
-                <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 4 }}>
-                  {waveScaleTicks(units).map((t) => (
-                    <span key={t.label} style={{ fontSize: 9, color: COLORS.foamDim }}>{t.label}</span>
-                  ))}
-                </div>
+                <ScaleTicks ticks={waveScaleTicks(units)} />
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
                   {waveLegendCaption(
                     framesState === 'ready' && frames && frameIdx > 0

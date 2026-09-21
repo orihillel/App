@@ -54,16 +54,30 @@ export function setWaveFt(significantFt) {
   return significantFt == null ? significantFt : significantFt * SET_FACTOR;
 }
 
-// The height range the card shows: significant to sets.
+// The height range the card shows: significant to sets, in feet, at the precision the model
+// actually has.
 //
-// This used to be the rounded height plus and minus a foot, which is a band of constant width
-// wherever it sits -- "1-3" for two-foot surf and "9-11" for ten-foot, when the real spread
-// between an average wave and a set grows with the swell. Anchoring it to the wave statistics
-// makes the low end the ordinary wave and the high end the set, which is what a surf report's
-// range has always meant.
+// Anchoring the range to the wave statistics -- ordinary wave at the low end, set at the high
+// end -- is what a surf report's range has always meant, and that part was right. Rounding it
+// here was not. Both ends were snapped to whole feet and then forced at least a foot apart,
+// which on anything small stopped being a range and became a floor: every sea from dead flat
+// up to about half a metre of breaking height came out as "1-2", and a metric reader saw
+// "0.3-0.6" for all of it. Feet are much too coarse a lattice to quantise on and then convert
+// away from -- a foot is 0.3m, so three display values spanned the entire knee-high-and-under
+// band, which is most of what the Mediterranean does outside a winter storm. The app was
+// reporting a third of a metre of surf on a flat day and could not express 0.2m at all.
+//
+// So no rounding happens here. It happens at the edge, where the unit is known: lib/format.js
+// rounds to whole feet for an imperial reader (the surf convention) and to 0.1m for a metric
+// one, and a range whose ends land on the same number prints as that number rather than as a
+// manufactured spread. Two decimal places of a foot is 3mm, comfortably finer than either.
+//
+// Everything that reads the range back as a number -- alert thresholds, the chart bars, the
+// buoy comparison -- gets the honest value now too, so an alert set at 2ft stops firing on a
+// sea the old lattice had rounded up to it.
+const round2 = (n) => Math.round(n * 100) / 100;
+
 export function surfRange(significantFt) {
-  if (!(significantFt > 0)) return '0-1';
-  const low = Math.max(1, Math.round(significantFt));
-  const high = Math.max(low + 1, Math.round(setWaveFt(significantFt)));
-  return low + '-' + high;
+  if (!(significantFt > 0)) return '0-0';
+  return round2(significantFt) + '-' + round2(setWaveFt(significantFt));
 }

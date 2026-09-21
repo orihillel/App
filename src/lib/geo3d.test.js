@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import * as THREE from 'three';
-import { markerScaleForDistance, markerScreenSizeRatio, latLonToVector3, rotationToFace, shortestAngleTo } from './geo3d.js';
+import { markerScaleForDistance, markerScreenSizeRatio, latLonToVector3, rotationToFace, shortestAngleTo, vector3ToLatLon } from './geo3d.js';
 
 // The globe's actual numbers, so these assertions track the real thing. `shell` is 1.0 --
 // markers are centred exactly on the surface so a dot sits at its true coordinates from every
@@ -113,5 +113,39 @@ describe('shortestAngleTo', () => {
       const a = (i - 20) * 0.7, b = (i * 1.3) - 12;
       expect(Math.abs(shortestAngleTo(a, b) - a)).toBeLessThanOrEqual(Math.PI + 1e-9);
     }
+  });
+});
+
+describe('vector3ToLatLon', () => {
+  it('undoes latLonToVector3 for points all over the sphere', () => {
+    for (const lat of [-80, -45, -10, 0, 10, 45, 80]) {
+      for (const lon of [-179, -120, -60, 0, 60, 120, 179]) {
+        const back = vector3ToLatLon(latLonToVector3(lat, lon, 3));
+        expect(back.lat, lat + ',' + lon).toBeCloseTo(lat, 6);
+        expect(back.lon, lat + ',' + lon).toBeCloseTo(lon, 6);
+      }
+    }
+  });
+
+  it('does not care how far from the centre the point is', () => {
+    for (const r of [0.5, 1, 6371]) {
+      const back = vector3ToLatLon(latLonToVector3(32.163, 34.797, r));
+      expect(back.lat).toBeCloseTo(32.163, 6);
+      expect(back.lon).toBeCloseTo(34.797, 6);
+    }
+  });
+
+  it('keeps longitude on the compass rather than running past it', () => {
+    for (const lon of [-180, 180, 0]) {
+      const back = vector3ToLatLon(latLonToVector3(0, lon, 1));
+      expect(back.lon).toBeGreaterThanOrEqual(-180);
+      expect(back.lon).toBeLessThan(180);
+    }
+  });
+
+  it('has nothing to say about a degenerate point', () => {
+    expect(vector3ToLatLon(null)).toBeNull();
+    expect(vector3ToLatLon({ x: 0, y: 0, z: 0 })).toBeNull();
+    expect(vector3ToLatLon({ x: NaN, y: 1, z: 0 })).toBeNull();
   });
 });
