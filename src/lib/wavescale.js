@@ -86,6 +86,55 @@ export function waveColor(metres) {
   return last[1].slice();
 }
 
+// The same ramp, in discrete bands rather than a continuous blend.
+//
+// Windy does this on its globe -- their own published type declarations carry a `qualitative`
+// flag documented as "globe: use discrete palette (not blending between colors)" -- and the
+// evidence agrees with them for the task this map is actually for. A smooth ramp is better for
+// reading the *shape* of a field; discrete bands are better for reading a *value* off it, and
+// on a grid sampled every 1,100km there is very little real shape to read. The band edge is
+// also a hard line of 11.6 dE or more, which is far easier to see than the same difference
+// spread gradually across a few hundred kilometres of ocean.
+//
+// The bands are the stops themselves, so there is nothing new to keep in step: ten bands, six
+// of them below 3m, already placed where a surfer's decisions are. That is also the count the
+// level budget wants -- eight to twelve bands is the range a colour ramp can separate
+// comfortably, and asking for more is what makes a map illegible.
+//
+// Each band paints the continuous ramp's colour at its *midpoint* rather than at its lower
+// edge. Measured, that is the better of the two: uniformity 2.61 against 3.07, and it keeps
+// the whole palette clear of the globe's own ocean blue by 10.5 dE rather than 9.9. It is also
+// the more honest reading -- a band's colour should stand for the middle of what it covers,
+// not its floor.
+export const WAVE_BAND_EDGES = STOPS.map(([m]) => m);
+
+export function waveColorBanded(metres) {
+  if (metres == null || !Number.isFinite(metres) || metres < 0) return null;
+  const last = STOPS.length - 1;
+  if (metres >= STOPS[last][0]) return waveColor(STOPS[last][0]);
+  for (let i = 1; i <= last; i++) {
+    // Half-open bands: a height exactly on an edge belongs to the band above it, so 0.4m reads
+    // as the start of the 0.4-0.8 band rather than the end of the one below.
+    if (metres >= STOPS[i][0]) continue;
+    return waveColor((STOPS[i - 1][0] + STOPS[i][0]) / 2);
+  }
+  return waveColor(STOPS[last][0]);
+}
+
+// The legend bar for the banded ramp: the same even spacing as the smooth one, but with hard
+// edges, so the bar shows exactly the set of colours the globe can actually paint.
+export function waveScaleBandGradient() {
+  const last = STOPS.length - 1;
+  const parts = [];
+  for (let i = 0; i < last; i++) {
+    const c = waveColor((STOPS[i][0] + STOPS[i + 1][0]) / 2);
+    const rgb = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
+    parts.push(rgb + ' ' + ((i / last) * 100).toFixed(1) + '%');
+    parts.push(rgb + ' ' + (((i + 1) / last) * 100).toFixed(1) + '%');
+  }
+  return 'linear-gradient(90deg, ' + parts.join(', ') + ')';
+}
+
 // Where a value sits along the colour sequence, 0 to 1.
 //
 // Deliberately not the same as where it sits between 0 and WAVE_SCALE_MAX. The stops are not
