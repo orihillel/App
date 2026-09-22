@@ -229,6 +229,12 @@ async function handleWaveGrid(request, env) {
       // the grid does not add it to the wire. The globe saw a grid with no directions and drew
       // no arrows, which looked like every other reason for no arrows.
       dirs: grid.dirs ?? null,
+      // And then it happened again, to latStep. The globe reads this to know how coarse the
+      // bytes are and falls back to the shared constant without it, which was harmless only
+      // while every layer was built at that constant. It is not: the builder picks a step per
+      // source now, so a payload that does not say which one it used is a grid of numbers
+      // painted on the wrong geography.
+      latStep: grid.latStep ?? null,
       stale: !!grid.stale, coverage: grid.coverage ?? null, build,
     }, env);
   } catch (e) {
@@ -251,6 +257,10 @@ async function handleWindGrid(request, env) {
     return json({
       generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data,
       dirs: grid.dirs ?? null,
+      // See /wavegrid. This one matters more, not less: the wind grid is the layer whose step
+      // actually differs between its two builders, so dropping it here meant a 406-cell
+      // fallback payload being read as a 10,008-cell grid.
+      latStep: grid.latStep ?? null,
       stale: !!grid.stale, coverage: grid.coverage ?? null, build,
     }, env);
   } catch (e) {
@@ -437,6 +447,11 @@ export default {
     // pay for the build. It is only a warm-up: /wavegrid builds for itself if this never runs,
     // which is the difference from the version that depended on this firing.
     ctx.waitUntil(loadGrid(env).catch(() => {}));
+    // The wind grid on the same footing, which it was not before. It was built strictly on
+    // demand while a pass cost 406 API units; it is three requests to a public bucket now, so
+    // there is no reason to make the first person to open the overlay wait for it. REFRESH_MS
+    // is an hour and the cron is every ten minutes, so five ticks in six do nothing at all.
+    ctx.waitUntil(loadWindGrid(env).catch(() => {}));
     // One pass of the animated week. It cannot be built on demand: 28 frames is 5,208 units
     // against a per-minute allowance of about 600, so a single build gets three frames in and
     // is refused the rest. Each tick takes as many frames as a minute affords and appends them,

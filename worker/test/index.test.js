@@ -103,6 +103,18 @@ describe('HTTP routes', () => {
       expect(globalThis.fetch).not.toHaveBeenCalled(); // answered from KV, as a fresh grid should be
     });
 
+    it('says how coarse the grid is, because the app cannot guess any more', async () => {
+      // The globe falls back to a shared constant when this is missing, and that was harmless
+      // only while every layer was built at that constant. It is not: a payload that does not
+      // say its own step is a grid of numbers painted on the wrong geography.
+      const env = makeEnv();
+      const grid = stored({ latStep: 2, cells: gridCellCount(2), data: bytesToBase64(encodeHeights(new Array(gridCellCount(2)).fill(2))), dirs: bytesToBase64(encodeDirections(new Array(gridCellCount(2)).fill(225))) });
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(grid));
+      const body = await (await worker.fetch(new Request('https://worker.example/wavegrid'), env)).json();
+      expect(body.latStep).toBe(2);
+      expect(body.cells).toBe(gridCellCount(2));
+    });
+
     it('sends dirs as null rather than omitting it when a grid predates them', async () => {
       // Such a grid is rebuilt rather than served fresh, but when the rebuild cannot run it is
       // still the best answer there is — heights with no arrows beats a blank globe. The app
@@ -164,6 +176,24 @@ describe('HTTP routes', () => {
       expect(body.stale).toBe(false);
       expect(body.coverage).toBe(1);
       expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('says how coarse the grid is, whichever builder produced it', async () => {
+      // This is the layer whose step actually differs between its two builders -- 2 degrees
+      // from the published file, 10 from the point queries underneath it -- so a wire that
+      // drops it is a 406-cell payload read as a 10,008-cell grid.
+      const env = makeEnv();
+      for (const step of [WIND_LAT_STEP, 2]) {
+        await env.SUBSCRIPTIONS.put(WIND_KEY, JSON.stringify(storedWind({
+          latStep: step,
+          cells: gridCellCount(step),
+          data: bytesToBase64(encodeSpeeds(new Array(gridCellCount(step)).fill(24))),
+          dirs: bytesToBase64(encodeDirections(new Array(gridCellCount(step)).fill(270))),
+        })));
+        const body = await (await worker.fetch(new Request('https://worker.example/windgrid'), env)).json();
+        expect(body.latStep).toBe(step);
+        expect(body.cells).toBe(gridCellCount(step));
+      }
     });
 
     it('does not answer the wind route from the wave grid', async () => {

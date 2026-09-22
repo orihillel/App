@@ -20,7 +20,7 @@
 import {
   gridCells, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
-import { fetchFrameFromOm, WAVE_MODEL } from './omGrid.js';
+import { fetchFrameFromOm, WAVE_MODEL, newRunProbe } from './omGrid.js';
 
 export const FRAMES_KEY = 'waveframes:v2';
 export const FRAME_COUNT = 28;        // 7 days
@@ -174,6 +174,25 @@ export function frameTimes(now = Date.now(), count = FRAME_COUNT) {
   return out;
 }
 
+// How long base64 is for a given number of bytes. Exact, not an estimate: the encoding is four
+// characters per three bytes, padded up.
+export function base64LengthFor(byteCount) {
+  return 4 * Math.ceil(byteCount / 3);
+}
+
+// Is this stored frame the right shape for a grid of `cellCount` cells?
+//
+// One byte per cell in both payloads -- see ../../src/lib/wavegrid.js -- so the encoded length
+// pins the resolution the frame was built at without decoding it. `dirs` is optional: a frame
+// that predates directions is still a usable frame, but one that carries them at the wrong size
+// is not.
+export function frameFits(frame, cellCount) {
+  if (!frame || typeof frame.data !== 'string') return false;
+  const want = base64LengthFor(cellCount);
+  if (frame.data.length !== want) return false;
+  return frame.dirs == null || (typeof frame.dirs === 'string' && frame.dirs.length === want);
+}
+
 // One frame: every cell's height and direction at a single hour.
 //
 // Never throws -- it reports. `overrun` is the one answer the caller must not continue past.
@@ -235,9 +254,35 @@ export async function fetchFrame(cells, isoHour, { fetchImpl = fetch, source = W
 }
 
 // How many frames one pass can afford, from the per-minute allowance and the grid's size.
+//
+// This is the arithmetic for a point-queried source, where a frame costs one API unit per cell.
+// A file-backed source does not work that way at all -- see framesPerOmPass.
 export function framesPerPass(cellCount, unitsPerPass = UNITS_PER_PASS) {
   return Math.max(1, Math.floor(unitsPerPass / Math.max(1, cellCount)));
 }
+
+// The same question for a source that downloads a file per frame, where the currency is HTTP
+// requests rather than API units.
+//
+// Feeding the unit arithmetic above a 1,612-cell grid gives one frame a pass, and at ten-minute
+// ticks that is a week taking four hours and forty minutes to assemble -- an answer to a
+// question this source is not asked. A frame here costs one request when the run is known and
+// two or three while it is being found; measured in the real Worker, twelve frames cost
+// thirty-six requests before the run probe above and about a dozen after it.
+//
+// Measured in the real Worker against the live bucket, with the probe in place:
+//
+//     6 frames   8 requests   1.5s
+//    12 frames  14 requests   2.4s
+//    28 frames  30 requests   5.5s
+//
+// So the whole week would fit in one pass. It is not set there, because the fifty belongs to
+// the *tick*, not to this pass: the live grid, the wind grid, the wind week and every alert
+// check spend from the same allowance, and the tick right after a model run is the one where
+// they all spend at once. Twelve leaves about thirty-five of the fifty for everything else and
+// still assembles a week in three ticks -- half an hour, against the four hours and forty
+// minutes the unit arithmetic was giving it.
+export const OM_FRAMES_PER_PASS = 12;
 
 // One pass of the accumulating build: take the partial week from KV, fetch the next few frames,
 // put it back. Returns the partial (or the finished week) and what happened.
@@ -250,7 +295,10 @@ export async function advanceFrames(env, opts = {}) {
   const source = opts.source || WAVE_SOURCE;
   const cells = gridCells(source.latStep);
   const times = frameTimes(now, opts.frameCount || FRAME_COUNT);
-  const perPass = opts.framesPerPass || framesPerPass(cells.length, opts.unitsPerPass);
+  const perPass = opts.framesPerPass
+    || (source.omModel ? OM_FRAMES_PER_PASS : framesPerPass(cells.length, opts.unitsPerPass));
+  // One per pass, so a run found missing for one frame is not re-asked for every later one.
+  const probe = newRunProbe();
 
   let partial = null;
   let done = null;
@@ -265,7 +313,25 @@ export async function advanceFrames(env, opts = {}) {
   // moved on. Its later frames are still wanted -- they are the same instants -- so it is kept
   // and re-indexed against the new list rather than thrown away, which is what makes the build
   // converge instead of restarting every six hours.
+  //
+  // A frame built at a different resolution is a different matter, and this cost a working
+  // animation to learn. When the swell week moved from 15 degrees to 5, every stored frame was
+  // still keyed by the right timestamp, so nothing looked missing and nothing was refetched --
+  // and the week was rewritten with `cells` taken from the *new* step while the bytes were
+  // still the old one's. That record then passed framesAreUsable, because that check compares
+  // the recorded count against the current step and both said the same number, and the globe
+  // read 186 cells of data as a 1,612-cell grid. It could not heal either: every later pass saw
+  // a complete, fresh week and fetched nothing.
+  //
+  // So a frame is only reusable if its payload is the size this step needs. Measured from the
+  // bytes rather than trusted from a field, because the field is exactly what was wrong.
   const have = new Map();
+  const keepFitting = (entry) => {
+    if (!entry || !Array.isArray(entry.frames)) return;
+    for (const f of entry.frames) {
+      if (f && typeof f.t === 'string' && frameFits(f, cells.length)) have.set(f.t, f);
+    }
+  };
   // The finished week counts as frames already in hand, but only while it is fresh. Inside a
   // day this makes the week roll forward for the price of the one or two new hours the moving
   // boundary exposes, rather than re-fetching six days everyone already has. Past a day it is
@@ -273,11 +339,9 @@ export async function advanceFrames(env, opts = {}) {
   // three-day-old forecast for that hour, and rolling it forever would quietly preserve it.
   if (done && Array.isArray(done.frames) && Number.isFinite(done.generatedAt)
       && now - done.generatedAt < (opts.refreshMs ?? FRAMES_REFRESH_MS)) {
-    for (const f of done.frames) if (f && typeof f.t === 'string') have.set(f.t, f);
+    keepFitting(done);
   }
-  if (partial && Array.isArray(partial.frames)) {
-    for (const f of partial.frames) if (f && typeof f.t === 'string') have.set(f.t, f);
-  }
+  keepFitting(partial);
 
   const missing = times.filter((t) => !have.has(t));
   let fetched = 0;
@@ -293,7 +357,11 @@ export async function advanceFrames(env, opts = {}) {
     if (source.omModel) {
       let frame = null;
       try {
-        frame = await fetchFrameFromOm(t, source.latStep, { ...opts, model: source.omModel, now });
+        // Injectable so the pacing and the shared probe can be tested without a WebAssembly
+        // reader and a megabyte of real file bytes. The default is the only thing production
+        // ever uses.
+        const fetchOm = opts.fetchFrameOm || fetchFrameFromOm;
+        frame = await fetchOm(t, source.latStep, { ...opts, model: source.omModel, now, probe });
       } catch (err) {
         lastError = String(err && err.message || err).slice(0, 200);
       }
@@ -370,11 +438,16 @@ export async function advanceFrames(env, opts = {}) {
 }
 
 export function framesAreUsable(entry, source = WAVE_SOURCE) {
-  return !!entry
-    && Array.isArray(entry.frames) && entry.frames.length > 1
-    && entry.cells === gridCells(source.latStep).length
-    && typeof entry.coverage === 'number' && entry.coverage >= FRAMES_MIN_COVERAGE
-    && !entry.aborted;
+  if (!entry || !Array.isArray(entry.frames) || entry.frames.length <= 1) return false;
+  const want = gridCells(source.latStep).length;
+  if (entry.cells !== want) return false;
+  if (typeof entry.coverage !== 'number' || entry.coverage < FRAMES_MIN_COVERAGE) return false;
+  if (entry.aborted) return false;
+  // `cells` is a recorded number and the bytes are the truth. They disagreed exactly once and
+  // it cost the animation: a week whose frames were built at 15 degrees, relabelled with the
+  // new step's count, passed every check here and left the globe scrubbing through 28 frames
+  // that all drew the same thing. Checking the payload costs a length comparison per frame.
+  return entry.frames.every((f) => frameFits(f, want));
 }
 
 // The cached week, and the progress of the one being assembled.
