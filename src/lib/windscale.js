@@ -86,36 +86,6 @@ export function windColor(kph) {
   return last[1].slice();
 }
 
-// The same ramp in discrete bands. Sibling of waveColorBanded -- see wavescale.js for why the
-// globe bands at all, and why each band takes its midpoint colour rather than its lower edge.
-//
-// Nine bands here, five of them between 5 and 30kph. Worst adjacent pair 11.8 dE, against a
-// small-patch threshold of five to seven, so every band edge is a line rather than a hint.
-export const WIND_BAND_EDGES = STOPS.map(([k]) => k);
-
-export function windColorBanded(kph) {
-  if (kph == null || !Number.isFinite(kph) || kph < 0) return null;
-  const last = STOPS.length - 1;
-  if (kph >= STOPS[last][0]) return windColor(STOPS[last][0]);
-  for (let i = 1; i <= last; i++) {
-    if (kph >= STOPS[i][0]) continue;
-    return windColor((STOPS[i - 1][0] + STOPS[i][0]) / 2);
-  }
-  return windColor(STOPS[last][0]);
-}
-
-export function windScaleBandGradient() {
-  const last = STOPS.length - 1;
-  const parts = [];
-  for (let i = 0; i < last; i++) {
-    const c = windColor((STOPS[i][0] + STOPS[i + 1][0]) / 2);
-    const rgb = 'rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')';
-    parts.push(rgb + ' ' + ((i / last) * 100).toFixed(1) + '%');
-    parts.push(rgb + ' ' + (((i + 1) / last) * 100).toFixed(1) + '%');
-  }
-  return 'linear-gradient(90deg, ' + parts.join(', ') + ')';
-}
-
 // Where a speed sits along the colour sequence, 0 to 1. The stops are front-loaded, so this is
 // not the same as the speed's fraction of the maximum -- see waveRampPosition in wavescale.js
 // for why the legend bar is painted evenly and the ticks carry the real numbers.

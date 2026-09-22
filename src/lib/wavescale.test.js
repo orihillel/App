@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   waveColor, waveScaleTicks, waveScaleUnitLabel, waveScaleGradient, gridAgeLabel,
   waveLegendCaption, swellTravelBearing, WAVE_SCALE_MAX,
-  waveColorBanded, waveScaleBandGradient, WAVE_BAND_EDGES,
 } from './wavescale.js';
 
 describe('waveColor', () => {
@@ -342,67 +341,3 @@ describe('the ramp spends its contrast where the ocean actually is', () => {
   });
 });
 
-// Windy paints its globe in discrete bands rather than a blend -- their published type
-// declarations carry a `qualitative` flag documented as "globe: use discrete palette (not
-// blending between colors)" -- and the evidence agrees for the task this map is for. These
-// assert the band structure rather than the specific colours, which the ramp tests above
-// already cover.
-describe('waveColorBanded', () => {
-  const OCEAN = [23, 90, 130];
-  const lin = (u) => { const v = u / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-  const blend = (c) => c.map((v, i) => Math.round(0.85 * v + 0.15 * OCEAN[i]));
-  function lab(c) {
-    const [R, G, B] = blend(c).map(lin);
-    const g = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
-    const X = g((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047);
-    const Y = g(R * 0.2126 + G * 0.7152 + B * 0.0722);
-    const Z = g((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
-    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
-  }
-  const dE = (a, b) => { const p = lab(a), q = lab(b); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
-
-  it('paints one flat colour across a band', () => {
-    // Everything inside 0.4-0.8 is the same colour; that flatness is the whole point.
-    expect(waveColorBanded(0.41)).toEqual(waveColorBanded(0.79));
-    expect(waveColorBanded(0.5)).toEqual(waveColorBanded(0.79));
-  });
-
-  it('puts a height exactly on an edge in the band above it', () => {
-    // Half-open bands. Without this, 0.4m reads as the top of the band below rather than the
-    // bottom of its own, and every edge in the legend is off by one band.
-    expect(waveColorBanded(0.4)).not.toEqual(waveColorBanded(0.39));
-    expect(waveColorBanded(0.4)).toEqual(waveColorBanded(0.5));
-  });
-
-  it('separates neighbouring bands by far more than a viewer could miss', () => {
-    const edges = WAVE_BAND_EDGES;
-    for (let i = 1; i < edges.length - 1; i++) {
-      const below = waveColorBanded((edges[i - 1] + edges[i]) / 2);
-      const above = waveColorBanded((edges[i] + edges[i + 1]) / 2);
-      // Small-patch just-noticeable is 5-7; a band edge should be unmissable.
-      expect(dE(below, above), edges[i] + 'm edge').toBeGreaterThan(9);
-    }
-  });
-
-  it('gives as many bands as the level budget allows, and no more', () => {
-    // 8-12 is the range a ramp can separate comfortably. Asking for more is what makes a map
-    // illegible, and the bands are the stops, so this guards the stop table too.
-    const n = WAVE_BAND_EDGES.length - 1;
-    expect(n).toBeGreaterThanOrEqual(8);
-    expect(n).toBeLessThanOrEqual(12);
-  });
-
-  it('clamps past the top and says nothing about no data, exactly as the smooth ramp does', () => {
-    expect(waveColorBanded(30)).toEqual(waveColorBanded(WAVE_SCALE_MAX));
-    for (const v of [null, undefined, NaN, -1, 'two']) expect(waveColorBanded(v)).toBeNull();
-  });
-
-  it('builds a legend bar of hard-edged bands, each colour appearing twice', () => {
-    const g = waveScaleBandGradient();
-    expect(g.startsWith('linear-gradient(90deg,')).toBe(true);
-    const first = waveColorBanded(0.1);
-    const rgb = 'rgb(' + first[0] + ',' + first[1] + ',' + first[2] + ')';
-    // Twice is what makes the edge hard rather than a blend into the next band.
-    expect(g.split(rgb).length - 1).toBe(2);
-  });
-});

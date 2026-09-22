@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   windColor, windScaleTicks, windScaleUnitLabel, windScaleGradient,
   windTravelBearing, windLegendCaption, WIND_SCALE_MAX,
-  windColorBanded, windScaleBandGradient, WIND_BAND_EDGES,
 } from './windscale.js';
 import { waveColor } from './wavescale.js';
 
@@ -170,48 +169,3 @@ describe('the wind ramp has a real hue sweep now', () => {
   });
 });
 
-// Sibling of the banded wave tests. Nine bands, five of them between 5 and 30kph.
-describe('windColorBanded', () => {
-  const OCEAN = [23, 90, 130];
-  const lin = (u) => { const v = u / 255; return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
-  const blend = (c) => c.map((v, i) => Math.round(0.85 * v + 0.15 * OCEAN[i]));
-  function lab(c) {
-    const [R, G, B] = blend(c).map(lin);
-    const g = (t) => (t > 0.008856 ? Math.cbrt(t) : 7.787 * t + 16 / 116);
-    const X = g((R * 0.4124 + G * 0.3576 + B * 0.1805) / 0.95047);
-    const Y = g(R * 0.2126 + G * 0.7152 + B * 0.0722);
-    const Z = g((R * 0.0193 + G * 0.1192 + B * 0.9505) / 1.08883);
-    return [116 * Y - 16, 500 * (X - Y), 200 * (Y - Z)];
-  }
-  const dE = (a, b) => { const p = lab(a), q = lab(b); return Math.hypot(p[0] - q[0], p[1] - q[1], p[2] - q[2]); };
-
-  it('paints one flat colour across a band, edges belonging to the band above', () => {
-    expect(windColorBanded(6)).toEqual(windColorBanded(9.9));
-    expect(windColorBanded(5)).not.toEqual(windColorBanded(4.9));
-  });
-
-  it('separates neighbouring bands by far more than a viewer could miss', () => {
-    for (let i = 1; i < WIND_BAND_EDGES.length - 1; i++) {
-      const below = windColorBanded((WIND_BAND_EDGES[i - 1] + WIND_BAND_EDGES[i]) / 2);
-      const above = windColorBanded((WIND_BAND_EDGES[i] + WIND_BAND_EDGES[i + 1]) / 2);
-      expect(dE(below, above), WIND_BAND_EDGES[i] + 'kph edge').toBeGreaterThan(9);
-    }
-  });
-
-  it('puts most of its bands in the band that decides glassy from blown out', () => {
-    const decisive = WIND_BAND_EDGES.filter((k) => k >= 5 && k <= 30).length;
-    expect(decisive).toBeGreaterThanOrEqual(5);
-  });
-
-  it('builds a legend bar of hard-edged bands, each colour appearing twice', () => {
-    const g = windScaleBandGradient();
-    expect(g.startsWith('linear-gradient(90deg,')).toBe(true);
-    const c = windColorBanded(1);
-    expect(g.split('rgb(' + c[0] + ',' + c[1] + ',' + c[2] + ')').length - 1).toBe(2);
-  });
-
-  it('clamps past the top and says nothing about no data', () => {
-    expect(windColorBanded(200)).toEqual(windColorBanded(WIND_SCALE_MAX));
-    for (const v of [null, undefined, NaN, -1]) expect(windColorBanded(v)).toBeNull();
-  });
-});
