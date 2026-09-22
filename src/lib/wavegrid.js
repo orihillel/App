@@ -78,6 +78,31 @@ export function gridCells(step = GRID_LAT_STEP) {
   return cells;
 }
 
+// Which step a payload of this many cells was built at, or null if none of ours fits.
+//
+// A last line of defence, not the normal path: a grid says its own step on the wire and the
+// caller should use that. But this codebase has now dropped a field from a hand-written list
+// three times -- the wave directions, then latStep in the Worker's response, then latStep
+// again in the browser's copy of it -- and each time the result was a silent wrong answer
+// rather than an error. Reading the step back out of the payload's own length turns the next
+// one into a no-op.
+//
+// The counts are distinct across every step here, so there is nothing to disambiguate.
+export const KNOWN_LAT_STEPS = [2, 5, 10, 15, 20];
+
+// How coarse a grid payload is: what it says first, what its own size implies second, the
+// shared constant last.
+export function gridStepOf(grid) {
+  if (grid && typeof grid.latStep === 'number') return grid.latStep;
+  return (grid && stepForCellCount(grid.cells)) || GRID_LAT_STEP;
+}
+
+export function stepForCellCount(cells) {
+  if (!Number.isFinite(cells)) return null;
+  for (const step of KNOWN_LAT_STEPS) if (gridCellCount(step) === cells) return step;
+  return null;
+}
+
 export function gridCellCount(step = GRID_LAT_STEP) {
   let n = 0;
   for (const row of gridRows(step)) n += row.count;

@@ -122,6 +122,14 @@ export async function fetchWindGrid() {
     return {
       data: data.data, cells: data.cells, generatedAt: data.generatedAt,
       dirs: typeof data.dirs === 'string' ? data.dirs : null,
+      // How coarse the bytes are. This is the field that made the wind layer paint nothing:
+      // the Worker built the grid at 10 degrees, said so, and this list dropped it, so the
+      // globe fell back to the shared constant and read 406 cells as a 10,008-cell grid. The
+      // legend said the map had loaded and the ocean stayed empty.
+      //
+      // fetchWaveFrames below carries it, which is why the animated week kept working while
+      // the live layer did not -- the symptom that found this.
+      latStep: typeof data.latStep === 'number' ? data.latStep : null,
       stale: !!data.stale, build: data.build || null,
     };
   } catch {
@@ -146,6 +154,9 @@ export async function fetchWaveGrid() {
       // Optional on purpose: a grid cached before directions were fetched has no `dirs`, and
       // the overlay draws its colours without arrows rather than not drawing at all.
       dirs: typeof data.dirs === 'string' ? data.dirs : null,
+      // See fetchWindGrid. Same field, same reason, and the swell grid only escaped the same
+      // blank ocean because its step happens to equal the constant the globe falls back to.
+      latStep: typeof data.latStep === 'number' ? data.latStep : null,
       stale: !!data.stale, build: data.build || null,
     };
   } catch {

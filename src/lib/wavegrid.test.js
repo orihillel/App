@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import {
-  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, makeGridSampler, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP, encodeSpeeds, decodeSpeeds,
+  gridRows, gridCells, gridCellCount, sampleGrid, fillGridGaps, encodeHeights, decodeHeights, bytesToBase64, base64ToBytes, sampleGridSmooth, encodeDirections, decodeDirections, sampleDirectionSmooth, makeGridSampler, GRID_MAX_LAT, GRID_LAT_STEP, NO_DATA, NO_DIR, FRAME_LAT_STEP, encodeSpeeds, decodeSpeeds, stepForCellCount, gridStepOf, KNOWN_LAT_STEPS,
 } from './wavegrid.js';
 
 describe('the grid itself', () => {
@@ -508,5 +508,47 @@ describe('encodeSpeeds / decodeSpeeds', () => {
   it('survives a trip through base64, which is how it reaches the browser', () => {
     const speeds = [0, 5, 42, 130, null, 254];
     expect(decodeSpeeds(base64ToBytes(bytesToBase64(encodeSpeeds(speeds))))).toEqual(speeds);
+  });
+});
+
+describe('reading a grid\'s resolution back out of it', () => {
+  it('recognises every step the app actually builds at', () => {
+    for (const step of KNOWN_LAT_STEPS) {
+      expect(stepForCellCount(gridCellCount(step))).toBe(step);
+    }
+  });
+
+  it('gives no answer for a count that is none of them', () => {
+    expect(stepForCellCount(407)).toBeNull();
+    expect(stepForCellCount(0)).toBeNull();
+    expect(stepForCellCount(undefined)).toBeNull();
+    expect(stepForCellCount(NaN)).toBeNull();
+  });
+
+  // Distinct counts are what make the lookup unambiguous. If two steps ever collided the
+  // function would silently pick the first, so this is the precondition, not a detail.
+  it('has a distinct cell count per step', () => {
+    const counts = KNOWN_LAT_STEPS.map(gridCellCount);
+    expect(new Set(counts).size).toBe(counts.length);
+  });
+});
+
+describe('gridStepOf', () => {
+  it('believes the payload when it says', () => {
+    expect(gridStepOf({ latStep: 10, cells: gridCellCount(2) })).toBe(10);
+    expect(gridStepOf({ latStep: 5 })).toBe(5);
+  });
+
+  it('works it out from the size when the field was dropped on the way', () => {
+    // Which has now happened twice: once in the Worker's response builder, once in the
+    // browser's copy of the same hand-written list.
+    expect(gridStepOf({ cells: gridCellCount(10) })).toBe(10);
+    expect(gridStepOf({ cells: gridCellCount(20) })).toBe(20);
+  });
+
+  it('falls back to the shared constant only when it has nothing to go on', () => {
+    expect(gridStepOf({})).toBe(GRID_LAT_STEP);
+    expect(gridStepOf(null)).toBe(GRID_LAT_STEP);
+    expect(gridStepOf({ cells: 999 })).toBe(GRID_LAT_STEP);
   });
 });
