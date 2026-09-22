@@ -5,7 +5,7 @@ import {
   candidateKeysFor, parseFrameHour, fetchFrameFromOm,
   RangeBackend, areaMeanWind, regridWind, buildWindGridFromOm,
   newRunProbe, runDirOf,
-  WIND_MODEL, WIND_STEP_HOURS, OM_TAIL_WINDOW,
+  WIND_MODEL, WIND_STEP_HOURS, OM_TAIL_WINDOW, OM_READ_WINDOW,
 } from '../src/omGrid.js';
 import { gridCellCount } from '../../src/lib/wavegrid.js';
 
@@ -229,6 +229,15 @@ function fakeFile(bytes) {
 describe('RangeBackend', () => {
   const bytes = new Uint8Array(4096);
   for (let i = 0; i < bytes.length; i++) bytes[i] = i % 251;
+
+  // The defaults are what production runs on, and they are sized against a real file rather
+  // than picked: the trailer every open-time read falls inside measured 107KB, and one field's
+  // bytes are a contiguous 1.8MB run. A default under either turns one request back into
+  // dozens, which is the whole failure this class exists to avoid.
+  it('defaults big enough for the layout they were measured against', () => {
+    expect(OM_TAIL_WINDOW).toBeGreaterThanOrEqual(107 * 1024);
+    expect(OM_READ_WINDOW).toBeGreaterThanOrEqual(1.9 * 1024 * 1024);
+  });
 
   it('learns the file size from the suffix request it already had to make', async () => {
     const { fetchImpl, asked } = fakeFile(bytes);
