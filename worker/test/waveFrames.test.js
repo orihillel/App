@@ -5,6 +5,13 @@ import {
   FRAMES_REFRESH_MS, UNITS_PER_PASS, UNITS_PER_MINUTE, FRAMES_KEY, FRAMES_PARTIAL_KEY,
   WAVE_SOURCE, WIND_SOURCE, WIND_FRAME_LAT_STEP, markFramesWanted, framesAreWanted, WANTED_TTL_MS,
 } from '../src/waveFrames.js';
+
+// The swell week is sampled from a published global file now (see src/omGrid.js), so the
+// source that still walks cells in batches is the wind one. These tests are about that
+// batching -- the pacing, the partial, the timestep-overrun guard -- so they run against a
+// wave source with the file path switched off rather than being rewritten for wind.
+const POINT_WAVE = { ...WAVE_SOURCE, omModel: null, latStep: FRAME_LAT_STEP };
+const WAVE_CELLS = gridCells(WAVE_SOURCE.latStep);
 import { createFakeKv } from './fakeKv.js';
 import { gridCells, FRAME_LAT_STEP } from '../../src/lib/wavegrid.js';
 
@@ -96,7 +103,9 @@ describe('fetchFrame', () => {
 
 
 describe('framesAreUsable', () => {
-  const good = { frames: [{}, {}], cells: CELLS.length, coverage: 1, aborted: null };
+  // The swell week's own cell count, not the batching tests' one: the two sources sample at
+  // different steps now, and a week built for the wrong grid is exactly what this rejects.
+  const good = { frames: [{}, {}], cells: WAVE_CELLS.length, coverage: 1, aborted: null };
   it('accepts a complete build', () => expect(framesAreUsable(good)).toBe(true));
   it('refuses a build that covered too little of the world', () => {
     expect(framesAreUsable({ ...good, coverage: FRAMES_MIN_COVERAGE - 0.01 })).toBe(false);
@@ -130,7 +139,7 @@ describe('pacing the build under the per-minute allowance', () => {
   it('takes a few frames per pass and leaves the rest for the next one', async () => {
     const e = env();
     const fetchImpl = serve();
-    const first = await advanceFrames(e, { fetchImpl, sleep: noSleep });
+    const first = await advanceFrames(e, { fetchImpl, sleep: noSleep, source: POINT_WAVE });
     expect(first.complete).toBe(false);
     expect(first.fetchedThisPass).toBe(framesPerPass(CELLS.length));
     expect(first.units).toBeLessThanOrEqual(UNITS_PER_PASS);
@@ -143,13 +152,13 @@ describe('pacing the build under the per-minute allowance', () => {
     const now = Date.parse('2026-09-10T00:00:00Z');
     let out;
     for (let i = 0; i < 20; i++) {
-      out = await advanceFrames(e, { fetchImpl, sleep: noSleep, now });
+      out = await advanceFrames(e, { fetchImpl, sleep: noSleep, source: POINT_WAVE, now });
       if (out.complete) break;
     }
     expect(out.complete).toBe(true);
     expect(out.frames).toHaveLength(FRAME_COUNT);
     const calls = fetchImpl.mock.calls.length;
-    await advanceFrames(e, { fetchImpl, sleep: noSleep, now });
+    await advanceFrames(e, { fetchImpl, sleep: noSleep, source: POINT_WAVE, now });
     expect(fetchImpl.mock.calls.length).toBe(calls); // a finished week costs nothing
   });
 
@@ -159,9 +168,9 @@ describe('pacing the build under the per-minute allowance', () => {
     const e = env();
     const fetchImpl = serve();
     const t0 = Date.parse('2026-09-10T00:00:00Z');
-    await advanceFrames(e, { fetchImpl, sleep: noSleep, now: t0 });
+    await advanceFrames(e, { fetchImpl, sleep: noSleep, source: POINT_WAVE, now: t0 });
     const before = fetchImpl.mock.calls.length;
-    const after = await advanceFrames(e, { fetchImpl, sleep: noSleep, now: t0 + 6 * 3600e3 });
+    const after = await advanceFrames(e, { fetchImpl, sleep: noSleep, source: POINT_WAVE, now: t0 + 6 * 3600e3 });
     expect(after.frames.length).toBeGreaterThan(0);
     expect(fetchImpl.mock.calls.length - before).toBeLessThanOrEqual(framesPerPass(CELLS.length));
   });
@@ -169,7 +178,7 @@ describe('pacing the build under the per-minute allowance', () => {
   it('stops the pass at an over-long frame and stores nothing', async () => {
     const overrun = { hourly: { time: Array(168).fill('x'), wave_height: Array(168).fill(1), wave_direction: Array(168).fill(0) } };
     const e = env();
-    const out = await advanceFrames(e, { fetchImpl: async () => okRes(CELLS.map(() => overrun)), sleep: noSleep });
+    const out = await advanceFrames(e, { fetchImpl: async () => okRes(CELLS.map(() => overrun)), sleep: noSleep, source: POINT_WAVE });
     expect(out.aborted).toBe('timestep-overrun');
     expect(await e.SUBSCRIPTIONS.get(FRAMES_PARTIAL_KEY)).toBeFalsy();
   });
@@ -178,6 +187,7 @@ describe('pacing the build under the per-minute allowance', () => {
     // Storing an empty frame marks that hour done and leaves a hole in the week all day.
     const e = env();
     const out = await advanceFrames(e, {
+      source: POINT_WAVE,
       fetchImpl: async () => ({ ok: false, status: 429, json: async () => ({ reason: 'rate limited' }) }),
       sleep: noSleep,
     });
@@ -188,8 +198,10 @@ describe('pacing the build under the per-minute allowance', () => {
 
 describe('loadFrames only ever reads', () => {
   const env = () => ({ SUBSCRIPTIONS: createFakeKv() });
+  // Built at the swell source's own step: loadFrames checks a cached week against the grid the
+  // current source samples, so a fixture at the old one is correctly refused.
   const week = (generatedAt) => JSON.stringify({
-    generatedAt, cells: CELLS.length, latStep: FRAME_LAT_STEP, stepHours: FRAME_STEP_H,
+    generatedAt, cells: WAVE_CELLS.length, latStep: WAVE_SOURCE.latStep, stepHours: FRAME_STEP_H,
     frames: Array.from({ length: FRAME_COUNT }, (_, i) => ({ t: 't' + i, data: 'x', dirs: 'y' })),
     coverage: 1, aborted: null,
   });
@@ -206,6 +218,7 @@ describe('loadFrames only ever reads', () => {
     const e = env();
     const loc = (h) => ({ hourly: { time: ['t'], wave_height: [h], wave_direction: [200] } });
     await advanceFrames(e, {
+      source: POINT_WAVE,
       fetchImpl: async () => ({ ok: true, status: 200, json: async () => CELLS.map(() => loc(1)) }),
       sleep: () => Promise.resolve(),
     });
