@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   omKey, runAt, stepAt, candidateKeys, looksLikeOm, areaMean, areaMeanBearing, regrid,
   buildGridFromOm, OM_MIN_BYTES, MAX_RUNS_BACK,
+  candidateKeysFor, parseFrameHour, fetchFrameFromOm,
 } from '../src/omGrid.js';
 import { gridCellCount } from '../../src/lib/wavegrid.js';
 
@@ -151,6 +152,43 @@ describe('buildGridFromOm', () => {
     const out = await buildGridFromOm({
       now: T(2026, 9, 22, 12),
       fetch: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array([0x3c, 0x21, 0x64]).buffer }),
+    });
+    expect(out).toBeNull();
+  });
+});
+
+describe('a frame of the animated week', () => {
+  it('reads the hour as UTC, however it is truncated', () => {
+    // The week indexes frames by "2026-09-22T06:00"; the bucket names files
+    // "2026-09-22T0600.om". Two truncations of the same instant, and getting the zone wrong
+    // would shift every frame by the runner's offset.
+    expect(parseFrameHour('2026-09-22T06:00')).toBe(Date.UTC(2026, 8, 22, 6));
+    expect(parseFrameHour('2026-09-22T06')).toBe(Date.UTC(2026, 8, 22, 6));
+    expect(parseFrameHour('nonsense')).toBeNull();
+    expect(parseFrameHour(null)).toBeNull();
+  });
+
+  it('asks the newest run that could hold a future hour', () => {
+    const now = Date.UTC(2026, 8, 22, 13);
+    const keys = candidateKeysFor(Date.UTC(2026, 8, 25, 6), now);
+    expect(keys[0]).toContain('/2026/09/22/1200Z/');
+    for (const k of keys) expect(k.endsWith('2026-09-25T0600.om')).toBe(true);
+  });
+
+  it('gives back nothing rather than a hole when no run has that hour', async () => {
+    // advanceFrames stops the pass on null. Recording an empty frame would mark it done and
+    // leave a gap in the week until the next rebuild.
+    const out = await fetchFrameFromOm('2026-09-25T06:00', 20, {
+      now: Date.UTC(2026, 8, 22, 13),
+      fetch: async () => ({ ok: false, status: 404 }),
+    });
+    expect(out).toBeNull();
+  });
+
+  it('refuses a body that is not one of these files', async () => {
+    const out = await fetchFrameFromOm('2026-09-25T06:00', 20, {
+      now: Date.UTC(2026, 8, 22, 13),
+      fetch: async () => ({ ok: true, arrayBuffer: async () => new Uint8Array(200).buffer }),
     });
     expect(out).toBeNull();
   });

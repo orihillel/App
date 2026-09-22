@@ -74,15 +74,62 @@ export function stepAt(ms) {
 // preferred is the whole decision here, and a test that had to mock four HTTP calls to check
 // it would be testing the mock.
 export function candidateKeys(now, model = WAVE_MODEL) {
-  const valid = stepAt(now);
+  return candidateKeysFor(stepAt(now), now, model);
+}
+
+// The same, for a moment that is not now.
+//
+// The animated week wants a file per forecast hour, and those are future timesteps of the same
+// runs. Which run to prefer is unchanged -- newest first, never one that would be forecasting
+// its own past -- so only the valid time differs.
+export function candidateKeysFor(validMs, now, model = WAVE_MODEL) {
   const out = [];
   for (let i = 0; i < MAX_RUNS_BACK; i++) {
     const run = runAt(now) - i * 6 * 3600 * 1000;
-    // A run cannot forecast its own past.
-    if (run > valid) continue;
-    out.push(omKey(run, valid, model));
+    if (run > validMs) continue;
+    out.push(omKey(run, validMs, model));
   }
   return out;
+}
+
+// One frame of the animated week, from the published file for that hour.
+//
+// `isoHour` is the frame's own key, "2026-09-22T06:00" -- the same string the week is indexed
+// by, so a frame fetched here lands under the name the rest of the builder expects.
+// "2026-09-22T06:00" or "2026-09-22T06", as UTC. Written out rather than inlined because the
+// week's own keys and this bucket's filenames are two different truncations of the same
+// instant, and getting the zone wrong would shift every frame by the runner's offset.
+export function parseFrameHour(isoHour) {
+  if (typeof isoHour !== 'string') return null;
+  const m = /^(\d{4}-\d{2}-\d{2})T(\d{2})(?::(\d{2}))?/.exec(isoHour);
+  if (!m) return null;
+  const ms = Date.parse(m[1] + 'T' + m[2] + ':' + (m[3] || '00') + ':00Z');
+  return Number.isFinite(ms) ? ms : null;
+}
+
+export async function fetchFrameFromOm(isoHour, step, opts = {}) {
+  const validMs = parseFrameHour(isoHour);
+  if (validMs == null) return null;
+  const now = opts.now || Date.now();
+  const fetchImpl = opts.fetch || fetch;
+  for (const key of candidateKeysFor(validMs, now, opts.model)) {
+    let res;
+    try {
+      res = await fetchImpl(OM_BUCKET + '/' + key);
+    } catch {
+      continue;
+    }
+    if (!res || !res.ok) continue;
+    const bytes = new Uint8Array(await res.arrayBuffer());
+    if (!looksLikeOm(bytes)) continue;
+    const fields = await decodeOm(bytes, opts.reader);
+    if (!fields.wave_height) continue;
+    const height = await readField(fields.wave_height);
+    const dir = fields.wave_direction ? await readField(fields.wave_direction) : null;
+    const { heights, directions } = regrid(height, dir, step);
+    return { heights, directions, source: key };
+  }
+  return null;
 }
 
 // Decode one file into the fields the globe draws.

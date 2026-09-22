@@ -18,8 +18,9 @@
 // fetches, with room to spare. The planned count is checked before the build starts rather
 // than discovered when the platform kills it half way.
 import {
-  gridCells, FRAME_LAT_STEP, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
+  gridCells, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
+import { fetchFrameFromOm, WAVE_MODEL } from './omGrid.js';
 
 export const FRAMES_KEY = 'waveframes:v2';
 export const FRAME_COUNT = 28;        // 7 days
@@ -99,12 +100,23 @@ export const FRAME_GAP_MS = 120;
 // rather than blocks on the screen.
 export const WIND_FRAME_LAT_STEP = 20;
 
+// The swell week's own step. It was 15 degrees when a frame cost one API unit per cell and a
+// 28-frame week had to fit a day's allowance; a frame is one file download now, so this is a
+// payload decision instead. 5 degrees is 1,612 cells -- 28 frames is about 120KB over the wire,
+// which a phone can afford -- and three times finer than what it replaces.
+export const WAVE_FRAME_LAT_STEP = 5;
+
 export const WAVE_SOURCE = {
   id: 'wave',
   url: MARINE_URL,
   vars: ['wave_height', 'wave_direction'],
   encodeValues: encodeHeights,
-  latStep: FRAME_LAT_STEP,
+  latStep: WAVE_FRAME_LAT_STEP,
+  // Sampled from Open-Meteo's published 0.25-degree files rather than queried point by point.
+  // See src/omGrid.js. The wind source below has no such file yet: the wave model's archive
+  // carries wave variables only, and the atmospheric files that do carry wind are twenty times
+  // the size and need more range requests per frame than a Worker invocation is allowed.
+  omModel: WAVE_MODEL,
   doneKey: 'waveframes:v2',
   partialKey: 'waveframes:partial:v2',
   failKey: 'waveframes:fail:v2',
@@ -275,6 +287,28 @@ export async function advanceFrames(env, opts = {}) {
 
   for (const t of missing.slice(0, perPass)) {
     if (fetched > 0) await (opts.sleep || sleep)(opts.gapMs ?? FRAME_GAP_MS);
+    // The published file, when this source has one. A frame is then a single request for the
+    // whole globe rather than a batched walk over every cell, which is both far cheaper and
+    // what lets the week be sampled finer than the point queries could ever afford.
+    if (source.omModel) {
+      let frame = null;
+      try {
+        frame = await fetchFrameFromOm(t, source.latStep, { ...opts, model: source.omModel, now });
+      } catch (err) {
+        lastError = String(err && err.message || err).slice(0, 200);
+      }
+      // A frame that did not answer stops the pass rather than being recorded empty: marking it
+      // done would leave a hole in the week until the next rebuild.
+      if (!frame) break;
+      have.set(t, {
+        t,
+        data: bytesToBase64(source.encodeValues(frame.heights)),
+        dirs: bytesToBase64(encodeDirections(frame.directions)),
+      });
+      fetched++;
+      continue;
+    }
+
     const heights = new Array(cells.length).fill(null);
     const directions = new Array(cells.length).fill(null);
     let any = false;
