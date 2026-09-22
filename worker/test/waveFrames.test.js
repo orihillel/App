@@ -4,6 +4,7 @@ import {
   FRAME_COUNT, FRAME_STEP_H, MAX_TIMESTEPS_PER_FRAME, FRAMES_MIN_COVERAGE,
   FRAMES_REFRESH_MS, UNITS_PER_PASS, UNITS_PER_MINUTE, FRAMES_KEY, FRAMES_PARTIAL_KEY,
   WAVE_SOURCE, WIND_SOURCE, WIND_FRAME_LAT_STEP, markFramesWanted, framesAreWanted, WANTED_TTL_MS,
+  frameFits, base64LengthFor, OM_FRAMES_PER_PASS,
 } from '../src/waveFrames.js';
 
 // The swell week is sampled from a published global file now (see src/omGrid.js), so the
@@ -105,15 +106,19 @@ describe('fetchFrame', () => {
 describe('framesAreUsable', () => {
   // The swell week's own cell count, not the batching tests' one: the two sources sample at
   // different steps now, and a week built for the wrong grid is exactly what this rejects.
-  const good = { frames: [{}, {}], cells: WAVE_CELLS.length, coverage: 1, aborted: null };
+  const payload = 'A'.repeat(base64LengthFor(WAVE_CELLS.length));
+  const frame = () => ({ t: 'x', data: payload, dirs: payload });
+  const good = { frames: [frame(), frame()], cells: WAVE_CELLS.length, coverage: 1, aborted: null };
   it('accepts a complete build', () => expect(framesAreUsable(good)).toBe(true));
   it('refuses a build that covered too little of the world', () => {
     expect(framesAreUsable({ ...good, coverage: FRAMES_MIN_COVERAGE - 0.01 })).toBe(false);
   });
   it('refuses an aborted build, a single frame, a different grid, and nothing at all', () => {
     expect(framesAreUsable({ ...good, aborted: 'timestep-overrun' })).toBe(false);
-    expect(framesAreUsable({ ...good, frames: [{}] })).toBe(false);
+    expect(framesAreUsable({ ...good, frames: [frame()] })).toBe(false);
     expect(framesAreUsable({ ...good, cells: 406 })).toBe(false);
+    // A week whose header says one grid and whose bytes say another.
+    expect(framesAreUsable({ ...good, frames: [{ t: 'x', data: 'AAAA' }, frame()] })).toBe(false);
     expect(framesAreUsable(null)).toBe(false);
   });
 });
@@ -202,7 +207,13 @@ describe('loadFrames only ever reads', () => {
   // current source samples, so a fixture at the old one is correctly refused.
   const week = (generatedAt) => JSON.stringify({
     generatedAt, cells: WAVE_CELLS.length, latStep: WAVE_SOURCE.latStep, stepHours: FRAME_STEP_H,
-    frames: Array.from({ length: FRAME_COUNT }, (_, i) => ({ t: 't' + i, data: 'x', dirs: 'y' })),
+    // Payloads the right size for this grid: framesAreUsable checks the bytes now, not just
+    // the recorded count, because those two disagreeing is what broke the animation once.
+    frames: Array.from({ length: FRAME_COUNT }, (_, i) => ({
+      t: 't' + i,
+      data: 'A'.repeat(base64LengthFor(WAVE_CELLS.length)),
+      dirs: 'A'.repeat(base64LengthFor(WAVE_CELLS.length)),
+    })),
     coverage: 1, aborted: null,
   });
 
@@ -320,5 +331,211 @@ describe('the wind week', () => {
   it('never gates the swell week behind a flag, because it is the default layer', async () => {
     const env = envW();
     expect(await framesAreWanted(env, WAVE_SOURCE, NOW_W)).toBe(true);
+  });
+});
+
+// The bug this file exists to never repeat.
+//
+// When the swell week moved from 15 degrees to 5, every stored frame kept the right timestamp,
+// so nothing looked missing, nothing was refetched, and the week was rewritten with the new
+// step's cell count over the old step's bytes. The globe then read 186 cells of data as a
+// 1,612-cell grid, and no later pass could fix it: each one saw a complete, fresh week.
+describe('a week stored at a different resolution', () => {
+  const NOW = Date.parse('2026-09-22T12:00:00Z');
+  const COARSE = 15;
+  const FINE = 5;
+  const source = { ...WAVE_SOURCE, omModel: null, latStep: FINE };
+  const b64 = (n) => 'A'.repeat(4 * Math.ceil(n / 3));
+
+  const weekAt = (step, generatedAt = NOW) => ({
+    generatedAt,
+    cells: gridCells(step).length,
+    latStep: step,
+    stepHours: FRAME_STEP_H,
+    coverage: 1,
+    frames: frameTimes(NOW).map((t) => ({ t, data: b64(gridCells(step).length), dirs: b64(gridCells(step).length) })),
+  });
+
+  it('is not silently reused at the new step', async () => {
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    await env.SUBSCRIPTIONS.put(source.doneKey, JSON.stringify(weekAt(COARSE)));
+    const asked = [];
+    const out = await advanceFrames(env, {
+      source, now: NOW, gapMs: 0, sleep: async () => {},
+      fetchImpl: async (url) => { asked.push(url); throw new Error('no upstream in tests'); },
+    });
+    // Every frame it had was the wrong size, so every frame is missing again.
+    expect(asked.length).toBeGreaterThan(0);
+    expect(out.frames.every((f) => f.data.length === 4 * Math.ceil(gridCells(FINE).length / 3))).toBe(true);
+    expect(out.complete).toBe(false);
+  });
+
+  it('does not write a week whose recorded size disagrees with its bytes', async () => {
+    // The part that made it permanent: a record like this passes framesAreUsable, because that
+    // compares the recorded count against the current step and both say the same number.
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    await env.SUBSCRIPTIONS.put(source.doneKey, JSON.stringify(weekAt(COARSE)));
+    await advanceFrames(env, {
+      source, now: NOW, gapMs: 0, sleep: async () => {},
+      fetchImpl: async () => { throw new Error('no upstream in tests'); },
+    });
+    const stored = await env.SUBSCRIPTIONS.get(source.doneKey, { type: 'json' });
+    const written = stored ?? await env.SUBSCRIPTIONS.get(source.partialKey, { type: 'json' });
+    for (const f of (written?.frames ?? [])) {
+      expect(f.data.length).toBe(4 * Math.ceil(written.cells / 3));
+    }
+  });
+
+  it('keeps frames that are the right size, so a moved boundary still converges', async () => {
+    // The reuse this guard must not break: same step, same bytes, only the week has rolled on.
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    await env.SUBSCRIPTIONS.put(source.doneKey, JSON.stringify(weekAt(FINE)));
+    const asked = [];
+    const out = await advanceFrames(env, {
+      source, now: NOW, gapMs: 0, sleep: async () => {},
+      fetchImpl: async (url) => { asked.push(url); throw new Error('no upstream in tests'); },
+    });
+    expect(asked).toEqual([]);
+    expect(out.complete).toBe(true);
+    expect(out.frames).toHaveLength(FRAME_COUNT);
+  });
+
+  it('accepts a frame that predates directions but not one with the wrong-sized ones', () => {
+    const n = gridCells(FINE).length;
+    expect(frameFits({ t: 'x', data: b64(n) }, n)).toBe(true);
+    expect(frameFits({ t: 'x', data: b64(n), dirs: null }, n)).toBe(true);
+    expect(frameFits({ t: 'x', data: b64(n), dirs: b64(n) }, n)).toBe(true);
+    expect(frameFits({ t: 'x', data: b64(n), dirs: b64(gridCells(COARSE).length) }, n)).toBe(false);
+    expect(frameFits({ t: 'x', data: b64(gridCells(COARSE).length) }, n)).toBe(false);
+    expect(frameFits({ t: 'x' }, n)).toBe(false);
+    expect(frameFits(null, n)).toBe(false);
+  });
+});
+
+describe('pacing a week that comes from files', () => {
+  const NOW2 = Date.parse('2026-09-22T12:00:00Z');
+  const om5 = { ...WAVE_SOURCE, latStep: 5 };
+  const cells5 = gridCells(5).length;
+  const goodFrame = () => ({
+    heights: new Array(cells5).fill(1.5),
+    directions: new Array(cells5).fill(270),
+    source: 'x',
+  });
+
+  it('fetches a whole batch of frames in one pass', async () => {
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    const hours = [];
+    const out = await advanceFrames(env, {
+      source: om5, now: NOW2, gapMs: 0, sleep: async () => {},
+      fetchFrameOm: async (t) => { hours.push(t); return goodFrame(); },
+    });
+    // The unit arithmetic would have allowed exactly one.
+    expect(framesPerPass(cells5)).toBe(1);
+    expect(hours).toHaveLength(OM_FRAMES_PER_PASS);
+    expect(out.fetchedThisPass).toBe(OM_FRAMES_PER_PASS);
+    expect(out.remaining).toBe(FRAME_COUNT - OM_FRAMES_PER_PASS);
+  });
+
+  it('hands every frame of the pass the same run probe', async () => {
+    // One probe per pass is what turns three requests a frame into about one. A fresh one per
+    // frame would be the bug it was written to remove, and looks identical from the outside
+    // unless the identity is checked.
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    const probes = new Set();
+    await advanceFrames(env, {
+      source: om5, now: NOW2, gapMs: 0, sleep: async () => {},
+      fetchFrameOm: async (t, step, o) => { probes.add(o.probe); return goodFrame(); },
+    });
+    expect(probes.size).toBe(1);
+    expect([...probes][0]).toBeTruthy();
+    expect([...probes][0].exhausted).toBeInstanceOf(Set);
+  });
+
+  it('assembles the whole week in three passes', async () => {
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    let passes = 0;
+    let out;
+    do {
+      passes++;
+      out = await advanceFrames(env, {
+        source: om5, now: NOW2, gapMs: 0, sleep: async () => {},
+        fetchFrameOm: async () => goodFrame(),
+      });
+    } while (!out.complete && passes < 10);
+    expect(out.complete).toBe(true);
+    expect(passes).toBe(Math.ceil(FRAME_COUNT / OM_FRAMES_PER_PASS));
+    expect(out.frames).toHaveLength(FRAME_COUNT);
+    expect(framesAreUsable(out, om5)).toBe(true);
+  });
+});
+
+describe('pacing a week that comes from files', () => {
+  const NOW = Date.parse('2026-09-22T12:00:00Z');
+  const omSource = { ...WAVE_SOURCE, latStep: 5 };
+
+  // Feeding the unit arithmetic a 1,612-cell grid gives one frame a pass, which at ten-minute
+  // ticks is a week taking four hours and forty minutes. A frame here is one download.
+  it('takes many frames a pass, not the one the unit arithmetic allows', async () => {
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    const asked = [];
+    await advanceFrames(env, {
+      source: omSource, now: NOW, gapMs: 0, sleep: async () => {},
+      fetch: async (url) => { asked.push(url); return { ok: false, status: 404 }; },
+    });
+    expect(framesPerPass(gridCells(5).length)).toBe(1); // what it would have been
+    const out = await env.SUBSCRIPTIONS.get(omSource.partialKey, { type: 'json' });
+    expect(OM_FRAMES_PER_PASS).toBeGreaterThan(1);
+    // Every candidate of the first frame was tried, and it stopped there because a frame that
+    // does not answer ends the pass.
+    expect(asked.length).toBeGreaterThan(0);
+    void out;
+  });
+
+  it('shares one run probe across the pass, so a missing run is asked for once', async () => {
+    // Without this, each frame re-asks every newer run and collects the same 404 -- measured at
+    // three requests a frame where it should be about one.
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    const asked = [];
+    const published = '/0000Z/';
+    await advanceFrames(env, {
+      source: omSource, now: NOW, gapMs: 0, sleep: async () => {},
+      fetch: async (url) => {
+        asked.push(url);
+        if (!url.includes(published)) return { ok: false, status: 404 };
+        // A body that is not one of these files: the frame still fails, but only after the
+        // newer runs have been ruled out, which is what this test is counting.
+        return { ok: true, arrayBuffer: async () => new Uint8Array([0x3c, 0x21]).buffer };
+      },
+    });
+    const newerRuns = asked.filter((u) => !u.includes(published));
+    // Three newer runs, each asked once for the whole pass rather than once per frame.
+    expect(newerRuns.length).toBeLessThanOrEqual(3);
+  });
+});
+
+describe('serving a week whose bytes disagree with its own header', () => {
+  const step = 5;
+  const n = gridCells(step).length;
+  const source = { ...WAVE_SOURCE, latStep: step };
+  const b64 = (c) => 'A'.repeat(4 * Math.ceil(c / 3));
+  const week = (frameCells) => ({
+    generatedAt: Date.now(),
+    cells: n,                       // what it claims
+    latStep: step,
+    coverage: 1,
+    frames: frameTimes(Date.now()).map((t) => ({ t, data: b64(frameCells), dirs: b64(frameCells) })),
+  });
+
+  it('is refused, however well its header reads', () => {
+    // This exact record was live. It passed every check there used to be, and the globe
+    // scrubbed through 28 frames that all drew the same thing.
+    expect(framesAreUsable(week(gridCells(15).length), source)).toBe(false);
+    expect(framesAreUsable(week(n), source)).toBe(true);
+  });
+
+  it('is refused one bad frame at a time, not only when all of them are wrong', () => {
+    const w = week(n);
+    w.frames[9] = { t: w.frames[9].t, data: b64(gridCells(15).length), dirs: b64(gridCells(15).length) };
+    expect(framesAreUsable(w, source)).toBe(false);
   });
 });

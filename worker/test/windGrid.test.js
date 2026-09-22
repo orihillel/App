@@ -1,7 +1,8 @@
 import { describe, it, expect } from 'vitest';
 import {
   fetchWindBatch, buildWindGrid, loadWindGrid,
-  WIND_KEY, REFRESH_MS, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS, WIND_LAT_STEP } from '../src/windGrid.js';
+  WIND_KEY, REFRESH_MS, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS, WIND_LAT_STEP, WIND_OM_LAT_STEP } from '../src/windGrid.js';
+import { MAX_RUNS_BACK } from '../src/omGrid.js';
 import { gridCellCount, base64ToBytes, decodeSpeeds, decodeDirections } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
@@ -128,6 +129,118 @@ describe('buildWindGrid', () => {
     expect(dirs.every((d) => d != null && Math.abs(d - 90) < 2)).toBe(true);
   });
 
+  // The published file is the fast path; the point queries below it are what keeps the overlay
+  // lit when the bucket, the file format or the WebAssembly module is having a bad day.
+  it('prefers the published file, at the finer step, and never touches the point endpoint', async () => {
+    let points = 0;
+    const out = await buildWindGrid({
+      useOm: true,
+      now: NOW,
+      ...INSTANT,
+      fetchImpl: async () => { points++; return okRes([]); },
+      openOm: async () => ({
+        fields: {
+          wind_u_component_10m: { getDimensions: () => [4, 8], read: async () => new Float32Array(32).fill(0) },
+          wind_v_component_10m: { getDimensions: () => [4, 8], read: async () => new Float32Array(32).fill(-10) },
+        },
+        backend: { close: async () => {}, requests: 3 },
+      }),
+    });
+    expect(points).toBe(0);
+    expect(out.cells).toBe(gridCellCount(WIND_OM_LAT_STEP));
+    expect(out.latStep).toBe(WIND_OM_LAT_STEP);
+    expect(out.coverage).toBe(1);
+    expect(out.source).toContain('ncep_gfs013');
+    // 10 m/s blowing south is 36 km/h from the north.
+    const speeds = decodeSpeeds(base64ToBytes(out.data));
+    expect(speeds).toHaveLength(gridCellCount(WIND_OM_LAT_STEP));
+    expect(speeds.every((v) => Math.abs(v - 36) < 1)).toBe(true);
+    const dirs = decodeDirections(base64ToBytes(out.dirs));
+    expect(dirs.every((d) => d != null && (d < 2 || d > 358))).toBe(true);
+  });
+
+  it('falls back to the point queries when the file path finds nothing', async () => {
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(30, 270)));
+    };
+    const out = await buildWindGrid({
+      useOm: true, fetchImpl, now: NOW, ...INSTANT,
+      openOm: async () => { throw new Error('404'); },
+    });
+    expect(out.cells).toBe(gridCellCount(WIND_LAT_STEP));
+    expect(out.latStep).toBe(WIND_LAT_STEP);
+    expect(out.coverage).toBe(1);
+  });
+
+  it('reports an om failure rather than swallowing it into a silent fallback', async () => {
+    // A silent fallback is indistinguishable from one that was never needed, which is how a
+    // broken fast path survives for weeks.
+    const seen = [];
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(30, 270)));
+    };
+    const out = await buildWindGrid({
+      useOm: true, fetchImpl, now: NOW, ...INSTANT,
+      onOmError: (e) => seen.push(String(e.message)),
+      openOm: () => { throw new Error('wasm exploded'); },
+    });
+    // Once per run it walked back through: a transient fault on one run really can clear on an
+    // older one, so it keeps trying, and each attempt that failed for a reason other than "not
+    // published yet" is reported rather than folded into the same silence as a 404.
+    expect(seen).toEqual(Array(MAX_RUNS_BACK).fill('wasm exploded'));
+    expect(out.cells).toBe(gridCellCount(WIND_LAT_STEP));
+  });
+
+  it('reports a fault that escapes the file builder entirely', async () => {
+    // The inner reporting covers a run that would not open. This covers the rest: a file that
+    // opens and then fails while being read, which throws past buildWindGridFromOm's own
+    // handling and would otherwise reach the point queries with nothing said.
+    const seen = [];
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(30, 270)));
+    };
+    const out = await buildWindGrid({
+      useOm: true, fetchImpl, now: NOW, ...INSTANT,
+      onOmError: (e) => seen.push(String(e.message)),
+      openOm: async () => ({
+        fields: {
+          wind_u_component_10m: { getDimensions: () => [4, 8], read: async () => { throw new Error('truncated field'); } },
+          wind_v_component_10m: { getDimensions: () => [4, 8], read: async () => new Float32Array(32) },
+        },
+        backend: { close: async () => {}, requests: 1 },
+      }),
+    });
+    expect(seen).toEqual(['truncated field']);
+    // ...and the overlay is still lit, from the slow path.
+    expect(out.cells).toBe(gridCellCount(WIND_LAT_STEP));
+    expect(out.coverage).toBe(1);
+  });
+
+  it('builds the fallback at whatever step it is handed', async () => {
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(30, 270)));
+    };
+    const out = await buildWindGrid({ fetchImpl, now: NOW, ...INSTANT, step: 20 });
+    expect(out.cells).toBe(gridCellCount(20));
+    expect(out.latStep).toBe(20);
+  });
+
+  it('does not reach for the file unless it is asked to', async () => {
+    // A builder that hits the network unless told not to fires in tests and in callers that
+    // never meant it to.
+    let opened = 0;
+    const fetchImpl = async (url) => {
+      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+      return okRes(Array.from({ length: n }, () => cur(30, 270)));
+    };
+    await buildWindGrid({ fetchImpl, now: NOW, ...INSTANT, openOm: async () => { opened++; throw new Error('x'); } });
+    expect(opened).toBe(0);
+  });
+
   it('keeps the failure that explains a gap, not the last status of any kind', async () => {
     // A later good batch overwriting the 429 is the diagnostic erasing itself.
     let call = 0;
@@ -145,6 +258,32 @@ describe('buildWindGrid', () => {
 });
 
 describe('loadWindGrid', () => {
+  // buildWindGrid is opt-in so it never reaches the bucket unbidden. This is the caller that
+  // opts in, and nothing else does -- observed by whether the file is actually opened, which
+  // is the thing that would stop happening in production if the flag were dropped.
+  const countingOpen = () => {
+    const calls = { n: 0 };
+    return [calls, async () => { calls.n++; throw Object.assign(new Error('nope'), { status: 404 }); }];
+  };
+  const pointFetch = async (url) => {
+    const n = url.split('latitude=')[1].split('&')[0].split(',').length;
+    return okRes(Array.from({ length: n }, () => cur(30, 270)));
+  };
+
+  it('asks for the published file, because it is the production path', async () => {
+    const [calls, openOm] = countingOpen();
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    await loadWindGrid(env, { now: NOW, ...INSTANT, openOm, fetchImpl: pointFetch });
+    expect(calls.n).toBeGreaterThan(0);
+  });
+
+  it('can still be told not to', async () => {
+    const [calls, openOm] = countingOpen();
+    const env = { SUBSCRIPTIONS: createFakeKv() };
+    await loadWindGrid(env, { now: NOW, ...INSTANT, useOm: false, openOm, fetchImpl: pointFetch });
+    expect(calls.n).toBe(0);
+  });
+
   const fullBuild = (over = {}) => async (opts) => ({
     generatedAt: opts.now,
     cells: gridCellCount(WIND_LAT_STEP),

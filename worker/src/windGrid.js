@@ -13,9 +13,16 @@
 import {
   gridCells, gridCellCount, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
+import { buildWindGridFromOm } from './omGrid.js';
 
-// One point per cell still, so the rate limit still sets this. See the note in buildWindGrid.
+// What the point-query fallback builds at. One point per cell, so the per-minute allowance
+// still sets it: 406 cells is one pass inside a minute. See the note in buildWindGrid.
 export const WIND_LAT_STEP = 10;
+
+// What the published file builds at, which is the same 2 degrees the swell grid moved to. The
+// file is read whole whatever the step, so this is a payload decision rather than a cost one,
+// and the two overlays disagreeing about how much detail the world has was visible on screen.
+export const WIND_OM_LAT_STEP = 2;
 
 export const WIND_KEY = 'windgrid:v1';
 
@@ -131,13 +138,44 @@ async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() }
 // painted is the wind over water; but a cell that answers over Kansas is a real answer and must
 // not be mistaken for a failed one.
 export async function buildWindGrid(opts = {}) {
+  // The published file first, exactly as the wave grid does it -- see waveGrid.js. The wind
+  // is not in any wave model's archive, so this reads the 10m u and v components out of an
+  // atmospheric one and combines them here. Three HTTP requests for the whole globe at 0.13
+  // degrees, against four hundred point queries for a tenth of the detail.
+  //
+  // Opt-in for the same reason as the wave path: a builder that reaches the network unless
+  // told not to fires in tests and in callers that never meant it to. loadWindGrid asks.
+  if (opts.useOm) {
+    try {
+      const om = await buildWindGridFromOm({ ...opts, step: opts.step || WIND_OM_LAT_STEP });
+      if (om) {
+        return {
+          generatedAt: om.generatedAt,
+          cells: om.cells,
+          latStep: om.latStep,
+          data: bytesToBase64(encodeSpeeds(om.speeds)),
+          dirs: bytesToBase64(encodeDirections(om.directions)),
+          coverage: om.coverage,
+          windCells: om.windCells,
+          source: om.source,
+          batchesDone: 1,
+          batchesTotal: 1,
+          lastStatus: null,
+          lastError: null,
+        };
+      }
+    } catch (err) {
+      // Reported, never swallowed: a silent fallback is indistinguishable from a fallback that
+      // was never needed, and that is how a broken fast path survives for weeks.
+      opts.onOmError?.(err);
+    }
+  }
+
   const wait = opts.sleep || sleep;
-  // Its own step, not the shared default. The swell grid moved to 2 degrees when the Worker
-  // started building it from published files; wind has no such file yet (the wave model's
-  // archive carries wave variables only), so it is still one point per cell and still bound by
-  // the per-minute allowance that 406 cells was chosen to fit. Sharing the constant would have
-  // sent this path after ten thousand points in a single pass.
-  const cells = gridCells(WIND_LAT_STEP);
+  // Its own step, not the shared default. Sharing the constant would send this path after ten
+  // thousand points in a single pass, which is the exact rate-limit outage waveGrid.js's
+  // comments were written after.
+  const cells = gridCells(opts.step || WIND_LAT_STEP);
   const speeds = new Array(cells.length).fill(null);
   const directions = new Array(cells.length).fill(null);
   let batchesDone = 0;
@@ -174,7 +212,7 @@ export async function buildWindGrid(opts = {}) {
     generatedAt: opts.now || Date.now(),
     cells: cells.length,
     // Travels with the bytes so the app samples at the step this was actually built at.
-    latStep: WIND_LAT_STEP,
+    latStep: opts.step || WIND_LAT_STEP,
     data: bytesToBase64(encodeSpeeds(speeds)),
     dirs: bytesToBase64(encodeDirections(directions)),
     coverage: Math.round(queried * 1000) / 1000,
@@ -206,10 +244,11 @@ function isUsable(grid) {
 
 // The cached wind grid, rebuilt when stale or missing.
 //
-// Built only when it is asked for. That is not laziness, it is the budget: a wind pass is
-// another 406 units against a daily allowance of roughly 10,000 that the swell grid and the
-// animated week already draw on, so the app pays for this layer when someone actually looks at
-// it and nothing when nobody does.
+// This used to be built strictly on demand, and the reason was the budget: a pass was 406 API
+// units against a daily allowance of roughly 10,000 that the swell grid and the animated week
+// already drew on, so the app paid for this layer only when someone looked at it. Reading the
+// published file instead costs three anonymous requests to a public bucket, so that reasoning
+// is gone and the cron warms it like any other cache.
 export async function loadWindGrid(env, opts = {}) {
   const now = opts.now || Date.now();
   let cached = null;
@@ -234,7 +273,7 @@ export async function loadWindGrid(env, opts = {}) {
 
   let fresh;
   try {
-    fresh = await (opts.build ? opts.build(opts) : buildWindGrid({ ...opts, now }));
+    fresh = await (opts.build ? opts.build(opts) : buildWindGrid({ ...opts, now, useOm: opts.useOm !== false }));
   } catch (e) {
     fresh = { batchesDone: 0, batchesTotal: 0, lastError: String((e && e.message) || e) };
   }
