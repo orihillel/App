@@ -10,7 +10,8 @@
     "lint": "eslint ."
   },
   "dependencies": {
-    "@block65/webcrypto-web-push": "^1.0.2"
+    "@block65/webcrypto-web-push": "^1.0.2",
+    "@openmeteo/file-reader": "^0.0.20"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

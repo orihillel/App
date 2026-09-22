@@ -16,20 +16,26 @@
 // reaches half the catalog is actually generated.
 export const GRID_MAX_LAT = 75;
 
-// 10 degrees, and the number is set by the rate limit rather than by taste.
+// How coarse the live globe grid is, in degrees of latitude.
 //
-// At 5 degrees this grid was 1,612 points. Open-Meteo's free tier allows roughly 600 calls a
-// minute, so 1,612 points cannot be fetched inside a minute *at all* — and every design that
-// spread them across several minutes then collided with the platform's bounded invocations.
-// Three attempts failed that way: unpaced (half the grid), paced over 3.2 minutes (never
-// finished), sliced across cron runs (needed ~2.5 hours of ticks). The grid has to fit the
-// budget, not the other way round.
+// This used to be 10, and the number was set by what four hundred point queries cost rather
+// than by what anyone wanted to look at. 10 degrees is about 1,100km a cell -- coarse enough
+// that a whole North Atlantic depression is a handful of cells, and coarse enough that no
+// amount of work on the colour ramp could reveal structure the sampling never captured.
 //
-// 10 degrees is 406 points: one pass, about 32 seconds, comfortably inside a minute's budget.
-// The overlay is interpolated to a 720x360 texture before it reaches the screen, so the cost is
-// detail in the swell field rather than visible blocks — and a coarse map that exists beats a
-// fine one that never loads.
-export const GRID_LAT_STEP = 10;
+// The Worker now builds this from Open-Meteo's published 0.25-degree files instead of from
+// per-point queries (see worker/src/omGrid.js), so resolution stopped being a budget decision:
+// one 1.4MB download covers the whole globe whatever we sample it at. 2 degrees is 10,008
+// cells, about 222km, and costs 26KB over the wire once encoded.
+//
+// Measured against the source it is sampled from, the difference is not subtle. In the
+// Southern Ocean a 10-degree cell averaged 2.51m where the 0.25-degree field says 3.46m; at 2
+// degrees the same point reads 3.48m.
+//
+// Raising it further is now only a payload question rather than an API one. The grid is
+// checked against this constant on the way in (isServable compares cell counts), so a cached
+// grid built at the old resolution is discarded rather than misread.
+export const GRID_LAT_STEP = 2;
 
 // The coarser grid the week-long animation is built on, and it is set by the same arithmetic
 // that set the one above -- the budget, not taste.

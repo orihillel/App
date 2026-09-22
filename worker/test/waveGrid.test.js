@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS } from '../src/waveGrid.js';
+import { fetchBatch, buildGrid, loadGrid, GRID_KEY, REFRESH_MS, BATCH_SIZE, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS, FALLBACK_LAT_STEP } from '../src/waveGrid.js';
 import { gridCells, gridCellCount, base64ToBytes, decodeDirections, encodeHeights, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
@@ -151,8 +151,12 @@ describe('buildGrid', () => {
     let calls = 0;
     const fetchImpl = async (url) => { calls++; return allOk(url); };
     const grid = await buildGrid({ fetchImpl, now: NOW, ...INSTANT });
-    expect(calls).toBe(Math.ceil(gridCellCount() / BATCH_SIZE));
-    expect(grid.cells).toBe(gridCellCount());
+    // The point-query path builds at its own coarser step now: the live grid comes from a
+    // published file, and asking an API for one point per cell at 2 degrees would be ten
+    // thousand requests in a pass. See FALLBACK_LAT_STEP.
+    expect(calls).toBe(Math.ceil(gridCellCount(FALLBACK_LAT_STEP) / BATCH_SIZE));
+    expect(grid.cells).toBe(gridCellCount(FALLBACK_LAT_STEP));
+    expect(grid.latStep).toBe(FALLBACK_LAT_STEP);
     expect(grid.coverage).toBe(1);
     expect(grid.batchesDone).toBe(grid.batchesTotal);
     // First cell is the -75 row: |-75|/10 = 7.5m -> 75 decimetres.
@@ -402,7 +406,7 @@ describe('wave direction', () => {
     const grid = await buildGrid({ ...INSTANT, fetchImpl, now: NOW });
     expect(typeof grid.dirs).toBe('string');
     const back = decodeDirections(base64ToBytes(grid.dirs));
-    expect(back).toHaveLength(gridCellCount());
+    expect(back).toHaveLength(gridCellCount(FALLBACK_LAT_STEP));
     for (const d of back) expect(Math.abs(d - 270)).toBeLessThan(1.5);
   });
 });

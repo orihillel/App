@@ -1,8 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   fetchWindBatch, buildWindGrid, loadWindGrid,
-  WIND_KEY, REFRESH_MS, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS,
-} from '../src/windGrid.js';
+  WIND_KEY, REFRESH_MS, MIN_COVERAGE, FAIL_KEY, FAIL_COOLDOWN_MS, WIND_LAT_STEP } from '../src/windGrid.js';
 import { gridCellCount, base64ToBytes, decodeSpeeds, decodeDirections } from '../../src/lib/wavegrid.js';
 import { createFakeKv } from './fakeKv.js';
 
@@ -111,11 +110,11 @@ describe('buildWindGrid', () => {
       return okRes(Array.from({ length: n }, () => cur(30, 270)));
     };
     const out = await buildWindGrid({ fetchImpl, now: NOW, ...INSTANT });
-    expect(out.cells).toBe(gridCellCount());
+    expect(out.cells).toBe(gridCellCount(WIND_LAT_STEP));
     expect(out.coverage).toBe(1);
     expect(out.batchesDone).toBe(out.batchesTotal);
     const speeds = decodeSpeeds(base64ToBytes(out.data));
-    expect(speeds.length).toBe(gridCellCount());
+    expect(speeds.length).toBe(gridCellCount(WIND_LAT_STEP));
     expect(speeds.every((v) => v === 30)).toBe(true);
   });
 
@@ -148,7 +147,7 @@ describe('buildWindGrid', () => {
 describe('loadWindGrid', () => {
   const fullBuild = (over = {}) => async (opts) => ({
     generatedAt: opts.now,
-    cells: gridCellCount(),
+    cells: gridCellCount(WIND_LAT_STEP),
     data: 'AAA',
     dirs: 'BBB',
     coverage: 1,
@@ -183,7 +182,7 @@ describe('loadWindGrid', () => {
   it('rebuilds a cached grid that has speeds but no directions', async () => {
     const e = env();
     await e.SUBSCRIPTIONS.put(WIND_KEY, JSON.stringify({
-      generatedAt: NOW, cells: gridCellCount(), data: 'OLD', coverage: 1,
+      generatedAt: NOW, cells: gridCellCount(WIND_LAT_STEP), data: 'OLD', coverage: 1,
     }));
     const { grid } = await loadWindGrid(e, { now: NOW + 1000, build: fullBuild() });
     expect(grid.data).toBe('AAA');
@@ -219,7 +218,7 @@ describe('loadWindGrid', () => {
   it('serves an old complete grid rather than nothing when a rebuild fails', async () => {
     const e = env();
     await e.SUBSCRIPTIONS.put(WIND_KEY, JSON.stringify({
-      generatedAt: NOW - REFRESH_MS * 5, cells: gridCellCount(), data: 'OLD', dirs: 'OLDDIR', coverage: 1,
+      generatedAt: NOW - REFRESH_MS * 5, cells: gridCellCount(WIND_LAT_STEP), data: 'OLD', dirs: 'OLDDIR', coverage: 1,
     }));
     const { grid } = await loadWindGrid(e, { now: NOW, build: fullBuild({ coverage: 0 }) });
     expect(grid.data).toBe('OLD');
@@ -240,7 +239,7 @@ describe('loadWindGrid', () => {
     // it paints one ocean's wind onto another.
     const e = env();
     await e.SUBSCRIPTIONS.put(WIND_KEY, JSON.stringify({
-      generatedAt: NOW, cells: gridCellCount() + 7, data: 'OLD', dirs: 'D', coverage: 1,
+      generatedAt: NOW, cells: gridCellCount(WIND_LAT_STEP) + 7, data: 'OLD', dirs: 'D', coverage: 1,
     }));
     const { grid } = await loadWindGrid(e, { now: NOW + 1000, build: fullBuild() });
     expect(grid.data).toBe('AAA');

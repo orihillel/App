@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { WIND_LAT_STEP } from '../src/windGrid.js';
 import { createFakeKv } from './fakeKv.js';
 import { CATALOG } from '../../src/lib/spots.catalog.js';
 import { putSubscription, getSubscription } from '../src/store.js';
@@ -143,9 +144,9 @@ describe('HTTP routes', () => {
     afterEach(() => { globalThis.fetch = realFetch; });
 
     const storedWind = (extra = {}) => ({
-      generatedAt: Date.now(), cells: gridCellCount(), coverage: 1,
-      data: bytesToBase64(encodeSpeeds(new Array(gridCellCount()).fill(24))),
-      dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(270))),
+      generatedAt: Date.now(), cells: gridCellCount(WIND_LAT_STEP), latStep: WIND_LAT_STEP, coverage: 1,
+      data: bytesToBase64(encodeSpeeds(new Array(gridCellCount(WIND_LAT_STEP)).fill(24))),
+      dirs: bytesToBase64(encodeDirections(new Array(gridCellCount(WIND_LAT_STEP)).fill(270))),
       ...extra,
     });
 

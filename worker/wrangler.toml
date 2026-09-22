@@ -52,3 +52,14 @@ ALLOWED_ORIGIN = "https://orihillel.github.io"
 # themselves. The matching secrets are NOT set here; see README.md.
 GOOGLE_CLIENT_ID = "REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID"
 FACEBOOK_APP_ID = "REPLACE_WITH_YOUR_FACEBOOK_APP_ID"
+
+# The .om reader's WebAssembly. Emscripten's web build resolves its own .wasm by URL, which
+# means nothing in a bundled Worker, so the whole wasm package is aliased to a shim that hands
+# it a module the bundler compiled instead. See src/wasm-shim.js for the full reasoning.
+[alias]
+"@openmeteo/file-format-wasm" = "./src/wasm-shim.js"
+
+[[rules]]
+type = "CompiledWasm"
+globs = ["**/*.wasm"]
+fallthrough = true

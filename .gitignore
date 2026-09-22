@@ -23,3 +23,7 @@ android/*.keystore
 android/app/build
 android/build
 android/.gradle
+
+# Playwright verification shots, written next to the repo by the scratchpad scripts
+BAND-*.png
+TAP-*.png
