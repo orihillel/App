@@ -8,7 +8,7 @@ import { formatReadingValue, formatReadingPlace, readingDescription } from '../l
 import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
 import {
   base64ToBytes, decodeHeights, decodeSpeeds, decodeDirections, fillGridGaps, makeGridSampler,
-  GRID_LAT_STEP,
+  GRID_LAT_STEP, gridStepOf,
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
@@ -958,7 +958,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // degrees now because the Worker samples it from a published file, while the wind
           // grid is still 10 because it is still one API call per cell. Assuming either would
           // paint one layer's numbers on the other's geography.
-          const swellStep = typeof grid.latStep === 'number' ? grid.latStep : GRID_LAT_STEP;
+          const swellStep = gridStepOf(grid);
           waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw, swellStep, drawFor('swell').colorFn);
           const material = new THREE.MeshBasicMaterial({
             // 0.62 was costing about a third of every ramp's separation. The overlay is
@@ -1086,7 +1086,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             windRequested = false;
             return;
           }
-          const windStep = typeof grid.latStep === 'number' ? grid.latStep : GRID_LAT_STEP;
+          const windStep = gridStepOf(grid);
           const speeds = decodeSpeeds(base64ToBytes(grid.data));
           const dirs = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
           liveLayers.wind = {

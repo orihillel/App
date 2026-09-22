@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { fetchBuoyObservation, fetchWaveGrid, formatAge, compareToForecast, compareLabel } from './buoy.js';
+import { fetchBuoyObservation, fetchWaveGrid, fetchWindGrid, formatAge, compareToForecast, compareLabel } from './buoy.js';
 
 describe('formatAge', () => {
   it('reads naturally across the range', () => {
@@ -97,6 +97,23 @@ describe('fetchWaveGrid', () => {
 
   beforeEach(() => vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.test'));
   afterEach(() => vi.unstubAllEnvs());
+
+  // The field that made the wind layer paint nothing. The Worker built at 10 degrees and said
+  // so; this list dropped it; the globe fell back to the shared constant and read 406 cells as
+  // a 10,008-cell grid. The legend said the map had loaded and the ocean stayed empty.
+  it('carries how coarse the grid is, for both layers', async () => {
+    for (const fn of [fetchWaveGrid, fetchWindGrid]) {
+      vi.stubGlobal('fetch', respond({ ...GRID, latStep: 10 }));
+      expect((await fn()).latStep).toBe(10);
+      vi.stubGlobal('fetch', respond({ ...GRID, latStep: 2 }));
+      expect((await fn()).latStep).toBe(2);
+      // A Worker too old to send it says nothing rather than guessing, and the caller falls
+      // back from the cell count instead.
+      const { latStep, ...noStep } = { ...GRID, latStep: 5 }; // eslint-disable-line no-unused-vars
+      vi.stubGlobal('fetch', respond(noStep));
+      expect((await fn()).latStep).toBeNull();
+    }
+  });
 
   it('carries every field the globe reads, directions included', async () => {
     vi.stubGlobal('fetch', respond(GRID));
