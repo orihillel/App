@@ -10,6 +10,26 @@ account it needs** — that's this document. Nothing here costs money at this ap
 (Cloudflare's free tier covers it comfortably: cron triggers, ~100k requests/day, KV storage
 all well under the free limits for a personal-scale app).
 
+
+## Licence note: this Worker is GPL-2.0
+
+The globe's swell grid is built from Open-Meteo's published `.om` files rather than from
+per-point API queries, which needs [`@openmeteo/file-reader`](https://github.com/open-meteo/typescript-omfiles)
+to decode them. That package is **GPL-2.0-only** (it wraps TurboPFor and Open-Meteo's own C
+code), so this Worker links GPL-2.0 code and is bound by it.
+
+This is a deliberate trade, taken knowingly:
+
+- The point-query path could not go finer than about 666km a cell without exceeding
+  Open-Meteo's free daily allowance. One published file is the whole globe at 0.25 degrees --
+  about 28km -- for one request, and the grid's resolution stops being a budget decision.
+- It is confined to the Worker. The app itself takes no GPL dependency: it receives the same
+  compact byte grid it always did.
+
+If that licence is ever unacceptable, `buildGrid` still has its original point-query path
+intact behind `useOm: false`, and `FALLBACK_LAT_STEP` is the resolution it can afford.
+
+
 ## Architecture
 
 - **`src/index.js`** — a `fetch` handler (`POST /subscribe`, `POST /unsubscribe`, `GET

@@ -24,23 +24,29 @@ describe('the grid itself', () => {
     for (const r of rows) expect(r.count).toBeGreaterThanOrEqual(8);
   });
 
-  it('fits inside a single minute of the API budget', () => {
-    // The constraint that decided the grid's resolution, and the one three failed attempts
-    // ignored. Open-Meteo's free tier allows roughly 600 calls a minute; a grid larger than
-    // that cannot be fetched in one pass at all, and every design that spread it over several
-    // minutes then ran into the platform's bounded invocations. The grid fits the budget.
-    expect(gridCellCount()).toBeLessThan(600);
-    // And four refreshes a day stay well under the daily allowance.
-    expect(gridCellCount() * 4).toBeLessThan(10000);
+  // The budget used to set this grid's resolution: Open-Meteo's free tier allows roughly 600
+  // calls a minute, one call per cell, so the grid had to fit inside 600 or it could not be
+  // built in a single pass at all. Three designs failed trying to spread it wider.
+  //
+  // The Worker builds this from a published 0.25-degree file now -- one download for the whole
+  // globe, sampled to whatever grid we like -- so that ceiling is gone and these assert what
+  // actually constrains it instead: the size of the thing a phone has to download, and the
+  // fact that the point-query fallback still has to fit the old budget, because it is still
+  // one call per cell.
+  it('is fine enough to show structure the old grid could not', () => {
+    // 10 degrees was ~1,100km a cell. Anything at or above that is back where we started.
+    expect(GRID_LAT_STEP).toBeLessThanOrEqual(4);
+    expect(gridCellCount()).toBeGreaterThan(2000);
   });
 
-  it('completes in one pass, rather than needing several invocations', () => {
-    // 5 batches of 100, 8s apart, is ~32s: inside a single slice. At 5 degrees this was 17
-    // batches over 3.2 minutes, which needed ~2.5 hours of cron ticks to finish and so never
-    // did.
-    const batches = Math.ceil(gridCellCount() / 100);
-    expect((batches - 1) * 8).toBeLessThan(45);
+  it('still fits in a payload a phone can afford', () => {
+    // One byte a cell for heights and one for directions, base64'd for transport. The old grid
+    // was about 1KB; the constraint now is the download, not the API.
+    const cells = gridCellCount();
+    const transported = Math.ceil((cells * 4) / 3) * 2; // two grids, base64 overhead
+    expect(transported).toBeLessThan(80 * 1024);
   });
+
 
   it('agrees with itself about how many cells there are', () => {
     // The Worker fetches by gridCells() and the app addresses by index; a mismatch here would
@@ -90,8 +96,11 @@ describe('encoding', () => {
   });
 
   it('is compact enough to be worth caching', () => {
+    // A byte a cell, base64'd. The grid is twenty times the cells it used to be and still
+    // measures in tens of kilobytes, which is the property that made raising the resolution a
+    // free choice rather than a trade.
     const bytes = encodeHeights(new Array(gridCellCount()).fill(2));
-    expect(bytesToBase64(bytes).length).toBeLessThan(4000);
+    expect(bytesToBase64(bytes).length).toBeLessThan(20000);
   });
 });
 
@@ -361,10 +370,16 @@ describe('sampleDirectionSmooth', () => {
 });
 
 describe('a second, coarser grid for the animation', () => {
-  it('keeps the live grid exactly as it was when no step is given', () => {
-    expect(gridCellCount()).toBe(406);
-    expect(gridCellCount(GRID_LAT_STEP)).toBe(406);
-    expect(gridCells().length).toBe(406);
+  it('defaults to the live grid\'s own step, whatever that currently is', () => {
+    // Pinned to the constant rather than to a number: the live grid moved from 10 degrees to 2
+    // when the Worker started sampling published files instead of querying points, and a test
+    // that hard-codes the cell count turns every future change into a failing assertion rather
+    // than a decision.
+    expect(gridCellCount()).toBe(gridCellCount(GRID_LAT_STEP));
+    expect(gridCells().length).toBe(gridCellCount(GRID_LAT_STEP));
+    // The coarser animation grid must stay genuinely coarser, or the week costs what the live
+    // grid costs and the pacing that makes it affordable stops working.
+    expect(FRAME_LAT_STEP).toBeGreaterThan(GRID_LAT_STEP);
   });
 
   it('is small enough that a week of 6-hourly frames fits a day of the free allowance', () => {

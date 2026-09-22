@@ -953,7 +953,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // Gaps are only filled when there is a mask to stop the fill at the shore. Without
           // one, "no reading" is the only thing marking out land at all, and filling it would
           // paint swell across every continent.
-          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw) : raw, GRID_LAT_STEP, drawFor('swell').colorFn);
+          // The grid says how coarse it is. It used to be assumed from a shared constant, which
+          // was fine only while every layer was built at the same step -- the swell grid is 2
+          // degrees now because the Worker samples it from a published file, while the wind
+          // grid is still 10 because it is still one API call per cell. Assuming either would
+          // paint one layer's numbers on the other's geography.
+          const swellStep = typeof grid.latStep === 'number' ? grid.latStep : GRID_LAT_STEP;
+          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw, swellStep, drawFor('swell').colorFn);
           const material = new THREE.MeshBasicMaterial({
             // 0.62 was costing about a third of every ramp's separation. The overlay is
             // composited over the ocean sphere, so a translucent one is a blend toward that
@@ -984,13 +990,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // height for a land cell from its sea neighbours, which is exactly right for a
           // picture and exactly wrong for a number. Tapping Nevada must say "no reading", not
           // borrow the Pacific's swell.
-          liveLayers.swell = { values: waveMaskTexture ? fillGridGaps(raw) : raw, raw, dirs: directions };
+          liveLayers.swell = { values: waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw, raw, dirs: directions, step: swellStep };
           // The first swell draw does not go through applyLiveLayer -- it builds the texture and
           // the mesh from scratch -- so `painted` has to be set here too. Without this,
           // tap-to-read stayed silent until the layer had been switched at least once, which is
           // the one path nobody takes.
-          painted = { read: raw, dirs: directions, step: GRID_LAT_STEP, layer: 'swell', frame: null };
-          arrowPoints = directions ? buildArrowField(directions, land, GRID_LAT_STEP) : [];
+          painted = { read: raw, dirs: directions, step: swellStep, layer: 'swell', frame: null };
+          arrowPoints = directions ? buildArrowField(directions, land, swellStep) : [];
           if (arrowPoints.length) {
             arrowMesh = new THREE.InstancedMesh(
               arrowGeometry(),
@@ -1042,15 +1048,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const set = liveLayers[name];
       const draw = LAYER_DRAW[name] && drawFor(name);
       if (!set || !draw || !waveCanvasCtx || !waveTexture) return false;
-      paintWaveCanvas(waveCanvasCtx, set.values, GRID_LAT_STEP, 1, draw.colorFn);
-      painted = { read: set.raw || set.values, dirs: set.dirs, step: GRID_LAT_STEP, layer: name, frame: null };
+      const step = set.step || GRID_LAT_STEP;
+      paintWaveCanvas(waveCanvasCtx, set.values, step, 1, draw.colorFn);
+      painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
       waveTexture.needsUpdate = true;
       if (set.dirs && arrowMesh) {
         // No count check. The two layers genuinely disagree about where an arrow can be drawn
         // -- a direction field has nothing to say where opposing swells or a col in the wind
         // cancel out, and they cancel in different places -- so requiring the same number of
         // points meant the arrows silently stayed on the layer being switched away from.
-        arrowPoints = buildArrowField(set.dirs, waveLand, GRID_LAT_STEP, draw.toTravel);
+        arrowPoints = buildArrowField(set.dirs, waveLand, step, draw.toTravel);
         arrowScaleAt = 0; // force the next layout pass to re-orient every instance
       }
       state.dataDirty = true;
@@ -1079,16 +1086,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             windRequested = false;
             return;
           }
+          const windStep = typeof grid.latStep === 'number' ? grid.latStep : GRID_LAT_STEP;
           const speeds = decodeSpeeds(base64ToBytes(grid.data));
           const dirs = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
           liveLayers.wind = {
             // Gaps are filled only when the coastline mask is there to stop the fill at the
             // shore, exactly as the swell does -- without one, "no reading" is the only thing
             // marking out land and filling it paints the map over every continent.
-            values: waveMaskTexture ? fillGridGaps(speeds) : speeds,
+            values: waveMaskTexture ? fillGridGaps(speeds, 2, windStep) : speeds,
             // Unfilled, for tap-to-read. See the swell layer above.
             raw: speeds,
             dirs,
+            step: windStep,
           };
           setWindMeta({
             ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,

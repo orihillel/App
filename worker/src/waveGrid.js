@@ -13,8 +13,14 @@
 // So it is all gone. The grid is 406 points, which is 5 requests, which fits comfortably in one
 // response. It is built when it is asked for, and whatever happens comes back in the reply.
 import {
-  gridCells, gridCellCount, encodeHeights, encodeDirections, bytesToBase64,
+  gridCells, gridCellCount, encodeHeights, encodeDirections, bytesToBase64, GRID_LAT_STEP,
 } from '../../src/lib/wavegrid.js';
+import { buildGridFromOm } from './omGrid.js';
+
+// What the point-query fallback builds at. 406 cells is one pass inside a minute's allowance,
+// which is the constraint that set the live grid's resolution before the published files made
+// it a free choice.
+export const FALLBACK_LAT_STEP = 10;
 
 export const GRID_KEY = 'wavegrid:v1';
 
@@ -160,8 +166,52 @@ async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() }
 
 // Build the whole grid in one go, reporting what happened.
 export async function buildGrid(opts = {}) {
+  // The published file first. One 1.4MB download covers the whole globe at 0.25 degrees, which
+  // is both finer than anything the point queries could afford and a single request instead of
+  // four hundred. See src/omGrid.js.
+  //
+  // Wrapped rather than trusted: this path depends on a bucket, a file format and a
+  // WebAssembly module, and if any of them is having a bad day the point queries below still
+  // draw a map. A coarse map beats a dark globe.
+  // Opt-in rather than default-on. buildGrid is called from tests and from the point-query
+  // path's own callers, and a source that reaches the network unless told not to is one that
+  // fires in places nobody meant it to. loadGrid, the production path, asks for it explicitly.
+  if (opts.useOm) {
+    try {
+      const om = await buildGridFromOm(opts);
+      if (om) {
+        return {
+          generatedAt: om.generatedAt,
+          cells: om.cells,
+          latStep: om.latStep,
+          data: bytesToBase64(encodeHeights(om.heights)),
+          dirs: bytesToBase64(encodeDirections(om.directions)),
+          coverage: om.coverage,
+          oceanCells: om.oceanCells,
+          source: om.source,
+          batchesDone: 1,
+          batchesTotal: 1,
+          lastStatus: null,
+          lastError: null,
+        };
+      }
+    } catch (err) {
+      // Recorded, not swallowed: a silent fallback looks exactly like the fallback never being
+      // needed, which is the failure mode this file's history is made of.
+      opts.onOmError?.(err);
+    }
+  }
+
+  // The fallback builds at its own, coarser step and says so in the payload.
+  //
+  // It cannot build at the fine one: the live grid is 10,008 cells now, and asking a
+  // point-per-cell API for that in a single pass is precisely the rate-limit outage this
+  // file's history is made of. So the fallback stays at the resolution point queries can
+  // actually afford, and `latStep` travels with the bytes so the app samples whatever it was
+  // given rather than whatever it expected.
+  const step = opts.step || FALLBACK_LAT_STEP;
   const wait = opts.sleep || sleep;
-  const cells = gridCells();
+  const cells = gridCells(step);
   const heights = new Array(cells.length).fill(null);
   const directions = new Array(cells.length).fill(null);
   let batchesDone = 0;
@@ -198,6 +248,7 @@ export async function buildGrid(opts = {}) {
   return {
     generatedAt: opts.now || Date.now(),
     cells: cells.length,
+    latStep: step,
     data: bytesToBase64(encodeHeights(heights)),
     // A second byte a cell, for the arrows drawn over the colour. Kept separate from `data`
     // rather than interleaved so an older app build reading only `data` is unaffected.
@@ -237,10 +288,16 @@ function coverageOf(grid) {
 // cooldown, a failed upstream — the last-resort fallbacks below rejected the perfectly good
 // heights too and answered with nothing. A map without arrows beats a blank globe, and the
 // legend already has a line for exactly this case.
+// A grid is servable if its bytes match the resolution it claims, whatever that resolution is.
+//
+// It used to have to match the app's compile-time constant, which made the step something only
+// a redeploy could change and would have rejected the coarse fallback outright. The payload
+// carries `latStep` now, so this checks self-consistency instead: an entry from before that
+// field existed is read at the step the app has always assumed.
 function isServable(grid) {
-  return !!grid && typeof grid.data === 'string'
-    && grid.cells === gridCellCount()
-    && coverageOf(grid) >= MIN_COVERAGE;
+  if (!grid || typeof grid.data !== 'string') return false;
+  const step = typeof grid.latStep === 'number' ? grid.latStep : GRID_LAT_STEP;
+  return grid.cells === gridCellCount(step) && coverageOf(grid) >= MIN_COVERAGE;
 }
 
 function isUsable(grid) {
@@ -278,7 +335,9 @@ export async function loadGrid(env, opts = {}) {
 
   let fresh;
   try {
-    fresh = await (opts.build ? opts.build(opts) : buildGrid({ ...opts, now }));
+    // useOm here rather than inside buildGrid: this is the production path, and it is the one
+    // place that should be reaching for a 1.4MB file off a bucket.
+    fresh = await (opts.build ? opts.build(opts) : buildGrid({ ...opts, now, useOm: opts.useOm !== false }));
   } catch (e) {
     fresh = { batchesDone: 0, batchesTotal: 0, lastError: String((e && e.message) || e) };
   }

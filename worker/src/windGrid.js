@@ -14,6 +14,9 @@ import {
   gridCells, gridCellCount, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
 
+// One point per cell still, so the rate limit still sets this. See the note in buildWindGrid.
+export const WIND_LAT_STEP = 10;
+
 export const WIND_KEY = 'windgrid:v1';
 
 // Hourly, because that is how often the wind fields behind it are re-issued, and because wind
@@ -129,7 +132,12 @@ async function requestBatch(cells, mode, { fetchImpl = fetch, now = Date.now() }
 // not be mistaken for a failed one.
 export async function buildWindGrid(opts = {}) {
   const wait = opts.sleep || sleep;
-  const cells = gridCells();
+  // Its own step, not the shared default. The swell grid moved to 2 degrees when the Worker
+  // started building it from published files; wind has no such file yet (the wave model's
+  // archive carries wave variables only), so it is still one point per cell and still bound by
+  // the per-minute allowance that 406 cells was chosen to fit. Sharing the constant would have
+  // sent this path after ten thousand points in a single pass.
+  const cells = gridCells(WIND_LAT_STEP);
   const speeds = new Array(cells.length).fill(null);
   const directions = new Array(cells.length).fill(null);
   let batchesDone = 0;
@@ -165,6 +173,8 @@ export async function buildWindGrid(opts = {}) {
   return {
     generatedAt: opts.now || Date.now(),
     cells: cells.length,
+    // Travels with the bytes so the app samples at the step this was actually built at.
+    latStep: WIND_LAT_STEP,
     data: bytesToBase64(encodeSpeeds(speeds)),
     dirs: bytesToBase64(encodeDirections(directions)),
     coverage: Math.round(queried * 1000) / 1000,
@@ -186,7 +196,7 @@ function coverageOf(grid) {
 // blank globe, so a grid missing its directions is rebuilt but never thrown away.
 function isServable(grid) {
   return !!grid && typeof grid.data === 'string'
-    && grid.cells === gridCellCount()
+    && grid.cells === gridCellCount(typeof grid.latStep === 'number' ? grid.latStep : WIND_LAT_STEP)
     && coverageOf(grid) >= MIN_COVERAGE;
 }
 
