@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { X, Search, Globe2, Bell, User, MapPin, Plus, Star, Compass } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
-import { ORDER as SEED_ORDER } from '../lib/spots.js';
+import { addedSpotIds, yourSpotIds } from '../lib/spots.js';
 
 // The navigation drawer behind the header's hamburger.
 //
@@ -44,8 +44,8 @@ export function NavDrawer({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const added = order.filter((id) => spots[id] && !SEED_ORDER.includes(id));
-  const yours = [goToId, ...added.filter((id) => id !== goToId)].filter((id) => spots[id]);
+  const added = addedSpotIds(order, spots);
+  const yours = yourSpotIds(order, spots, goToId);
   // Counted from the map this is handed rather than from the module, now that the catalog
   // arrives in its own chunk: before it lands these read the seed set, which is honest -- the
   // globe really does only have those markers yet.

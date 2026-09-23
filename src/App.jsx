@@ -1193,7 +1193,7 @@ export default function App() {
         )}
 
         {alertSheetOpen && alertDraft && (
-          <AlertSheet order={order} spots={spots} alertDraft={alertDraft} setAlertDraft={setAlertDraft} units={units} saveAlert={saveAlert} onClose={closeAlertSheet} />
+          <AlertSheet order={order} spots={spots} goToId={goToId} alertDraft={alertDraft} setAlertDraft={setAlertDraft} units={units} saveAlert={saveAlert} onClose={closeAlertSheet} />
         )}
       </div>
     </div>

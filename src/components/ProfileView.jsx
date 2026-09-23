@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Trash2, Search, Star, MapPin } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
-import { ORDER as SEED_ORDER, searchCatalog } from '../lib/spots.js';
+import { addedSpotIds, yourSpotIds, searchCatalog } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
 import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, windBandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
@@ -43,7 +43,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
   // Globe are how you browse/find a spot; this section is for managing what you personally
   // added on top of that, so it's filtered down to non-seed spots only.
-  const addedIds = order.filter((id) => spots[id] && !SEED_ORDER.includes(id));
+  const addedIds = addedSpotIds(order, spots);
   const stats = sessionStats(sessions);
   const accuracy = ratingAccuracy(sessions);
 
@@ -53,7 +53,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
   const catalogSize = Object.keys(spots).length;
   const goToChoices = goToQuery.trim().length >= 2
     ? searchCatalog(spots, goToQuery, 8).map((m) => m.id)
-    : [goToId, ...addedIds.filter((id) => id !== goToId)].filter((id) => spots[id]);
+    : yourSpotIds(order, spots, goToId);
 
   return (
     <div>
