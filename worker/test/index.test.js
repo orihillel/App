@@ -238,7 +238,35 @@ describe('HTTP routes', () => {
   it('GET /health responds ok', async () => {
     const res = await worker.fetch(new Request('https://worker.example/health'), makeEnv());
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ ok: true });
+    const body = await res.json();
+    expect(body.ok).toBe(true);
+    // Setting sign-in up is six values across three dashboards, and a missing one used to show
+    // as a button that never appeared or a sign-in that failed after the consent screen.
+    // Neither says which of the six. This does.
+    expect(body.config).toEqual({
+      googleSignIn: true, facebookSignIn: true, sessions: true, push: true, allowedOrigin: true,
+    });
+  });
+
+  it('reports a provider unconfigured when its session secret is missing, not just its own keys', async () => {
+    // The half that was easy to miss: Google set up, step 6 skipped. Nothing can sign a
+    // session, so nobody can sign in, and the Google half alone would have read "ready".
+    const env = makeEnv();
+    delete env.SESSION_SECRET;
+    const body = await (await worker.fetch(new Request('https://worker.example/health'), env)).json();
+    expect(body.config.sessions).toBe(false);
+    expect(body.config.googleSignIn).toBe(false);
+    expect(body.config.facebookSignIn).toBe(false);
+    // ...and push is unaffected: the two features are configured separately.
+    expect(body.config.push).toBe(true);
+  });
+
+  it('never puts a configured value in the report, only whether it is there', async () => {
+    const env = makeEnv();
+    const text = await (await worker.fetch(new Request('https://worker.example/health'), env)).text();
+    for (const name of ['SESSION_SECRET', 'FACEBOOK_APP_SECRET', 'VAPID_PRIVATE_KEY', 'GOOGLE_CLIENT_ID']) {
+      if (env[name]) expect(text).not.toContain(env[name]);
+    }
   });
 
   it('responds 404 for an unknown route', async () => {
@@ -286,6 +314,46 @@ describe('account login and sync routes', () => {
     const res = await worker.fetch(new Request('https://worker.example/auth/google', { method: 'POST', body: JSON.stringify({}) }), makeEnv());
     expect(res.status).toBe(400);
     expect(verifyGoogleIdToken).not.toHaveBeenCalled();
+  });
+
+  // The failure this was actually costing: Google configured, session secret forgotten. The
+  // provider verifies the user, createSessionToken then throws on a zero-length HMAC key, and
+  // the throw escapes the route with no CORS headers -- so the browser reports a network error
+  // after a *successful* consent screen and nothing anywhere names the missing setting.
+  it('answers rather than throwing when the session secret is missing', async () => {
+    for (const [path, body, mock, profile] of [
+      ['/auth/google', { idToken: 'fake-token' }, verifyGoogleIdToken, GOOGLE_PROFILE],
+      ['/auth/facebook', { accessToken: 'fake-token' }, verifyFacebookAccessToken, FACEBOOK_PROFILE],
+    ]) {
+      mock.mockResolvedValue(profile);
+      const env = makeEnv();
+      delete env.SESSION_SECRET;
+      const res = await worker.fetch(new Request('https://worker.example' + path, { method: 'POST', body: JSON.stringify(body) }), env);
+      expect(res.status).toBe(501);
+      // Named, not merely refused -- six settings across three dashboards, and this says which.
+      expect((await res.json()).missing).toContain('SESSION_SECRET');
+      // And it never reached the provider: there is nothing to do with a verified user it
+      // cannot issue a session for.
+      expect(mock).not.toHaveBeenCalled();
+    }
+  });
+
+  it('names every missing setting at once, not one per attempt', async () => {
+    const env = makeEnv();
+    delete env.FACEBOOK_APP_SECRET;
+    delete env.SESSION_SECRET;
+    const res = await worker.fetch(new Request('https://worker.example/auth/facebook', { method: 'POST', body: JSON.stringify({ accessToken: 'x' }) }), env);
+    expect(res.status).toBe(501);
+    expect((await res.json()).missing.sort()).toEqual(['FACEBOOK_APP_SECRET', 'SESSION_SECRET']);
+  });
+
+  it('treats a bearer token as invalid, not fatal, when the session secret is missing', async () => {
+    // The read path has the same zero-length-key throw. A 401 is the honest answer: with no
+    // secret, no token can be valid.
+    const env = makeEnv();
+    delete env.SESSION_SECRET;
+    const res = await worker.fetch(authedRequest('https://worker.example/me', 'anything'), env);
+    expect(res.status).toBe(401);
   });
 
   it('POST /auth/google is 501 when GOOGLE_CLIENT_ID is not configured', async () => {

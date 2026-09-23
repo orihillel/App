@@ -36,6 +36,17 @@ jobs:
           # -> Variables). Both are meant to be public, safe to store as plain variables.
           VITE_VAPID_PUBLIC_KEY: ${{ vars.VITE_VAPID_PUBLIC_KEY }}
           VITE_PUSH_API_URL: ${{ vars.VITE_PUSH_API_URL }}
+          # Sign-in, on the same terms: an OAuth client id and a Meta app id both identify the
+          # app rather than authenticating it, so they are public and belong in Variables, not
+          # Secrets. Vite inlines them at build time; unset, they resolve to empty strings and
+          # src/lib/auth.js reports the provider unconfigured, so the button does not render.
+          #
+          # These were documented in worker/README.md as the step that turns the buttons on,
+          # and were never read here -- so following that step exactly still produced a build
+          # with no sign-in, and nothing said why. A variable that nothing consumes is not a
+          # setting, it is a note to yourself.
+          VITE_GOOGLE_CLIENT_ID: ${{ vars.VITE_GOOGLE_CLIENT_ID }}
+          VITE_FACEBOOK_APP_ID: ${{ vars.VITE_FACEBOOK_APP_ID }}
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

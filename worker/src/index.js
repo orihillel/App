@@ -324,10 +324,30 @@ async function issueSession(env, provider, providerProfile) {
   return { sessionToken, profile: record.profile, appData: record.appData, isNewAccount };
 }
 
+// Every sign-in needs a session secret as much as it needs the provider's own credentials.
+//
+// Without one, createSessionToken throws -- Web Crypto refuses a zero-length HMAC key, which
+// is the right failure but the wrong place for it: the throw happens *after* the provider has
+// verified the user, escapes the route with no CORS headers on it, and reaches the browser as
+// a network error. Someone who set up Google and forgot step 6 signs in successfully and is
+// told nothing at all. Checked up front instead, beside the provider's own check, so the
+// answer names the missing piece.
+//
+// It is not a security gate: the throw already refuses to sign anything with an empty key, so
+// no weakly-signed token was ever issued. This is about being able to tell what is wrong.
+function missingAuthConfig(env, ...required) {
+  const missing = required.filter((name) => !env[name]);
+  if (!env.SESSION_SECRET) missing.push('SESSION_SECRET');
+  return missing;
+}
+
 async function handleGoogleAuth(request, env) {
   const { idToken } = await request.json();
   if (!idToken) return json({ error: 'Missing idToken' }, env, 400);
-  if (!env.GOOGLE_CLIENT_ID) return json({ error: 'Google sign-in is not configured on this server' }, env, 501);
+  const missing = missingAuthConfig(env, 'GOOGLE_CLIENT_ID');
+  if (missing.length) {
+    return json({ error: 'Google sign-in is not configured on this server', missing }, env, 501);
+  }
   const profile = await verifyGoogleIdToken(idToken, env.GOOGLE_CLIENT_ID);
   if (!profile) return json({ error: 'Invalid Google credential' }, env, 401);
   return json(await issueSession(env, 'google', profile), env);
@@ -336,7 +356,10 @@ async function handleGoogleAuth(request, env) {
 async function handleFacebookAuth(request, env) {
   const { accessToken } = await request.json();
   if (!accessToken) return json({ error: 'Missing accessToken' }, env, 400);
-  if (!env.FACEBOOK_APP_ID || !env.FACEBOOK_APP_SECRET) return json({ error: 'Facebook login is not configured on this server' }, env, 501);
+  const missing = missingAuthConfig(env, 'FACEBOOK_APP_ID', 'FACEBOOK_APP_SECRET');
+  if (missing.length) {
+    return json({ error: 'Facebook login is not configured on this server', missing }, env, 501);
+  }
   const profile = await verifyFacebookAccessToken(accessToken, env.FACEBOOK_APP_ID, env.FACEBOOK_APP_SECRET);
   if (!profile) return json({ error: 'Invalid Facebook credential' }, env, 401);
   return json(await issueSession(env, 'facebook', profile), env);
@@ -349,6 +372,10 @@ async function requireSession(request, env) {
   const header = request.headers.get('Authorization') || '';
   const [scheme, token] = header.split(' ');
   if (scheme !== 'Bearer' || !token) return null;
+  // No guard for a missing SESSION_SECRET here: verifySessionToken already catches the
+  // zero-length-key error its own crypto raises and answers null, which is the right answer --
+  // with no secret, no token can be valid. Checked, not assumed; a guard here would have been
+  // dead code wearing a reason.
   const payload = await verifySessionToken(token, env.SESSION_SECRET);
   return payload ? payload.sub : null;
 }
@@ -413,6 +440,32 @@ export async function checkSubscription(env, endpoint, record) {
   if (changed) await env.SUBSCRIPTIONS.put(endpoint, JSON.stringify({ subscription: record.subscription, alerts: record.alerts, lastNotified }));
 }
 
+// What this Worker can actually do, given what has been configured.
+//
+// Booleans, never values: which settings are present is the thing that is hard to find out
+// from outside, and it is not a secret -- the app already reveals the same facts by whether a
+// button renders. The values themselves stay where they are.
+//
+// This exists because setting sign-in up is six values across three dashboards, and a missing
+// one showed up as a button that never appeared or a sign-in that failed after the consent
+// screen. Neither says which of the six. `curl <worker>/health` does.
+export function healthReport(env) {
+  const has = (name) => Boolean(env[name]);
+  const sessions = has('SESSION_SECRET');
+  return {
+    ok: true,
+    config: {
+      // Sign-in needs its provider's credentials *and* a session secret; reporting the two
+      // halves separately is what makes "I set up Google and it still fails" answerable.
+      googleSignIn: has('GOOGLE_CLIENT_ID') && sessions,
+      facebookSignIn: has('FACEBOOK_APP_ID') && has('FACEBOOK_APP_SECRET') && sessions,
+      sessions,
+      push: has('VAPID_PUBLIC_KEY') && has('VAPID_PRIVATE_KEY') && has('VAPID_SUBJECT'),
+      allowedOrigin: has('ALLOWED_ORIGIN'),
+    },
+  };
+}
+
 export default {
   async fetch(request, env) {
     const url = new URL(request.url);
@@ -431,7 +484,7 @@ export default {
     if (request.method === 'GET' && url.pathname === '/wavegrid/frames') return handleWaveFrames(request, env);
     if (request.method === 'GET' && url.pathname === '/windgrid') return handleWindGrid(request, env);
     if (request.method === 'GET' && url.pathname === '/windgrid/frames') return handleWaveFrames(request, env, WIND_SOURCE);
-    if (request.method === 'GET' && url.pathname === '/health') return json({ ok: true }, env);
+    if (request.method === 'GET' && url.pathname === '/health') return json(healthReport(env), env);
     return json({ error: 'Not found' }, env, 404);
   },
 

@@ -114,7 +114,16 @@ async function postJson(path, body) {
     body: JSON.stringify(body),
   });
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || ('Sign-in failed (' + res.status + ')'));
+  if (!res.ok) {
+    // The Worker names the settings it is missing when sign-in is not configured (see its
+    // /auth/* handlers). Passing that through is the difference between "not configured" --
+    // which the person reading it has no way to act on -- and "SESSION_SECRET". Setting this
+    // up is six values across three dashboards; the toast should say which one.
+    const missing = Array.isArray(data.missing) && data.missing.length
+      ? ' (missing: ' + data.missing.join(', ') + ')'
+      : '';
+    throw new Error((data.error || ('Sign-in failed (' + res.status + ')')) + missing);
+  }
   return data;
 }
 

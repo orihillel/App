@@ -95,6 +95,37 @@ describe('loginWithGoogleIdToken / loginWithFacebookAccessToken', () => {
     expect(JSON.parse(fetch.mock.calls[0][1].body)).toEqual({ accessToken: 'fake-access-token' });
   });
 
+  it('names the settings the server says are missing, not just that it is not configured', async () => {
+    // "Google sign-in is not configured on this server" is not something the person reading
+    // the toast can act on. The list is.
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 501,
+      json: async () => ({ error: 'Google sign-in is not configured on this server', missing: ['SESSION_SECRET'] }),
+    }));
+    const { loginWithGoogleIdToken } = await loadAuthModule();
+    await expect(loginWithGoogleIdToken('x')).rejects.toThrow('not configured on this server (missing: SESSION_SECRET)');
+  });
+
+  it('lists every missing setting when there is more than one', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 501,
+      json: async () => ({ error: 'Facebook login is not configured on this server', missing: ['FACEBOOK_APP_SECRET', 'SESSION_SECRET'] }),
+    }));
+    const { loginWithFacebookAccessToken } = await loadAuthModule();
+    await expect(loginWithFacebookAccessToken('x')).rejects.toThrow('(missing: FACEBOOK_APP_SECRET, SESSION_SECRET)');
+  });
+
+  it('adds nothing when the server sent no list, so an ordinary failure reads as before', async () => {
+    vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({
+      ok: false, status: 401, json: async () => ({ error: 'Invalid Google credential' }),
+    }));
+    const { loginWithGoogleIdToken } = await loadAuthModule();
+    await expect(loginWithGoogleIdToken('x')).rejects.toThrow(/^Invalid Google credential$/);
+  });
+
   it('throws the server\'s error message on a non-ok response, and does not save a session', async () => {
     vi.stubEnv('VITE_PUSH_API_URL', 'https://worker.example');
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ ok: false, status: 401, json: async () => ({ error: 'Invalid Google credential' }) }));
