@@ -1,6 +1,6 @@
 // The full spot catalog, in a chunk of its own.
 //
-// This is 161KB of source -- 43.0KB gzipped as its own chunk, and it grows with every spot
+// This is 164KB of source -- 43.8KB gzipped as its own chunk, and it grows with every spot
 // added, for hundreds of spots when the home screen shows one. Before it was split out it was
 // a quarter of everything the browser had to download before the app could run.
 // It is loaded through loadCatalog() in spots.js once the app is on screen, so the first
@@ -9,7 +9,7 @@
 //
 // spots.js holds a handful of these verbatim as SEED_SPOTS, enough to render before this
 // arrives; spots.test.js asserts the two never drift apart. What the first load does carry is
-// ORDER, the bare id list -- 718 ids, a few KB, against 43KB gzipped for the catalog itself.
+// ORDER, the bare id list -- 730 ids, a few KB, against 43.8KB gzipped for the catalog itself.
 //
 // Provenance: see HANDOFF.md for provenance notes — most of these were
 // re-verified against real sources, a few were corrected (see git history).
@@ -882,4 +882,16 @@ export const CATALOG = {
   kimmeridge: { name: 'Kimmeridge Bay', region: 'Dorset, England', blurb: 'Ledgy right off a shale reef on the Jurassic Coast, needing a big westerly swell to show up.', lat: 50.6060, lon: -2.1360, offshoreDeg: 20 },
   ervik: { name: 'Ervik', region: 'Stad, Norway', blurb: 'Exposed west-coast beach on the Stad peninsula, cold and powerful and rarely flat.', lat: 62.1700, lon: 5.1100, offshoreDeg: 110 },
   lokken: { name: 'Løkken', region: 'North Jutland, Denmark', blurb: 'Wide North Sea beach with banks along its whole length, busiest through the autumn storms.', lat: 57.3670, lon: 9.7080, offshoreDeg: 90 },
+  pinamar: { name: 'Pinamar', region: 'Buenos Aires, Argentina', blurb: 'Pine-planted resort town on the open Atlantic coast north of Mar del Plata, with beach breaks the length of its shore.', lat: -37.1100, lon: -56.8600, offshoreDeg: 290 },
+  villagesell: { name: 'Villa Gesell', region: 'Buenos Aires, Argentina', blurb: 'Open beach breaks just south of Pinamar, with sandbanks that shift through the season.', lat: -37.2600, lon: -57.0000, offshoreDeg: 290 },
+  joseignacio: { name: 'José Ignacio', region: 'Maldonado, Uruguay', blurb: 'Fishing-village-turned-getaway east of Punta del Este, with a lighthouse point and a rivermouth either side of it.', lat: -34.8400, lon: -54.6300, offshoreDeg: 300 },
+  labarra: { name: 'La Barra', region: 'Maldonado, Uruguay', blurb: 'Open Atlantic beach at the mouth of the Arroyo Maldonado, a bridge crossing from Punta del Este.', lat: -34.9000, lon: -54.8700, offshoreDeg: 290 },
+  orre: { name: 'Orre', region: 'Jæren, Norway', blurb: 'The same exposed sand coast as Borestranden a little further south, and usually the quieter of the two.', lat: 58.7900, lon: 5.5700, offshoreDeg: 90 },
+  grindavik: { name: 'Grindavík', region: 'Reykjanes Peninsula, Iceland', blurb: 'A fast right-hand reef off an Icelandic fishing port, heavier and more consistent than the beach breaks nearby.', lat: 63.8400, lon: -22.4300, offshoreDeg: 15 },
+  vorupor: { name: 'Vorupør', region: 'North Jutland, Denmark', blurb: "A fishing village on the Cold Hawaii coast, with breaks either side of its own small pier.", lat: 56.9600, lon: 8.3300, offshoreDeg: 100 },
+  agger: { name: 'Agger', region: 'North Jutland, Denmark', blurb: 'The southern end of the Cold Hawaii stretch, where the beach narrows toward the Limfjord.', lat: 56.7800, lon: 8.2300, offshoreDeg: 100 },
+  rabodepeixe: { name: 'Rabo de Peixe', region: 'São Miguel, Azores', blurb: "The Azores' biggest fishing port, with a wave breaking inside the harbour wall that still draws a winter crowd.", lat: 37.8100, lon: -25.6000, offshoreDeg: 180 },
+  vaanajoesuu: { name: 'Vääna-Jõesuu', region: 'Estonia', blurb: "The most west-facing stretch of coast near Tallinn, and the country's most consistent break.", lat: 59.3600, lon: 24.3900, offshoreDeg: 90 },
+  yyteri: { name: 'Yyteri', region: 'Pori, Finland', blurb: "A long sandy beach on the Gulf of Bothnia, and Finland's most surfed stretch of coast.", lat: 61.6000, lon: 21.4000, offshoreDeg: 100 },
+  stouensbay: { name: "St Ouen's Bay", region: 'Jersey', blurb: 'Three miles of sandbanks on the island\'s west coast, once billed as the surf capital of Europe.', lat: 49.2100, lon: -2.2000, offshoreDeg: 90 },
 };

@@ -124,6 +124,8 @@ export const ORDER = [
   'kallialay', 'sasihithlu', 'hiriketiya', 'madiha', 'kujukuri', 'amami', 'irino', 'ansteys', 'noordhoek', 'saopedrodemoel',
   'vagueira', 'zambujeira', 'lizandro', 'berria', 'patos', 'mimizan', 'capferret', 'siouville', 'crabisland', 'keelachill',
   'portrush', 'manorbier', 'hellsmouth', 'kimmeridge', 'ervik', 'lokken',
+  'pinamar', 'villagesell', 'joseignacio', 'labarra', 'orre', 'grindavik', 'vorupor', 'agger',
+  'rabodepeixe', 'vaanajoesuu', 'yyteri', 'stouensbay',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
