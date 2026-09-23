@@ -19,7 +19,7 @@ vi.mock('../src/googleAuth.js', () => ({ verifyGoogleIdToken: vi.fn() }));
 vi.mock('../src/facebookAuth.js', () => ({ verifyFacebookAccessToken: vi.fn() }));
 
 // Imported after the mocks so index.js picks up the mocked modules.
-const { default: worker, checkSubscription } = await import('../src/index.js');
+const { default: worker, checkSubscription, isConfigured } = await import('../src/index.js');
 const { sendPushNotification } = await import('../src/push.js');
 const { verifyGoogleIdToken } = await import('../src/googleAuth.js');
 const { verifyFacebookAccessToken } = await import('../src/facebookAuth.js');
@@ -259,6 +259,24 @@ describe('HTTP routes', () => {
     expect(body.config.facebookSignIn).toBe(false);
     // ...and push is unaffected: the two features are configured separately.
     expect(body.config.push).toBe(true);
+  });
+
+  it('does not call an unedited placeholder configured', async () => {
+    // wrangler.toml ships these as REPLACE_WITH_... and a placeholder is a truthy string. Left
+    // alone it reports the provider ready, renders the button, and fails at Google with
+    // "Invalid Google credential" -- which reads like a bad token, not an unedited file.
+    const env = makeEnv({
+      GOOGLE_CLIENT_ID: 'REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID',
+      FACEBOOK_APP_ID: 'REPLACE_WITH_YOUR_FACEBOOK_APP_ID',
+    });
+    const body = await (await worker.fetch(new Request('https://worker.example/health'), env)).json();
+    expect(body.config.googleSignIn).toBe(false);
+    expect(body.config.facebookSignIn).toBe(false);
+    // ...and the sign-in route says which one, instead of letting the provider reject it.
+    const res = await worker.fetch(new Request('https://worker.example/auth/google', { method: 'POST', body: JSON.stringify({ idToken: 'x' }) }), env);
+    expect(res.status).toBe(501);
+    expect((await res.json()).missing).toEqual(['GOOGLE_CLIENT_ID']);
+    expect(verifyGoogleIdToken).not.toHaveBeenCalled();
   });
 
   it('never puts a configured value in the report, only whether it is there', async () => {
@@ -777,5 +795,23 @@ describe('GET /tide', () => {
     const res = await worker.fetch(new Request('https://worker.example/tide?lat=&lon=-117.25'), makeEnv());
     expect(res.status).toBe(400);
     expect(spy).not.toHaveBeenCalled();
+  });
+});
+
+describe('isConfigured', () => {
+  it('accepts a real value and rejects the ways a setting can be absent', () => {
+    expect(isConfigured('123-abc.apps.googleusercontent.com')).toBe(true);
+    expect(isConfigured('REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID')).toBe(false);
+    expect(isConfigured('REPLACE_WITH_YOUR_FACEBOOK_APP_ID')).toBe(false);
+    expect(isConfigured('')).toBe(false);
+    expect(isConfigured(undefined)).toBe(false);
+    expect(isConfigured(null)).toBe(false);
+  });
+
+  it('does not reject a value that merely mentions the word', () => {
+    // Only the placeholder shape, not anything containing it -- a secret is arbitrary text and
+    // may legitimately contain any substring.
+    expect(isConfigured('my-REPLACE_WITH-secret')).toBe(true);
+    expect(isConfigured('xREPLACE_WITH_YOU')).toBe(true);
   });
 });

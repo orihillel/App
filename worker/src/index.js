@@ -335,9 +335,19 @@ async function issueSession(env, provider, providerProfile) {
 //
 // It is not a security gate: the throw already refuses to sign anything with an empty key, so
 // no weakly-signed token was ever issued. This is about being able to tell what is wrong.
+// wrangler.toml ships GOOGLE_CLIENT_ID and FACEBOOK_APP_ID as REPLACE_WITH_... placeholders,
+// and a placeholder is a perfectly truthy string. Left unhandled it makes every check here
+// pass on a Worker nobody has finished setting up: /health reports the provider ready, the
+// button renders, and the sign-in fails at the provider with "Invalid Google credential" --
+// which reads like a bad token rather than an unedited config file. A diagnostic that lies
+// about the commonest half-finished state is worse than none.
+export function isConfigured(value) {
+  return typeof value === 'string' ? value.length > 0 && !value.startsWith('REPLACE_WITH_') : Boolean(value);
+}
+
 function missingAuthConfig(env, ...required) {
-  const missing = required.filter((name) => !env[name]);
-  if (!env.SESSION_SECRET) missing.push('SESSION_SECRET');
+  const missing = required.filter((name) => !isConfigured(env[name]));
+  if (!isConfigured(env.SESSION_SECRET)) missing.push('SESSION_SECRET');
   return missing;
 }
 
@@ -450,7 +460,7 @@ export async function checkSubscription(env, endpoint, record) {
 // one showed up as a button that never appeared or a sign-in that failed after the consent
 // screen. Neither says which of the six. `curl <worker>/health` does.
 export function healthReport(env) {
-  const has = (name) => Boolean(env[name]);
+  const has = (name) => isConfigured(env[name]);
   const sessions = has('SESSION_SECRET');
   return {
     ok: true,
