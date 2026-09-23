@@ -211,14 +211,53 @@ repo variable:
 Set them wherever the frontend gets built:
 - **Locally**: create `.env.local` at the repo root (gitignored by Vite's default patterns)
   with the `VITE_...` lines you need.
-- **GitHub Pages deploy** (`.github/workflows/deploy.yml`): add them as repository variables
-  (Settings → Secrets and variables → Actions → Variables) and reference them as `env:` in the
-  build step, or bake them into the workflow file directly since they're not secret.
+- **GitHub Pages deploy**: add them as repository variables (Settings → Secrets and variables
+  → Actions → **Variables**, not Secrets — none of these is one). `deploy.yml` already reads
+  all four; there is nothing to edit in the workflow.
+
+  It did not always. `VITE_GOOGLE_CLIENT_ID` and `VITE_FACEBOOK_APP_ID` were documented here
+  and never read by the build, so following this section exactly still produced a bundle with
+  no sign-in buttons and nothing that said why. If you set them before that was fixed, they
+  are already in place and the next deploy picks them up.
 
 Without `VITE_VAPID_PUBLIC_KEY`/`VITE_PUSH_API_URL` set, the Profile push toggle just shows
 "Not available"; without `VITE_GOOGLE_CLIENT_ID`/`VITE_FACEBOOK_APP_ID`, the corresponding
 login button just doesn't render. The rest of the app works identically either way — every
 piece here is intentionally optional, not a hard dependency.
+
+## Checking what is actually configured
+
+Sign-in is six values across three dashboards, and the two ways it fails from a half-finished
+setup look like nothing at all: a button that never renders (a missing `VITE_...` variable) or
+a sign-in that fails *after* the provider's consent screen (a missing Worker secret).
+
+`GET /health` answers both without guessing:
+
+```bash
+curl https://tideline-push.<your-subdomain>.workers.dev/health
+```
+
+```json
+{
+  "ok": true,
+  "config": {
+    "googleSignIn": true,
+    "facebookSignIn": false,
+    "sessions": true,
+    "push": true,
+    "allowedOrigin": true
+  }
+}
+```
+
+Booleans only — it never echoes a configured value. `googleSignIn` and `facebookSignIn` each
+require **both** that provider's own credentials and `sessions` (i.e. `SESSION_SECRET`), which
+is the half that is easiest to skip: set Google up, miss step 6, and sign-in gets all the way
+through Google's consent screen before failing. When that happens the app's own error now names
+the missing setting rather than saying "not configured".
+
+Note this covers the *Worker* side only. A `true` here with no button on the page means the
+frontend variable above is missing, not the Worker secret.
 
 ## Deploying the Worker from CI
 
@@ -231,8 +270,17 @@ It needs two repository secrets (Settings → Secrets and variables → Actions 
 - `CLOUDFLARE_ACCOUNT_ID` — found in the dashboard's right sidebar on any domain/Workers page.
 
 The `VAPID_PRIVATE_KEY`, `FACEBOOK_APP_SECRET`, and `SESSION_SECRET` secrets (steps 3, 5, and
-6 above) are set directly on the Worker via `wrangler secret put` and aren't something CI needs
-to touch — they persist across deploys.
+6 above) are set directly on the Worker and aren't something CI needs to touch — they persist
+across deploys, so a deploy never clears one you set by hand.
+
+Two ways to set them, either is fine:
+- `npx wrangler secret put SESSION_SECRET` from `worker/`, which prompts for the value.
+- Cloudflare dashboard → Workers & Pages → `tideline-push` → Settings → Variables and Secrets
+  → Add, with the type set to **Secret**. No local tooling needed.
+
+Deliberately not pushed from CI: a workflow that wrote every secret on every deploy would
+overwrite a correctly-set one with an empty string the moment a repository secret was renamed
+or removed, and a silently-blanked `SESSION_SECRET` signs nobody out until their token expires.
 
 ## Local development
 
