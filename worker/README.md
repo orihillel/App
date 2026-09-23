@@ -269,18 +269,40 @@ It needs two repository secrets (Settings → Secrets and variables → Actions 
   "Edit Cloudflare Workers" template (scope it to this account if offered the choice).
 - `CLOUDFLARE_ACCOUNT_ID` — found in the dashboard's right sidebar on any domain/Workers page.
 
-The `VAPID_PRIVATE_KEY`, `FACEBOOK_APP_SECRET`, and `SESSION_SECRET` secrets (steps 3, 5, and
-6 above) are set directly on the Worker and aren't something CI needs to touch — they persist
-across deploys, so a deploy never clears one you set by hand.
+### The Worker's own secrets
 
-Two ways to set them, either is fine:
+`VAPID_PRIVATE_KEY`, `FACEBOOK_APP_SECRET` and `SESSION_SECRET` (steps 3, 5 and 6 above) can be
+managed either from CI or by hand, and the two mix freely.
+
+**From CI** — add any of them as repository secrets under the same names (Settings → Secrets
+and variables → Actions → **Secrets**). The deploy workflow pushes each one it finds, right
+after the deploy itself.
+
+**By hand** — either of:
 - `npx wrangler secret put SESSION_SECRET` from `worker/`, which prompts for the value.
 - Cloudflare dashboard → Workers & Pages → `tideline-push` → Settings → Variables and Secrets
-  → Add, with the type set to **Secret**. No local tooling needed.
+  → Add, type **Secret**. No local tooling needed.
 
-Deliberately not pushed from CI: a workflow that wrote every secret on every deploy would
-overwrite a correctly-set one with an empty string the moment a repository secret was renamed
-or removed, and a silently-blanked `SESSION_SECRET` signs nobody out until their token expires.
+The rule that lets those coexist: **a secret that is not in this repository is left exactly as
+it is on the Worker.** It is never written as an empty string. So you can manage one from CI
+and another from the dashboard, and removing a repository secret stops CI managing it rather
+than wiping it.
+
+That skip is the whole safety property, and it is there because the failure without it is
+quiet: a renamed or deleted repository secret would blank the live one, and a blanked
+`SESSION_SECRET` signs nobody out — every already-issued token keeps being accepted, wrongly,
+until it expires up to thirty days later.
+
+Two things the workflow does not do, on purpose: it never echoes a value, and it never passes
+one as a command-line argument (arguments are visible in the process list) — they go in on
+stdin. Wrangler trims trailing whitespace itself, so a newline caught in a copy-paste does not
+silently become part of the key.
+
+`GOOGLE_CLIENT_ID` and `FACEBOOK_APP_ID` are *not* secrets and stay in `wrangler.toml`. Leave
+them as the shipped `REPLACE_WITH_...` placeholders and the Worker treats them as unset — it
+will not report the provider ready on `/health` and will not hand an unedited placeholder to
+Google, which would come back as "Invalid Google credential" and read like a bad token rather
+than an unedited config file.
 
 ## Local development
 

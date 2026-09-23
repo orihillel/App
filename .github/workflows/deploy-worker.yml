@@ -96,3 +96,48 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: worker
           command: deploy
+
+      # The Worker's own secrets, from repository secrets of the same names.
+      #
+      # After the deploy, not before: `wrangler secret put` targets a Worker that exists, and
+      # on a first-ever run nothing exists until the step above has published it.
+      #
+      # The rule that makes this safe to run on every deploy is the skip. A secret absent from
+      # this repository is left exactly as it is on the Worker — it is not written as an empty
+      # string. Without that, renaming or removing a repository secret would silently blank the
+      # live one, and a blanked SESSION_SECRET signs nobody out until their tokens expire: the
+      # Worker would keep answering, wrongly, for up to thirty days. So "not set here" means
+      # "not managed here", and setting one by hand in the dashboard stays valid.
+      #
+      # One `secret put` per name rather than a bulk upload, because `put` creates or updates
+      # exactly the one key named and touches nothing else.
+      #
+      # Values go in on stdin, never as an argument — an argument is visible in the process
+      # list — and are not echoed. Wrangler trims trailing whitespace itself (checked, in its
+      # own secret-put handler), so a newline caught in a copy-paste does not become part of
+      # the key; there is deliberately no second trim here.
+      - name: Push Worker secrets
+        if: steps.secrets-check.outputs.configured == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          VAPID_PRIVATE_KEY: ${{ secrets.VAPID_PRIVATE_KEY }}
+          FACEBOOK_APP_SECRET: ${{ secrets.FACEBOOK_APP_SECRET }}
+          SESSION_SECRET: ${{ secrets.SESSION_SECRET }}
+        run: |
+          set -eu
+          pushed=0
+          skipped=""
+          for name in VAPID_PRIVATE_KEY FACEBOOK_APP_SECRET SESSION_SECRET; do
+            eval "value=\${$name-}"
+            if [ -z "$value" ]; then
+              skipped="$skipped $name"
+              continue
+            fi
+            printf '%s' "$value" | npx wrangler secret put "$name"
+            pushed=$((pushed + 1))
+          done
+          echo "Pushed $pushed secret(s)."
+          if [ -n "$skipped" ]; then
+            echo "::notice::Not set as repository secrets, so left untouched on the Worker:$skipped. Set them here to manage them from CI, or in the Cloudflare dashboard to keep managing them by hand. See worker/README.md."
+          fi
