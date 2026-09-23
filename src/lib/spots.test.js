@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SEED_SPOTS, ORDER, ONBOARDING_PICKS, loadCatalog } from './spots.js';
+import { SEED_SPOTS, ORDER, ONBOARDING_PICKS, loadCatalog, addedSpotIds, yourSpotIds } from './spots.js';
 import { CATALOG } from './spots.catalog.js';
 
 // The catalog moved into its own chunk so the first render stops waiting on 30KB of spots it
@@ -61,5 +61,49 @@ describe('ORDER', () => {
   it('lists every catalog spot exactly once', () => {
     expect(new Set(ORDER).size).toBe(ORDER.length);
     expect(ORDER.length).toBe(Object.keys(CATALOG).length);
+  });
+});
+
+// `order` starts as the whole 718-spot ORDER above, so it cannot be shown as-is anywhere that
+// means to say "yours" -- NavDrawer, ProfileView and AlertSheet all draw this same line
+// against ORDER, which is why it is one function rather than three slightly different filters.
+describe('addedSpotIds', () => {
+  it('is empty when nothing has been added on top of the built-in catalog', () => {
+    expect(addedSpotIds(ORDER, CATALOG)).toEqual([]);
+  });
+
+  it('names an id that is in `order` but not in the built-in ORDER', () => {
+    const spots = { ...CATALOG, herzliyamarina: { name: 'Herzliya Marina', region: 'Israel' } };
+    const order = [...ORDER, 'herzliyamarina'];
+    expect(addedSpotIds(order, spots)).toEqual(['herzliyamarina']);
+  });
+
+  it('drops an id from `order` that no longer resolves in `spots`', () => {
+    // order can carry a stale id after a spot is removed; this is the guard that keeps a
+    // dangling reference out of every list built from it.
+    const order = [...ORDER, 'ghost'];
+    expect(addedSpotIds(order, CATALOG)).toEqual([]);
+  });
+});
+
+describe('yourSpotIds', () => {
+  it('is just the go-to spot when nothing else has been added', () => {
+    expect(yourSpotIds(ORDER, CATALOG, 'mundaka')).toEqual(['mundaka']);
+  });
+
+  it('puts the go-to spot first, then whatever was added', () => {
+    const spots = { ...CATALOG, custom1: { name: 'Custom One', region: 'Nowhere' } };
+    const order = [...ORDER, 'custom1'];
+    expect(yourSpotIds(order, spots, 'mundaka')).toEqual(['mundaka', 'custom1']);
+  });
+
+  it('does not list the go-to spot twice when it is itself something added', () => {
+    const spots = { ...CATALOG, custom1: { name: 'Custom One', region: 'Nowhere' } };
+    const order = [...ORDER, 'custom1'];
+    expect(yourSpotIds(order, spots, 'custom1')).toEqual(['custom1']);
+  });
+
+  it('drops the go-to spot if it does not resolve, rather than listing an id with no spot', () => {
+    expect(yourSpotIds(ORDER, CATALOG, 'not-a-real-id')).toEqual([]);
   });
 });

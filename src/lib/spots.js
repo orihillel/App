@@ -131,6 +131,24 @@ export const HOUR_LABELS = ['5a', '7a', '9a', '11a', '1p', '3p', '5p', '7p'];
 export const HOUR_INDICES = [5, 7, 9, 11, 13, 15, 17, 19];
 export const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
+// The spots someone actually chose, as distinct from `order` itself -- which starts as the
+// entire built-in catalog (every id in ORDER above, currently 718 of them) and would call all
+// of them "yours" if listed as-is. An id in `order` that is not in ORDER is, by construction,
+// one a person searched for and added, which is the line NavDrawer, ProfileView and AlertSheet
+// all need to draw between what shipped with the app and what someone chose. Drawn once here
+// rather than three times slightly differently.
+export function addedSpotIds(order, spots) {
+  return order.filter((id) => spots[id] && !ORDER.includes(id));
+}
+
+// `addedSpotIds`, with the go-to spot pinned to the front and deduplicated -- the shape every
+// "your spots" picker in the app actually shows: the one you surf by default, then whatever
+// else you added.
+export function yourSpotIds(order, spots, goToId) {
+  const added = addedSpotIds(order, spots);
+  return [goToId, ...added.filter((id) => id !== goToId)].filter((id) => spots[id]);
+}
+
 // Find built-in spots by name, city, state or country.
 //
 // The search sheet only ever geocoded arbitrary place names, which was fine when the catalog
