@@ -50,7 +50,7 @@ ALLOWED_ORIGIN = "https://orihillel.github.io"
 # OAuth client ids for "Continue with Google" / "Continue with Meta" — both safe to commit,
 # same as the VAPID public key: they identify your app, they don't authenticate anything by
 # themselves. The matching secrets are NOT set here; see README.md.
-GOOGLE_CLIENT_ID = "REPLACE_WITH_YOUR_GOOGLE_OAUTH_CLIENT_ID"
+GOOGLE_CLIENT_ID = "656962187464-7fc4ecl14em2ffcuflem58vhg8rk52o2.apps.googleusercontent.com"
 FACEBOOK_APP_ID = "REPLACE_WITH_YOUR_FACEBOOK_APP_ID"
 
 # The .om reader's WebAssembly. Emscripten's web build resolves its own .wasm by URL, which
