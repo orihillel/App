@@ -467,6 +467,14 @@ export const ORDER = [
   'siyut', 'lepang', 'dinadiawan', 'nhatle', 'jici', 'goraebul', 'kallady', 'tantan',
   'sunrisebeach', 'vilar', 'trezhir', 'poldhu', 'infiernillo', 'pokaibay', 'covadovapor', 'minedor',
   'govelle', 'flatrock', 'cudgen', 'tenorio', 'abrico', 'galheta', 'covachos', 'calatorta',
+  'bradleybeach', 'allenhurst', 'oceangrovenj', 'seasidepark', 'northwildwood', 'wildwoodcrest', 'margatenj', 'normandybeach',
+  'barnegatlight', 'atlanticbeachny', 'ponquogue', 'easthampton', 'cupsogue', 'southbethany', 'buxton', 'surfsidesc',
+  'beverlybeachfl', 'marineland', 'butlerbeach', 'siestakey', 'diamondbeachnsw', 'flynnsbeach', 'northentrance', 'norahhead',
+  'gamboa', 'tabatingasp', 'enseadaguaruja', 'pepe', 'reservario', 'chambredamour', 'arrigunaga', 'perranuthnoe',
+  'vilacha', 'madalenagaia', 'santarita', 'abano', 'moinhodebaixo', 'abertanova', 'pessegueiro', 'aivados',
+  'carvalhalodemira', 'carriagem', 'telheiro', 'burgau', 'portodemos', 'risnoja', 'amelie', 'penningtonkzn',
+  'umkomaas', 'hibberdene', 'ramsgate', 'trafalgar', 'umtentweni', 'keimouth', 'onrus', 'oceanreefpark',
+  'phipps', 'humiston', 'indianharbour', 'anastasia', 'sunsetbeachnc', 'standrewsfl', 'mackenziebeach',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
