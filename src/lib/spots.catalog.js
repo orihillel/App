@@ -1,6 +1,6 @@
 // The full spot catalog, in a chunk of its own.
 //
-// This is 569KB of source -- 160.4KB gzipped as its own chunk, and it grows with every spot
+// This is 578KB of source -- 162.9KB gzipped as its own chunk, and it grows with every spot
 // added, for hundreds of spots when the home screen shows one. Before it was split out it was
 // a quarter of everything the browser had to download before the app could run.
 // It is loaded through loadCatalog() in spots.js once the app is on screen, so the first
@@ -9,7 +9,7 @@
 //
 // spots.js holds a handful of these verbatim as SEED_SPOTS, enough to render before this
 // arrives; spots.test.js asserts the two never drift apart. What the first load does carry is
-// ORDER, the bare id list -- 3,430 ids, a few KB, against 160.4KB gzipped for the catalog itself.
+// ORDER, the bare id list -- 3,493 ids, a few KB, against 162.9KB gzipped for the catalog itself.
 //
 // Provenance: see HANDOFF.md for provenance notes — most of these were
 // re-verified against real sources, a few were corrected (see git history).
@@ -3594,4 +3594,67 @@ export const CATALOG = {
   galheta: { name: 'Galheta', region: 'Florianópolis, Brazil', blurb: 'A trail-access beach between Praia Mole and Barra da Lagoa.', lat: -27.5930, lon: -48.4280, offshoreDeg: 270 },
   covachos: { name: 'Covachos', region: 'Cantabria, Spain', blurb: 'A cove with a sandbar islet east of Liencres.', lat: 43.4750, lon: -3.9200, offshoreDeg: 180 },
   calatorta: { name: 'Cala Torta', region: 'Mallorca, Spain', blurb: 'A remote cove on the north-east of Mallorca.', lat: 39.7350, lon: 3.4450, offshoreDeg: 180 },
+  bradleybeach: { name: 'Bradley Beach', region: 'New Jersey, USA', blurb: 'A beach break between Avon and Ocean Grove.', lat: 40.2020, lon: -74.0120, offshoreDeg: 270 },
+  allenhurst: { name: 'Allenhurst', region: 'New Jersey, USA', blurb: 'A beach break south of Deal.', lat: 40.2380, lon: -73.9980, offshoreDeg: 270 },
+  oceangrovenj: { name: 'Ocean Grove (New Jersey)', region: 'New Jersey, USA', blurb: 'A beach break beside the Asbury Park line.', lat: 40.2130, lon: -74.0050, offshoreDeg: 270 },
+  seasidepark: { name: 'Seaside Park', region: 'New Jersey, USA', blurb: 'A beach break south of Seaside Heights.', lat: 39.9250, lon: -74.0770, offshoreDeg: 270 },
+  northwildwood: { name: 'North Wildwood', region: 'New Jersey, USA', blurb: 'A beach and jetty break at Hereford Inlet.', lat: 39.0100, lon: -74.7950, offshoreDeg: 300 },
+  wildwoodcrest: { name: 'Wildwood Crest', region: 'New Jersey, USA', blurb: 'A beach break at the south end of the Wildwoods.', lat: 38.9650, lon: -74.8250, offshoreDeg: 300 },
+  margatenj: { name: 'Margate (New Jersey)', region: 'New Jersey, USA', blurb: 'A beach break between Ventnor and Longport.', lat: 39.3270, lon: -74.5050, offshoreDeg: 300 },
+  normandybeach: { name: 'Normandy Beach', region: 'New Jersey, USA', blurb: 'A beach break north of Lavallette.', lat: 40.0000, lon: -74.0600, offshoreDeg: 270 },
+  barnegatlight: { name: 'Barnegat Light', region: 'Long Beach Island, New Jersey, USA', blurb: 'A beach and jetty break at the north tip of Long Beach Island.', lat: 39.7600, lon: -74.1050, offshoreDeg: 270 },
+  atlanticbeachny: { name: 'Atlantic Beach (New York)', region: 'Long Island, New York, USA', blurb: 'A beach break west of Long Beach.', lat: 40.5890, lon: -73.7300, offshoreDeg: 0 },
+  ponquogue: { name: 'Ponquogue', region: 'Hampton Bays, New York, USA', blurb: 'A beach break west of the Shinnecock Inlet.', lat: 40.8430, lon: -72.4950, offshoreDeg: 330 },
+  easthampton: { name: 'East Hampton Main Beach', region: 'Long Island, New York, USA', blurb: 'The main ocean beach of East Hampton.', lat: 40.9450, lon: -72.1900, offshoreDeg: 330 },
+  cupsogue: { name: 'Cupsogue', region: 'Long Island, New York, USA', blurb: 'A beach at the Moriches Inlet.', lat: 40.7700, lon: -72.6700, offshoreDeg: 0 },
+  southbethany: { name: 'South Bethany', region: 'Delaware, USA', blurb: 'A beach break south of Bethany Beach.', lat: 38.5200, lon: -75.0550, offshoreDeg: 270 },
+  buxton: { name: 'Buxton', region: 'Outer Banks, North Carolina, USA', blurb: 'Beach breaks north of the Cape Hatteras lighthouse.', lat: 35.2650, lon: -75.5300, offshoreDeg: 270 },
+  surfsidesc: { name: 'Surfside Beach (South Carolina)', region: 'South Carolina, USA', blurb: 'A beach and pier break south of Myrtle Beach.', lat: 33.6050, lon: -78.9750, offshoreDeg: 315 },
+  beverlybeachfl: { name: 'Beverly Beach (Florida)', region: 'Flagler County, Florida, USA', blurb: 'A beach break north of Flagler Beach.', lat: 29.5200, lon: -81.1450, offshoreDeg: 270 },
+  marineland: { name: 'Marineland', region: 'Flagler County, Florida, USA', blurb: 'A coquina-rock beach south of Matanzas Inlet.', lat: 29.6700, lon: -81.2150, offshoreDeg: 270 },
+  butlerbeach: { name: 'Butler Beach', region: 'St Augustine, Florida, USA', blurb: 'A beach break south of St Augustine Beach.', lat: 29.8000, lon: -81.2650, offshoreDeg: 270 },
+  siestakey: { name: 'Siesta Key', region: 'Sarasota, Florida, USA', blurb: 'A Gulf beach that gets surf on winter cold fronts.', lat: 27.2650, lon: -82.5550, offshoreDeg: 90 },
+  diamondbeachnsw: { name: 'Diamond Beach (NSW)', region: 'Mid North Coast, New South Wales, Australia', blurb: 'A beach break south of Black Head.', lat: -32.0450, lon: 152.5400, offshoreDeg: 270 },
+  flynnsbeach: { name: 'Flynns Beach', region: 'Port Macquarie, New South Wales, Australia', blurb: 'A beach break in Port Macquarie.', lat: -31.4400, lon: 152.9250, offshoreDeg: 270 },
+  northentrance: { name: 'North Entrance', region: 'Central Coast, New South Wales, Australia', blurb: 'A beach break north of The Entrance.', lat: -33.3300, lon: 151.5250, offshoreDeg: 270 },
+  norahhead: { name: 'Norah Head', region: 'Central Coast, New South Wales, Australia', blurb: 'A reef and beach below the Norah Head lighthouse.', lat: -33.2830, lon: 151.5760, offshoreDeg: 300 },
+  gamboa: { name: 'Praia da Gamboa', region: 'Garopaba, Brazil', blurb: 'A beach break north of Siriú.', lat: -27.9450, lon: -48.6200, offshoreDeg: 270 },
+  tabatingasp: { name: 'Tabatinga (Caraguatatuba)', region: 'Caraguatatuba, Brazil', blurb: 'A beach on the Caraguatatuba-Ubatuba border.', lat: -23.5850, lon: -45.3150, offshoreDeg: 300 },
+  enseadaguaruja: { name: 'Enseada (Guarujá)', region: 'Guarujá, Brazil', blurb: 'A long beach in Guarujá.', lat: -23.9950, lon: -46.2250, offshoreDeg: 0 },
+  pepe: { name: 'Praia do Pepê', region: 'Rio de Janeiro, Brazil', blurb: 'A beach break at the east end of Barra da Tijuca.', lat: -23.0100, lon: -43.3150, offshoreDeg: 0 },
+  reservario: { name: 'Praia da Reserva', region: 'Rio de Janeiro, Brazil', blurb: 'A beach break in a nature reserve between Barra and Recreio.', lat: -23.0100, lon: -43.3950, offshoreDeg: 0 },
+  chambredamour: { name: "Chambre d'Amour", region: 'Anglet, France', blurb: 'A beach break below the Pointe Saint-Martin lighthouse.', lat: 43.4950, lon: -1.5400, offshoreDeg: 135 },
+  arrigunaga: { name: 'Arrigunaga', region: 'Getxo, Spain', blurb: 'A beach break below the cliffs of Getxo.', lat: 43.3600, lon: -3.0200, offshoreDeg: 135 },
+  perranuthnoe: { name: 'Perranuthnoe', region: 'Cornwall, England', blurb: 'A beach break east of Marazion.', lat: 50.1150, lon: -5.4400, offshoreDeg: 0 },
+  vilacha: { name: 'Vila Chã', region: 'Vila do Conde, Portugal', blurb: 'A fishing-village beach south of Mindelo.', lat: 41.2900, lon: -8.7350, offshoreDeg: 90 },
+  madalenagaia: { name: 'Madalena', region: 'Vila Nova de Gaia, Portugal', blurb: 'A beach break south of Porto.', lat: 41.1100, lon: -8.6600, offshoreDeg: 90 },
+  santarita: { name: 'Santa Rita', region: 'Torres Vedras, Portugal', blurb: 'A beach break south of Porto Novo.', lat: 39.1150, lon: -9.3700, offshoreDeg: 90 },
+  abano: { name: 'Praia do Abano', region: 'Cascais, Portugal', blurb: 'A cove north of Guincho.', lat: 38.7250, lon: -9.4800, offshoreDeg: 90 },
+  moinhodebaixo: { name: 'Moinho de Baixo', region: 'Sesimbra, Portugal', blurb: 'A beach break south of Meco.', lat: 38.4550, lon: -9.1900, offshoreDeg: 90 },
+  abertanova: { name: 'Aberta Nova', region: 'Grândola, Portugal', blurb: 'A long, empty beach on the Alentejo coast.', lat: 38.2300, lon: -8.8000, offshoreDeg: 90 },
+  pessegueiro: { name: 'Pessegueiro', region: 'Sines, Portugal', blurb: 'A beach facing Pessegueiro island south of Porto Covo.', lat: 37.8350, lon: -8.7900, offshoreDeg: 90 },
+  aivados: { name: 'Aivados', region: 'Odemira, Portugal', blurb: 'A beach break south of Malhão.', lat: 37.7700, lon: -8.8050, offshoreDeg: 90 },
+  carvalhalodemira: { name: 'Carvalhal (Odemira)', region: 'Odemira, Portugal', blurb: 'A cove north of Zambujeira do Mar.', lat: 37.5500, lon: -8.7950, offshoreDeg: 90 },
+  carriagem: { name: 'Carriagem', region: 'Aljezur, Portugal', blurb: 'A beach break north of Amoreira.', lat: 37.3700, lon: -8.8450, offshoreDeg: 90 },
+  telheiro: { name: 'Telheiro', region: 'Vila do Bispo, Portugal', blurb: 'A cove below striped cliffs near Cape St Vincent.', lat: 37.0200, lon: -8.9750, offshoreDeg: 60 },
+  burgau: { name: 'Burgau', region: 'Lagos, Portugal', blurb: 'A small south-facing beach west of Luz.', lat: 37.0700, lon: -8.7750, offshoreDeg: 0 },
+  portodemos: { name: 'Porto de Mós', region: 'Lagos, Portugal', blurb: 'A beach below cliffs south of Lagos.', lat: 37.0850, lon: -8.6850, offshoreDeg: 0 },
+  risnoja: { name: 'Ris', region: 'Noja, Spain', blurb: 'A beach break east of Noja.', lat: 43.4800, lon: -3.4800, offshoreDeg: 180 },
+  amelie: { name: "L'Amélie", region: 'Soulac-sur-Mer, France', blurb: 'A beach break south of Soulac.', lat: 45.4800, lon: -1.1600, offshoreDeg: 90 },
+  penningtonkzn: { name: 'Pennington', region: 'KwaZulu-Natal, South Africa', blurb: 'A beach break on the South Coast.', lat: -30.3900, lon: 30.7000, offshoreDeg: 300 },
+  umkomaas: { name: 'Umkomaas', region: 'KwaZulu-Natal, South Africa', blurb: 'A river-mouth beach on the South Coast.', lat: -30.2050, lon: 30.8000, offshoreDeg: 300 },
+  hibberdene: { name: 'Hibberdene', region: 'KwaZulu-Natal, South Africa', blurb: 'A beach break north of Umzumbe.', lat: -30.5750, lon: 30.5750, offshoreDeg: 300 },
+  ramsgate: { name: 'Ramsgate', region: 'KwaZulu-Natal, South Africa', blurb: 'A beach break south of Margate.', lat: -30.8900, lon: 30.3500, offshoreDeg: 300 },
+  trafalgar: { name: 'Trafalgar', region: 'KwaZulu-Natal, South Africa', blurb: 'A reef and beach south of Southbroom.', lat: -30.9550, lon: 30.3000, offshoreDeg: 300 },
+  umtentweni: { name: 'Umtentweni', region: 'KwaZulu-Natal, South Africa', blurb: 'A beach break north of Port Shepstone.', lat: -30.7150, lon: 30.4750, offshoreDeg: 300 },
+  keimouth: { name: 'Kei Mouth', region: 'Eastern Cape, South Africa', blurb: 'A river-mouth beach on the Wild Coast.', lat: -32.6800, lon: 28.3800, offshoreDeg: 300 },
+  onrus: { name: 'Onrus', region: 'Western Cape, South Africa', blurb: 'A reef-lined beach west of Hermanus.', lat: -34.4200, lon: 19.1800, offshoreDeg: 0 },
+  oceanreefpark: { name: 'Ocean Reef Park', region: 'Riviera Beach, Florida, USA', blurb: 'A reef-fringed beach on Singer Island.', lat: 26.7700, lon: -80.0330, offshoreDeg: 270 },
+  phipps: { name: 'Phipps Ocean Park', region: 'Palm Beach, Florida, USA', blurb: 'A beach break in south Palm Beach.', lat: 26.6600, lon: -80.0380, offshoreDeg: 270 },
+  humiston: { name: 'Humiston Park', region: 'Vero Beach, Florida, USA', blurb: 'A beach break in central Vero Beach.', lat: 27.6400, lon: -80.3550, offshoreDeg: 270 },
+  indianharbour: { name: 'Indian Harbour Beach', region: 'Brevard County, Florida, USA', blurb: 'A beach break between Satellite Beach and Indialantic.', lat: 28.1500, lon: -80.5900, offshoreDeg: 270 },
+  anastasia: { name: 'Anastasia State Park', region: 'St Augustine, Florida, USA', blurb: 'A beach break at the north end of Anastasia Island.', lat: 29.8850, lon: -81.2700, offshoreDeg: 270 },
+  sunsetbeachnc: { name: 'Sunset Beach (North Carolina)', region: 'North Carolina, USA', blurb: 'A beach break at the South Carolina line.', lat: 33.8700, lon: -78.5100, offshoreDeg: 0 },
+  standrewsfl: { name: 'St Andrews State Park', region: 'Panama City Beach, Florida, USA', blurb: 'Jetty breaks at the Panama City pass.', lat: 30.1300, lon: -85.7350, offshoreDeg: 0 },
+  mackenziebeach: { name: 'Mackenzie Beach', region: 'Tofino, British Columbia, Canada', blurb: 'A sheltered beach break in Tofino.', lat: 49.1330, lon: -125.9050, offshoreDeg: 180 },
 };
