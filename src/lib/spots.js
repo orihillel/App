@@ -165,6 +165,19 @@ export const ORDER = [
   'coffs', 'portmacquarie', 'forster', 'treachery', 'nobbys', 'thefarm', 'smithsbeach', 'kilcunda',
   'portcampbell', 'logans', 'tearai', 'mangamaunu', 'hiratsuka', 'shirahama', 'haeundae', 'donghe',
   'khaolak', 'kalim', 'juara', 'talofofo',
+  'cottons', 'hbcliffs', 'bolsachica', 'redondo', 'oceansideharbor', 'seasidereef', 'terramar', 'poche',
+  'capitola', 'montanadeoro', 'fortpoint', 'dillon', 'manzanita', 'goldbeach', 'oceanshores', 'jonesbeach',
+  'topsail', 'myrtle', 'daytona', 'vero', 'fortpierce', 'juno', 'boynton', 'surfsidetx',
+  'portaransas', 'mokuleia', 'kealia', 'polihale', 'kuabay', 'mazunte', 'ostional', 'jiquilillo',
+  'lapared', 'middlecove', 'bombinhas', 'moledo', 'ofir', 'furadouro', 'tocha', 'pedrogao',
+  'fozdoarelho', 'malhao', 'monteverde', 'verdicio', 'vega', 'itzurun', 'baldaio', 'petitbec',
+  'stgilles', 'saintebarbe', 'portreath', 'lynmouth', 'eastwittering', 'jossbay', 'cromer', 'aberdeen',
+  'sandwood', 'carrowniskey', 'coumeenoole', 'rossbeigh', 'bunmahon', 'inchydoney', 'hanstholm', 'aglou',
+  'legzira', 'portalfred', 'naturesvalley', 'kogelbay', 'gonubie', 'ajigaura', 'kitaizumi', 'isonoura',
+  'okuragahama', 'dadaepo', 'honeymoonbay', 'xichong', 'bigwavebay', 'vungtau', 'kedungu', 'culburra',
+  'tathra', 'thirroul', 'nambucca', 'evanshead', 'peregian', 'thespit', 'portsea', 'pointaddis',
+  'anglesea', 'fairhaven', 'ellensbrook', 'baylys', 'karioitahi', 'opunake', 'oakura', 'cobden',
+  'hideaway', 'rochepercee', 'staithes', 'standrews',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
