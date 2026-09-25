@@ -204,6 +204,19 @@ export const ORDER = [
   'mermaid', 'pointcartwright', 'rainbowbeach', 'inverloch', 'apollobay', 'portfairy', 'lakesentrance', 'robe',
   'petrelcove', 'pennington', 'redgate', 'esperance', 'parkbeachtas', 'ruakaka', 'aramoana', 'tolagabay',
   'blackhead', 'midway', 'papenoo', 'sevenmile',
+  'torreypines', 'missionbeach', 'silverstrandsd', 'hbstate', 'playadelrey', 'hollywoodbeach', 'santaclaus', 'avila',
+  'oceano', 'sansimeon', 'andrewmolera', 'seacliff', 'pescadero', 'crescentcity', 'yachats', 'kalaloch',
+  'ormond', 'canaveral', 'lakeworth', 'delray', 'deerfield', 'pompano', 'haulover', 'pontevedra',
+  'destin', 'oakisland', 'surfcity', 'duck', 'springlake', 'longbranch', 'robertmoses', 'secondbeach',
+  'marconi', 'plumisland', 'wallissands', 'waimanalo', 'ewabeach', 'hamoa', 'richardsons', 'florenciabay',
+  'cerritosmaz', 'puntabaja', 'rosalillita', 'astillero', 'iztapa', 'portlouis', 'mehuin', 'tongoy',
+  'guarapari', 'serragrande', 'guaratiba', 'montehermoso', 'ancora', 'portocovo', 'milfontes', 'orinon',
+  'gorliz', 'traba', 'frexulfe', 'ondres', 'erdeven', 'penhors', 'blancssablons', 'hatainville',
+  'hayling', 'filey', 'crackington', 'rhosneigr', 'barvas', 'skaill', 'streedagh', 'dunmoran',
+  'flakstad', 'marinadipisa', 'anza', 'yzerfontein', 'sedgefield', 'kenton', 'niyodo', 'iluka',
+  'woolgoolga', 'lighthousebeach', 'oldbar', 'fingalbay', 'catherinehill', 'wamberal', 'macmasters', 'windang',
+  'tuross', 'merimbula', 'venusbay', 'wedgeisland', 'waipucove', 'omaha', 'whiritoa', 'kumarapatch',
+  'gorebay', 'brightonnz', 'aganoa', 'titahi',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
