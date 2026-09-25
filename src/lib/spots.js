@@ -139,6 +139,19 @@ export const ORDER = [
   'lorne', 'trigg', 'strickland', 'stentroad', 'castlepoint', 'porpoisebay', 'lhoknga', 'watukarung',
   'selongbelanak', 'sunabe', 'itoshima', 'pagudpud', 'arambol', 'fare', 'kabic', 'brandonbay',
   'nusalefts', 'indianbeach', 'brokenhead', 'shimeibay',
+  'santacruzpt', 'monteclerigo', 'castelejo', 'beliche', 'povoa', 'cabedeloviana', 'praiadabarra', 'mira',
+  'portodacruz', 'xago', 'canosdemeca', 'langre', 'deba', 'alanzada', 'nemina', 'elfronton',
+  'almaciga', 'contis', 'carcans', 'leporge', 'soulac', 'vertbois', 'sablesdolonne', 'guidel',
+  'ostia', 'viareggio', 'porthtowan', 'praasands', 'caytonbay', 'newgale', 'farrbay', 'kilkee',
+  'ballybunion', 'magheroarty', 'warnemunde', 'domburg', 'rabat', 'oualidia', 'devilsrock', 'sanpancho',
+  'chacala', 'tourmaline', 'beacons', 'tamarack', 'sealbeach', 'venicebreakwater', 'campuspoint', 'carmel',
+  'naturalbridges', 'montara', 'asburypark', 'oceancitynj', 'jupiter', 'pointjudith', 'goodharbor', 'makapuu',
+  'kahaluu', 'launiupoko', 'pinegrove', 'wildernesspr', 'southpoint', 'playalangosta', 'arraial', 'stellamaris',
+  'juquehy', 'ilhadomel', 'tramandai', 'matadeiro', 'puntadeldiablo', 'lapedrera', 'portstjohns', 'cintsa',
+  'saintpierre', 'capethreepoints', 'moffat', 'alexheadland', 'redhead', 'terrigal', 'palmbeach', 'bombo',
+  'mollymook', 'janjuc', 'pointleo', 'cottesloe', 'eaglehawkneck', 'sandybaynz', 'mangawhai', 'tairua',
+  'waihi', 'taurangabay', 'nyangnyang', 'pulaumerah', 'nakatajima', 'kokufu', 'nanwan', 'woljeong',
+  'mirissa', 'covelong', 'northwollongong', 'pottuvil',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
