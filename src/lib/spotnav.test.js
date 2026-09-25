@@ -110,5 +110,7 @@ describe('stepDirection', () => {
     // A dead arrow is what the last two attempts shipped; this asserts neither is ever dead.
     const dead = ORDER.filter((id) => !stepDirection(CATALOG, ORDER, id, 1) || !stepDirection(CATALOG, ORDER, id, -1));
     expect(dead, 'spots with a dead arrow').toEqual([]);
-  });
+    // Every spot against every other spot: this grows with the square of the catalog, so it
+    // gets more room than the default 5s.
+  }, 30000);
 });

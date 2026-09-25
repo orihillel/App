@@ -69,9 +69,12 @@ export function stepDirection(spots, ids, currentId, delta) {
     const s = spots[id];
     if (!s || !Number.isFinite(s.lat) || !Number.isFinite(s.lon)) continue;
     if (s.lat === here.lat && s.lon === here.lon) continue; // no bearing to speak of
-    if (isEastward(bearingDeg(here.lat, here.lon, s.lat, s.lon)) !== wantEast) continue;
+    // Distance first: most spots are farther than the best so far, and skipping them before
+    // the bearing is worked out keeps a step cheap as the catalog grows. Same answer either way.
     const km = distanceKm(here.lat, here.lon, s.lat, s.lon);
-    if (km < bestKm) { bestKm = km; bestId = id; }
+    if (km >= bestKm) continue;
+    if (isEastward(bearingDeg(here.lat, here.lon, s.lat, s.lon)) !== wantEast) continue;
+    bestKm = km; bestId = id;
   }
   return bestId;
 }
