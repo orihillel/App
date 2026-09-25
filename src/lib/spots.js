@@ -475,6 +475,10 @@ export const ORDER = [
   'carvalhalodemira', 'carriagem', 'telheiro', 'burgau', 'portodemos', 'risnoja', 'amelie', 'penningtonkzn',
   'umkomaas', 'hibberdene', 'ramsgate', 'trafalgar', 'umtentweni', 'keimouth', 'onrus', 'oceanreefpark',
   'phipps', 'humiston', 'indianharbour', 'anastasia', 'sunsetbeachnc', 'standrewsfl', 'mackenziebeach',
+  'mengening', 'berawa', 'magicsands', 'lymans', 'uchiumi', 'takesaki', 'hahei', 'bristol',
+  'lagide', 'molheleste', 'tropicalsumbawa', 'silverrock', 'portixeddu', 'minicapo', 'holebeach', 'strangles',
+  'contrebandiers', 'uppertrestles', 'pipescardiff', 'stonesteps', 'penon', 'culsnus', 'panoramas', 'northsteyne',
+  'elephantrock',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 

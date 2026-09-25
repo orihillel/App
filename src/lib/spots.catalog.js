@@ -1,6 +1,6 @@
 // The full spot catalog, in a chunk of its own.
 //
-// This is 578KB of source -- 162.9KB gzipped as its own chunk, and it grows with every spot
+// This is 582KB of source -- 164.0KB gzipped as its own chunk, and it grows with every spot
 // added, for hundreds of spots when the home screen shows one. Before it was split out it was
 // a quarter of everything the browser had to download before the app could run.
 // It is loaded through loadCatalog() in spots.js once the app is on screen, so the first
@@ -9,7 +9,7 @@
 //
 // spots.js holds a handful of these verbatim as SEED_SPOTS, enough to render before this
 // arrives; spots.test.js asserts the two never drift apart. What the first load does carry is
-// ORDER, the bare id list -- 3,493 ids, a few KB, against 162.9KB gzipped for the catalog itself.
+// ORDER, the bare id list -- 3,518 ids, a few KB, against 164.0KB gzipped for the catalog itself.
 //
 // Provenance: see HANDOFF.md for provenance notes — most of these were
 // re-verified against real sources, a few were corrected (see git history).
@@ -3657,4 +3657,29 @@ export const CATALOG = {
   sunsetbeachnc: { name: 'Sunset Beach (North Carolina)', region: 'North Carolina, USA', blurb: 'A beach break at the South Carolina line.', lat: 33.8700, lon: -78.5100, offshoreDeg: 0 },
   standrewsfl: { name: 'St Andrews State Park', region: 'Panama City Beach, Florida, USA', blurb: 'Jetty breaks at the Panama City pass.', lat: 30.1300, lon: -85.7350, offshoreDeg: 0 },
   mackenziebeach: { name: 'Mackenzie Beach', region: 'Tofino, British Columbia, Canada', blurb: 'A sheltered beach break in Tofino.', lat: 49.1330, lon: -125.9050, offshoreDeg: 180 },
+  mengening: { name: 'Mengening', region: 'Bali, Indonesia', blurb: 'A beach and reef north of Canggu.', lat: -8.6550, lon: 115.1100, offshoreDeg: 45 },
+  berawa: { name: 'Berawa', region: 'Bali, Indonesia', blurb: 'A beach break south of Batu Bolong.', lat: -8.6620, lon: 115.1370, offshoreDeg: 45 },
+  magicsands: { name: 'Magic Sands', region: 'Big Island, Hawaii', blurb: 'A shorebreak beach in Kona.', lat: 19.5950, lon: -155.9720, offshoreDeg: 75 },
+  lymans: { name: "Lyman's", region: 'Big Island, Hawaii', blurb: 'A left reef break in Kona.', lat: 19.5970, lon: -155.9780, offshoreDeg: 75 },
+  uchiumi: { name: 'Uchiumi', region: 'Miyazaki, Japan', blurb: 'A reef and beach south of Aoshima.', lat: 31.7650, lon: 131.4650, offshoreDeg: 280 },
+  takesaki: { name: 'Takesaki', region: 'Tanegashima, Japan', blurb: 'A beach beside the space centre on Tanegashima.', lat: 30.3950, lon: 130.9650, offshoreDeg: 285 },
+  hahei: { name: 'Hahei', region: 'Coromandel, New Zealand', blurb: 'A beach near Cathedral Cove.', lat: -36.8400, lon: 175.8050, offshoreDeg: 215 },
+  bristol: { name: 'Bristol', region: 'Corralejo, Fuerteventura, Canary Islands', blurb: 'A long right reef at Corralejo on the North Shore.', lat: 28.7460, lon: -13.8800, offshoreDeg: 180 },
+  lagide: { name: 'Lagide', region: 'Peniche, Portugal', blurb: 'A left reef east of Baleal.', lat: 39.3710, lon: -9.3300, offshoreDeg: 180 },
+  molheleste: { name: 'Molhe Leste', region: 'Peniche, Portugal', blurb: 'A beach break beside the east jetty north of Supertubos.', lat: 39.3540, lon: -9.3720, offshoreDeg: 90 },
+  tropicalsumbawa: { name: 'Tropical', region: 'West Sumbawa, Indonesia', blurb: 'A forgiving left south of Scar Reef.', lat: -8.9850, lon: 116.7300, offshoreDeg: 70 },
+  silverrock: { name: 'Silver Rock', region: 'Argentiera, Sardinia, Italy', blurb: 'A reef near Argentiera on the north-west coast.', lat: 40.7350, lon: 8.1350, offshoreDeg: 90 },
+  portixeddu: { name: 'Portixeddu', region: 'Sardinia, Italy', blurb: 'A west-facing beach north of Buggerru that lights up in a mistral.', lat: 39.4400, lon: 8.4150, offshoreDeg: 90 },
+  minicapo: { name: 'Mini Capo', region: 'Sardinia, Italy', blurb: 'A reef near Capo Mannu, surfed when the main point is too big.', lat: 40.0400, lon: 8.3850, offshoreDeg: 110 },
+  holebeach: { name: 'Hole Beach', region: 'Cornwall, England', blurb: 'A beach just north of Trebarwith Strand.', lat: 50.6550, lon: -4.7650, offshoreDeg: 90 },
+  strangles: { name: 'The Strangles', region: 'Cornwall, England', blurb: 'A cliff-guarded beach south of Crackington Haven.', lat: 50.7300, lon: -4.6450, offshoreDeg: 90 },
+  contrebandiers: { name: 'Contrebandiers', region: 'Témara, Morocco', blurb: 'A reef break between Rabat and Témara.', lat: 33.9500, lon: -6.9000, offshoreDeg: 135 },
+  uppertrestles: { name: 'Upper Trestles', region: 'San Clemente, CA, USA', blurb: 'The right-hand cobble point just north of Lower Trestles.', lat: 33.3860, lon: -117.5930, offshoreDeg: 45 },
+  pipescardiff: { name: 'Pipes', region: 'Cardiff, CA, USA', blurb: 'A reef break north of Cardiff Reef.', lat: 33.0200, lon: -117.2850, offshoreDeg: 90 },
+  stonesteps: { name: 'Stone Steps', region: 'Encinitas, CA, USA', blurb: 'A beach and reef at the foot of a long stairway.', lat: 33.0540, lon: -117.3000, offshoreDeg: 90 },
+  penon: { name: 'Le Penon', region: 'Seignosse, France', blurb: 'Beach breaks in front of Seignosse-Océan.', lat: 43.7100, lon: -1.4280, offshoreDeg: 90 },
+  culsnus: { name: 'Les Culs Nus', region: 'Hossegor, France', blurb: 'A beach break between Hossegor and Capbreton.', lat: 43.6480, lon: -1.4470, offshoreDeg: 90 },
+  panoramas: { name: 'Panoramas', region: 'Taghazout, Morocco', blurb: 'A beach and reef at the south end of Taghazout.', lat: 30.5360, lon: -9.7090, offshoreDeg: 90 },
+  northsteyne: { name: 'North Steyne', region: 'Sydney, New South Wales, Australia', blurb: 'The middle stretch of Manly beach.', lat: -33.7900, lon: 151.2880, offshoreDeg: 270 },
+  elephantrock: { name: 'Elephant Rock', region: 'Arugam Bay, Sri Lanka', blurb: 'A beach and reef south of Arugam Bay.', lat: 6.8050, lon: 81.8300, offshoreDeg: 270 },
 };
