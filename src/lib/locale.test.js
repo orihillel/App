@@ -315,7 +315,12 @@ describe('searchCatalog', () => {
     it('finds a spot when the city and country are typed together', () => {
       expect(names('Herzliya Israel')).toContain('Acadia');
       expect(names('Ashkelon Israel')).toContain('Ashkelon');
-      expect(names('Cornwall England')).toContain('Perranporth');
+      expect(names('Perranporth England')).toContain('Perranporth');
+      // Cornwall has more spots than one page of results, so which eight come back is down to
+      // the alphabet; what matters is that they are all in Cornwall.
+      const cornwall = searchCatalog(SPOTS, 'Cornwall England');
+      expect(cornwall.length).toBeGreaterThan(0);
+      for (const r of cornwall) expect(r.spot.region).toMatch(/Cornwall/);
     });
 
     it('does not care what order the words come in', () => {
