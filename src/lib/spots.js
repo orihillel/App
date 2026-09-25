@@ -178,6 +178,19 @@ export const ORDER = [
   'tathra', 'thirroul', 'nambucca', 'evanshead', 'peregian', 'thespit', 'portsea', 'pointaddis',
   'anglesea', 'fairhaven', 'ellensbrook', 'baylys', 'karioitahi', 'opunake', 'oakura', 'cobden',
   'hideaway', 'rochepercee', 'staithes', 'standrews',
+  'scripps', 'coronado', 'crystalcove', 'santamonica', 'elsegundo', 'tarpits', 'pitas', 'devereux',
+  'surfbeach', 'garrapata', 'mosslanding', 'davenport', 'pointarena', 'bandon', 'brigantine', 'atlanticcity',
+  'capemay', 'indianriver', 'emeraldisle', 'ocracoke', 'playalinda', 'panamacity', 'wellsbeach', 'popham',
+  'tracks', 'kiheicove', 'anahola', 'pohoiki', 'bajamalibu', 'lapastora', 'piedelacuesta', 'carrizalillo',
+  'eltunco', 'samara', 'manuelantonio', 'islagrande', 'brandons', 'leblon', 'saoconrado', 'itaipuacu',
+  'morrodaspedras', 'puntamogotes', 'iloca', 'zavial', 'agucadoura', 'quiaios', 'madalena', 'frouxeira',
+  'roche', 'karraspio', 'truevert', 'saintgirons', 'tarnos', 'mawganporth', 'porthmeor', 'kennack',
+  'wembury', 'compton', 'harlyn', 'trebarwith', 'melvich', 'pollanbay', 'barleycove', 'brusand',
+  'noordwijk', 'moulaybouzerktoun', 'tafedna', 'greenpointkzn', 'margatekzn', 'taito', 'shizunami', 'kashima',
+  'areguling', 'fingal', 'kingscliff', 'tallows', 'ballina', 'emeraldbeach', 'sawtell', 'hathead',
+  'cavesbeach', 'monavale', 'garie', 'broulee', 'pointlonsdale', 'oceangrove', 'flinders', 'capepaterson',
+  'bunbury', 'gnarabup', 'denmarkwa', 'secretharbour', 'pakiri', 'bethells', 'karekare', 'hotwater',
+  'waimarama', 'castlecliff', 'colacbay', 'pointplomer',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
