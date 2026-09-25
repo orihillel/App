@@ -126,6 +126,19 @@ export const ORDER = [
   'portrush', 'manorbier', 'hellsmouth', 'kimmeridge', 'ervik', 'lokken',
   'pinamar', 'villagesell', 'joseignacio', 'labarra', 'orre', 'grindavik', 'vorupor', 'agger',
   'rabodepeixe', 'vaanajoesuu', 'yyteri', 'stouensbay',
+  'honolii', 'banyans', 'pinetrees', 'waipio', 'lahainaharbor', 'pakala', 'topanga', 'lunadabay',
+  'hermosa', 'blackies', 'brooksstreet', 'tstreet', 'obsd', 'imperialbeach', 'elcapitan', 'leadbetter',
+  'bolinas', 'sanddollar', 'belmar', 'lbi', 'rodanthe', 'reefroad', 'bobhall', 'matunuck',
+  'hullbay', 'olasaltas', 'petacalco', 'sanpedrito', 'barradenavidad', 'revolcadero', 'cambutal', 'sipacate',
+  'bullbay', 'sanssouci', 'applebay', 'longbeachbc', 'jordanriver', 'cowbay', 'itacoatiara', 'regencia',
+  'maracaipe', 'praiadofrances', 'torres', 'matinhos', 'paracuru', 'praiabrava', 'hangaroa', 'chapadmalal',
+  'puntacarola', 'totoralillo', 'lasauzaie', 'hendaye', 'moliets', 'montalivet', 'quiberon', 'buggerru',
+  'portoferro', 'famara', 'tapia', 'liencres', 'doninos', 'matosinhos', 'gwithian', 'saunton',
+  'llantwit', 'enniscrone', 'wijkaanzee', 'mehdia', 'darbouazza', 'mirleft', 'sidiifni', 'kalkbay',
+  'glenbeach', 'ballito', 'ouakam', 'kokrobite', 'cabarita', 'coolum', 'freshwater', 'avoca',
+  'lorne', 'trigg', 'strickland', 'stentroad', 'castlepoint', 'porpoisebay', 'lhoknga', 'watukarung',
+  'selongbelanak', 'sunabe', 'itoshima', 'pagudpud', 'arambol', 'fare', 'kabic', 'brandonbay',
+  'nusalefts', 'indianbeach', 'brokenhead', 'shimeibay',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
