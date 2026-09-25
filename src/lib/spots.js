@@ -152,6 +152,19 @@ export const ORDER = [
   'mollymook', 'janjuc', 'pointleo', 'cottesloe', 'eaglehawkneck', 'sandybaynz', 'mangawhai', 'tairua',
   'waihi', 'taurangabay', 'nyangnyang', 'pulaumerah', 'nakatajima', 'kokufu', 'nanwan', 'woljeong',
   'mirissa', 'covelong', 'northwollongong', 'pottuvil',
+  'lajollashores', 'delmar', 'moonlight', 'ponto', 'fiftyfourth', 'aliso', 'manhattanbeach', 'mondos',
+  'hammonds', 'refugio', 'cayucos', 'asilomar', 'manresa', 'waddell', 'stinson', 'salmoncreek',
+  'moonstone', 'florencejetty', 'lincolncity', 'satellitebeach', 'flagler', 'staugustine', 'carolinabeach', 'isleofpalms',
+  'sandbridge', 'seasideheights', 'jenness', 'ogunquit', 'yokohama', 'bellows', 'kalapaki', 'bigbeach',
+  'cuyutlan', 'burros', 'puntamango', 'monterrico', 'aviones', 'mollendo', 'pimentel', 'zorritos',
+  'puertecillo', 'constitucion', 'antofagasta', 'engabao', 'praiadoforte', 'cassino', 'jericoacoara', 'pontanegra',
+  'areiabranca', 'magoito', 'almograve', 'odeceixe', 'meron', 'sanlorenzo', 'laga', 'majanicho',
+  'hourtin', 'labenne', 'bidart', 'widemouth', 'westwardho', 'boscombe', 'whitby', 'aberavon',
+  'whitesands', 'sandend', 'spanishpoint', 'doughmore', 'fanore', 'castlerock', 'zandvoort', 'apelviken',
+  'bouznika', 'plagedesnations', 'heroldsbay', 'melkbos', 'stilbaai', 'etangsale', 'saintgilles', 'doubleisland',
+  'coffs', 'portmacquarie', 'forster', 'treachery', 'nobbys', 'thefarm', 'smithsbeach', 'kilcunda',
+  'portcampbell', 'logans', 'tearai', 'mangamaunu', 'hiratsuka', 'shirahama', 'haeundae', 'donghe',
+  'khaolak', 'kalim', 'juara', 'talofofo',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
