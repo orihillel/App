@@ -191,6 +191,19 @@ export const ORDER = [
   'cavesbeach', 'monavale', 'garie', 'broulee', 'pointlonsdale', 'oceangrove', 'flinders', 'capepaterson',
   'bunbury', 'gnarabup', 'denmarkwa', 'secretharbour', 'pakiri', 'bethells', 'karekare', 'hotwater',
   'waimarama', 'castlecliff', 'colacbay', 'pointplomer',
+  'musselshoals', 'pointmugu', 'oxnardshores', 'cabrillo', 'loverspoint', 'sunsetstate', 'gualala', 'winchesterbay',
+  'portorford', 'harrisbeach', 'corolla', 'pawleys', 'huntingisland', 'amelia', 'mayport', 'navarre',
+  'gulfshores', 'cisco', 'misquamicut', 'kennebunk', 'oldorchard', 'reidstate', 'kailua', 'hapuna',
+  'majorsbay', 'ukumehame', 'kalihiwai', 'whitepoint', 'maruata', 'elpalmarixtapa', 'elpalmarcito', 'shacks',
+  'canegarden', 'puertocolombia', 'elvalle', 'lebu', 'bucalemu', 'itapua', 'capaodacanoa', 'bonete',
+  'barradosahy', 'saopedroestoril', 'afife', 'macas', 'noja', 'laredo', 'lasalie', 'capdelhomy',
+  'latranche', 'langland', 'dunnetbay', 'lunanbay', 'beadnell', 'hvidesande', 'molle', 'norderney',
+  'chia', 'fregene', 'aindiab', 'paradisebeach', 'umzumbe', 'wolpo', 'baishawan', 'shilaoren',
+  'littleandaman', 'ashwem', 'okanda', 'hachijojima', 'desaru', 'broomshead', 'southwestrocks', 'lakecathie',
+  'crowdyhead', 'boomerang', 'hawksnest', 'birubi', 'soldiers', 'theentrance', 'stanwellpark', 'narooma',
+  'mermaid', 'pointcartwright', 'rainbowbeach', 'inverloch', 'apollobay', 'portfairy', 'lakesentrance', 'robe',
+  'petrelcove', 'pennington', 'redgate', 'esperance', 'parkbeachtas', 'ruakaka', 'aramoana', 'tolagabay',
+  'blackhead', 'midway', 'papenoo', 'sevenmile',
 ];
 export const ONBOARDING_PICKS = ['trestles', 'pipeline', 'jbay', 'uluwatu', 'nazare', 'snapper', 'mundaka'];
 
