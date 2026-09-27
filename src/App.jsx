@@ -22,8 +22,9 @@ import { mySpotIds, mySpotRows, mySpotsSummary } from './lib/myspots.js';
 import { locate } from './lib/geolocate.js';
 import { checkAlertMatch } from './lib/alerts.js';
 import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
-import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData } from './lib/auth.js';
+import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData, isAuthConfigured } from './lib/auth.js';
 import { OnboardingView } from './components/OnboardingView.jsx';
+import { SignInView } from './components/SignInView.jsx';
 import { HomeView } from './components/HomeView.jsx';
 import { AlertsView } from './components/AlertsView.jsx';
 import { ProfileView } from './components/ProfileView.jsx';
@@ -201,8 +202,11 @@ export default function App() {
   const [waveScale, setWaveScale] = useState(DEFAULT_SCALE);
 
   // Account login (Google/Meta) + cross-device sync — see src/lib/auth.js and worker/README.md.
-  // Entirely optional: with no session, the app behaves exactly as it always has (local-only).
+  // Required whenever a login provider is configured: with no session, SignInView is shown
+  // ahead of everything else, onboarding included. Unconfigured, there is nothing to sign in
+  // with, so the app runs local-only as it always has rather than locking everyone out.
   const [session, setSession] = useState(() => getSession());
+  const needsSignIn = isAuthConfigured() && !session;
 
   // Read by the Globe component's animation loop so every rendered frame reflects whatever is
   // currently in `forecast`, without a separate effect keyed on [forecast, hourIdx, ...] that
@@ -594,7 +598,7 @@ export default function App() {
       storage.set('surf-spots', JSON.stringify(appData.customSpots)).catch(() => {});
     }
   }
-  // Called after a successful Google/Facebook login (from Onboarding or Profile — see
+  // Called after a successful Google/Facebook login (from SignInView or Profile — see
   // AuthButtons.jsx). A brand-new account (or one with nothing synced yet) gets seeded from
   // whatever's already on this device, rather than looking like it just erased everything;
   // an account with real synced data replaces local state with it, the ordinary "sign in to
@@ -604,7 +608,9 @@ export default function App() {
     const hasRemoteData = !result.isNewAccount && result.appData;
     if (hasRemoteData) applyRemoteAppData(result.appData);
     else pushAppData(result.sessionToken, currentAppData());
-    if (!onboarded) completeOnboarding(hasRemoteData && result.appData.goToId ? result.appData.goToId : activeId);
+    // An account that already has a go-to spot has answered onboarding's question on another
+    // device. Anyone else -- a new account most of all -- goes on to pick one.
+    if (!onboarded && hasRemoteData && result.appData.goToId) completeOnboarding(result.appData.goToId);
     setToast('Signed in as ' + (result.profile.name || 'your account'));
   }
   // Logging out only forgets this device's session token — the data itself stays right where
@@ -1103,15 +1109,16 @@ export default function App() {
             so a screen reader had nothing to jump to and no way to skip the header on every
             screen change. Purely semantic -- it carries the same styles it always did. */}
         <main className="no-scrollbar" style={{ flex: 1, minHeight: 0, overflowY: 'auto', paddingTop: 'env(safe-area-inset-top, 0px)' }}>
-        {!onboarded ? (
+        {needsSignIn ? (
+          <SignInView onLoggedIn={handleLoginResult} setToast={setToast} />
+        ) : !onboarded ? (
           onboardingGlobeOpen ? (
             <Suspense fallback={<GlobeLoading />}>
               <Globe order={order} dataRef={dataRef} onClose={closeOnboardingGlobe} onSelectSpot={pickOnboardingSpotFromGlobe} onVisibleSpots={loadConditionsFor}
                 title="Pick your go-to spot" hint="Tap a marker to set it as your go-to spot · drag to rotate, pinch or scroll to zoom" />
             </Suspense>
           ) : (
-            <OnboardingView spots={spots} activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding}
-              onLoggedIn={handleLoginResult} setToast={setToast} />
+            <OnboardingView spots={spots} activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding} />
           )
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
@@ -1171,7 +1178,7 @@ export default function App() {
           )}
         </div>
 
-        {onboarded && <BottomNav view={view} handleNav={handleNav} />}
+        {onboarded && !needsSignIn && <BottomNav view={view} handleNav={handleNav} />}
 
         {menuOpen && (
           <NavDrawer

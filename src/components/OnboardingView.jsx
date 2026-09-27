@@ -2,10 +2,8 @@ import { Search, Map } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
 import { ONBOARDING_PICKS } from '../lib/spots.js';
 import { nearbyPicks } from '../lib/locale.js';
-import { isAuthConfigured } from '../lib/auth.js';
-import { AuthButtons } from './AuthButtons.jsx';
 
-export function OnboardingView({ spots, activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding, onLoggedIn, setToast }) {
+export function OnboardingView({ spots, activeId, pickOnboardingSpot, openSearch, openGlobePicker, completeOnboarding }) {
   // Seven world-famous breaks was a fine default when the catalog was small, but it offers
   // nothing within thousands of kilometres of most people opening this. Nearby spots first,
   // falling back to the global list wherever the catalog is too thin to be useful — see
@@ -20,17 +18,6 @@ export function OnboardingView({ spots, activeId, pickOnboardingSpot, openSearch
         <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 700, fontSize: 20, color: COLORS.foam, letterSpacing: '0.1em' }}>SURFCAST</div>
         <div style={{ fontSize: 13, color: COLORS.foamDim, marginTop: 12, lineHeight: 1.5 }}>Pick your go-to spot. It's the first thing you'll see every time you open the app.</div>
       </div>
-
-      {isAuthConfigured() && (
-        <div style={{ marginBottom: 22 }}>
-          <AuthButtons onLoggedIn={onLoggedIn} setToast={setToast} />
-          <div className="flex items-center" style={{ gap: 10, margin: '16px 0' }}>
-            <div style={{ flex: 1, height: 1, background: COLORS.navyBorder }} />
-            <span style={{ fontSize: 10.5, color: COLORS.foamDim, letterSpacing: '0.06em' }}>OR PICK MANUALLY</span>
-            <div style={{ flex: 1, height: 1, background: COLORS.navyBorder }} />
-          </div>
-        </div>
-      )}
 
       <div style={{ fontSize: 10, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600, marginBottom: 10 }}>POPULAR SPOTS</div>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 8, marginBottom: 18 }}>

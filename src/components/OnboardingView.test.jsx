@@ -1,19 +1,15 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/react';
 import { ONBOARDING_PICKS } from '../lib/spots.js';
 import { CATALOG as SPOTS } from '../lib/spots.catalog.js';
 
-vi.mock('../lib/auth.js', () => ({ isAuthConfigured: vi.fn() }));
-vi.mock('./AuthButtons.jsx', () => ({ AuthButtons: () => <div data-testid="auth-buttons-stub" /> }));
-
-const { isAuthConfigured } = await import('../lib/auth.js');
-const { OnboardingView } = await import('./OnboardingView.jsx');
+import { OnboardingView } from './OnboardingView.jsx';
 
 function renderOnboarding(overrides = {}) {
   const props = {
     spots: SPOTS,
     activeId: 'trestles', pickOnboardingSpot: vi.fn(), openSearch: vi.fn(), openGlobePicker: vi.fn(),
-    completeOnboarding: vi.fn(), onLoggedIn: vi.fn(), setToast: vi.fn(),
+    completeOnboarding: vi.fn(),
     ...overrides,
   };
   render(<OnboardingView {...props} />);
@@ -21,8 +17,6 @@ function renderOnboarding(overrides = {}) {
 }
 
 describe('OnboardingView', () => {
-  beforeEach(() => { isAuthConfigured.mockReturnValue(false); });
-
   it('lists every onboarding pick by name', () => {
     renderOnboarding();
     ONBOARDING_PICKS.forEach((id) => {
@@ -52,18 +46,5 @@ describe('OnboardingView', () => {
     const props = renderOnboarding();
     fireEvent.click(screen.getByText('Skip for now'));
     expect(props.completeOnboarding).toHaveBeenCalledWith('trestles');
-  });
-
-  it('does not show a sign-in section when no login provider is configured', () => {
-    renderOnboarding();
-    expect(screen.queryByTestId('auth-buttons-stub')).not.toBeInTheDocument();
-    expect(screen.queryByText('OR PICK MANUALLY')).not.toBeInTheDocument();
-  });
-
-  it('shows the sign-in section and a divider above the manual picker when a login provider is configured', () => {
-    isAuthConfigured.mockReturnValue(true);
-    renderOnboarding();
-    expect(screen.getByTestId('auth-buttons-stub')).toBeInTheDocument();
-    expect(screen.getByText('OR PICK MANUALLY')).toBeInTheDocument();
   });
 });
