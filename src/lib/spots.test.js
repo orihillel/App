@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { SEED_SPOTS, ORDER, ONBOARDING_PICKS, loadCatalog, addedSpotIds, yourSpotIds } from './spots.js';
+import { SEED_SPOTS, ORDER, ONBOARDING_PICKS, loadCatalog, addedSpotIds, yourSpotIds, removableSpotIds, normalizeSavedIds } from './spots.js';
 import { CATALOG } from './spots.catalog.js';
 
 // The catalog moved into its own chunk so the first render stops waiting on 30KB of spots it
@@ -105,5 +105,30 @@ describe('yourSpotIds', () => {
 
   it('drops the go-to spot if it does not resolve, rather than listing an id with no spot', () => {
     expect(yourSpotIds(ORDER, CATALOG, 'not-a-real-id')).toEqual([]);
+  });
+});
+
+describe('saved spots', () => {
+  it('cleans whatever comes back out of storage', () => {
+    expect(normalizeSavedIds(['a', 'a', '', 3, null, 'b'])).toEqual(['a', 'b']);
+    expect(normalizeSavedIds('nope')).toEqual([]);
+    expect(normalizeSavedIds(undefined)).toEqual([]);
+  });
+
+  it('counts saved built-in spots as yours, after the go-to and before hand-added ones', () => {
+    const order = [...ORDER, 'custom1'];
+    const spots = { ...CATALOG, custom1: { name: 'Mine' } };
+    expect(yourSpotIds(order, spots, 'mundaka', ['pipeline', 'mundaka', 'trestles'])).toEqual(['mundaka', 'pipeline', 'trestles', 'custom1']);
+  });
+
+  it('drops a saved id with no spot behind it', () => {
+    expect(yourSpotIds(ORDER, CATALOG, 'mundaka', ['gone'])).toEqual(['mundaka']);
+  });
+
+  it('lists what can be removed: saved and added, not a go-to you never chose', () => {
+    const order = [...ORDER, 'custom1'];
+    const spots = { ...CATALOG, custom1: { name: 'Mine' } };
+    expect(removableSpotIds(order, spots, ['pipeline'])).toEqual(['pipeline', 'custom1']);
+    expect(removableSpotIds(ORDER, CATALOG, [])).toEqual([]);
   });
 });

@@ -4,7 +4,7 @@ import { COLORS } from '../lib/colors.js';
 import { formatWaveNum, heightUnit, leadTimeLabel } from '../lib/format.js';
 import { yourSpotIds, searchCatalog } from '../lib/spots.js';
 
-export function AlertSheet({ order, spots, goToId, alertDraft, setAlertDraft, units, saveAlert, onClose }) {
+export function AlertSheet({ order, spots, goToId, savedIds = [], alertDraft, setAlertDraft, units, saveAlert, onClose }) {
   // Nothing typed lists what is actually yours -- the go-to spot and anything you added --
   // and typing reaches the rest of the catalog. `order` starts as the entire built-in
   // catalog (see lib/spots.js), so showing it as-is here was a single-row horizontal strip
@@ -20,7 +20,7 @@ export function AlertSheet({ order, spots, goToId, alertDraft, setAlertDraft, un
   // registered (saveAlert gets the right id either way) but the sheet looked like it had not.
   // Pinning the current selection in front, when it is not here already, keeps this list
   // answering "what will this alert watch" rather than only "what is generally mine".
-  const favoriteSpots = yourSpotIds(order, spots, goToId);
+  const favoriteSpots = yourSpotIds(order, spots, goToId, savedIds);
   const spotChoices = spotQuery.trim().length >= 2
     ? searchCatalog(spots, spotQuery, 8).map((m) => m.id)
     : spots[alertDraft.spotId] && !favoriteSpots.includes(alertDraft.spotId)

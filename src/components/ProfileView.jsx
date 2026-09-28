@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { X, Trash2, Search, Star, MapPin } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
-import { addedSpotIds, yourSpotIds, searchCatalog } from '../lib/spots.js';
+import { removableSpotIds, yourSpotIds, searchCatalog } from '../lib/spots.js';
 import { isAuthConfigured } from '../lib/auth.js';
 import { sessionStats, ratingAccuracy } from '../lib/sessions.js';
 import { BOARD_IDS, SKILL_IDS, boardLabel, skillLabel, bandFor, windBandFor, DEFAULT_PROFILE } from '../lib/surfer.js';
@@ -37,13 +37,13 @@ const TAP = {
   flexShrink: 0,
 };
 
-export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUnits, waveScale = DEFAULT_SCALE, updateWaveScale, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession, surferProfile = DEFAULT_PROFILE, updateProfile }) {
+export function ProfileView({ order, spots, goToId, savedIds = [], setGoToSpot, units, toggleUnits, waveScale = DEFAULT_SCALE, updateWaveScale, alerts, openAlerts, removeSpot, onClose, onSelectSpot, pushState, pushSubscribed, pushBusy, togglePush, session, onLoggedIn, onLogOut, setToast, sessions = [], deleteSession, surferProfile = DEFAULT_PROFILE, updateProfile }) {
   // "Your spots" used to mean the whole `order` list, back when that list was a small,
   // hand-picked seed set (a few dozen). Now that the built-in catalog itself runs into the
   // hundreds, dumping all of `order` here just re-lists the entire app -- Search and the
   // Globe are how you browse/find a spot; this section is for managing what you personally
-  // added on top of that, so it's filtered down to non-seed spots only.
-  const addedIds = addedSpotIds(order, spots);
+  // chose on top of that: the built-in spots you saved and the ones you added.
+  const addedIds = removableSpotIds(order, spots, savedIds);
   const stats = sessionStats(sessions);
   const accuracy = ratingAccuracy(sessions);
 
@@ -53,7 +53,7 @@ export function ProfileView({ order, spots, goToId, setGoToSpot, units, toggleUn
   const catalogSize = Object.keys(spots).length;
   const goToChoices = goToQuery.trim().length >= 2
     ? searchCatalog(spots, goToQuery, 8).map((m) => m.id)
-    : yourSpotIds(order, spots, goToId);
+    : yourSpotIds(order, spots, goToId, savedIds);
 
   return (
     <div>

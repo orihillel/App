@@ -58,6 +58,13 @@ export function pushAvailability({
   return 'unsupported';
 }
 
+// Whether first-run onboarding has an alerts step to show: push can be turned on now, or after
+// one step (an iPhone outside the Home Screen). On a build with no push backend, or a browser
+// with no push at all, there is nothing to offer and the step is skipped.
+export function hasAlertsStep(pushState) {
+  return pushState === 'ready' || pushState === 'ios-needs-install';
+}
+
 // A PushManager applicationServerKey wants raw bytes, not the base64url string the VAPID key
 // is generated/stored as — this is the standard conversion (same one every Web Push guide
 // uses, there's no built-in for it).

@@ -30,6 +30,10 @@ describe('mySpotIds', () => {
     expect(mySpotIds(['mine1', 'ghost'], SPOTS, 'ghost')).toEqual(['mine1']);
   });
 
+  it('includes built-in spots you saved, never twice', () => {
+    expect(mySpotIds([seedA, seedB, 'mine1'], SPOTS, seedA, [seedB, seedA])).toEqual([seedA, seedB, 'mine1']);
+  });
+
   it('survives a missing order list', () => {
     expect(mySpotIds(null, SPOTS, 'mine1')).toEqual(['mine1']);
   });

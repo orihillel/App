@@ -1,4 +1,4 @@
-import { ORDER as SEED_ORDER } from './spots.js';
+import { yourSpotIds } from './spots.js';
 
 // The spots that are actually yours, and how they are doing right now.
 //
@@ -13,11 +13,10 @@ import { ORDER as SEED_ORDER } from './spots.js';
 // anything at all.
 
 // `order` is not a favourites list -- it starts as the whole built-in catalog -- so "yours" is
-// the go-to spot plus anything you searched for and added. The same distinction NavDrawer and
-// ProfileView already draw, kept here so all three cannot drift apart.
-export function mySpotIds(order, spots, goToId) {
-  const added = (order || []).filter((id) => spots[id] && !SEED_ORDER.includes(id));
-  return [goToId, ...added.filter((id) => id !== goToId)].filter((id) => spots[id]);
+// the go-to spot, the built-in spots you saved, and anything you searched for and added. The
+// same list NavDrawer and ProfileView show, taken from the one helper so they cannot drift apart.
+export function mySpotIds(order, spots, goToId, savedIds = []) {
+  return yourSpotIds(order, spots, goToId, savedIds);
 }
 
 // Pick the hour closest to the clock, the way the nearby list does. A full forecast carries a

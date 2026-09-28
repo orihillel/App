@@ -496,12 +496,30 @@ export function addedSpotIds(order, spots) {
   return order.filter((id) => spots[id] && !ORDER.includes(id));
 }
 
-// `addedSpotIds`, with the go-to spot pinned to the front and deduplicated -- the shape every
-// "your spots" picker in the app actually shows: the one you surf by default, then whatever
-// else you added.
-export function yourSpotIds(order, spots, goToId) {
-  const added = addedSpotIds(order, spots);
-  return [goToId, ...added.filter((id) => id !== goToId)].filter((id) => spots[id]);
+// Built-in spots someone chose as theirs, as distinct from spots they added by hand.
+//
+// A catalog spot is already in `order` from the start, so being in it says nothing about
+// whether you surf there -- which is why "yours" used to mean only the go-to and hand-added
+// spots, and why choosing three breaks you actually surf had nowhere to go. This is that list,
+// stored on its own. Cleaned on the way in because it comes back out of storage and account
+// sync: anything that is not a string id, or is there twice, is dropped.
+export function normalizeSavedIds(value) {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.filter((id) => typeof id === 'string' && id))];
+}
+
+// The go-to spot first, then the built-in spots you saved, then whatever you added by hand,
+// with no id twice -- the shape every "your spots" picker in the app actually shows.
+export function yourSpotIds(order, spots, goToId, savedIds = []) {
+  const added = addedSpotIds(order || [], spots);
+  return [...new Set([goToId, ...normalizeSavedIds(savedIds), ...added])].filter((id) => spots[id]);
+}
+
+// The spots you can remove from that list: everything in it except a go-to you neither saved
+// nor added. Profile lists these with a remove button each.
+export function removableSpotIds(order, spots, savedIds = []) {
+  const added = addedSpotIds(order || [], spots);
+  return [...new Set([...normalizeSavedIds(savedIds), ...added])].filter((id) => spots[id]);
 }
 
 // Find built-in spots by name, city, state or country.

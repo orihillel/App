@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useMemo, useRef, lazy, Suspense } from 'react';
 import { storage } from './lib/storage.js';
 import { COLORS } from './lib/colors.js';
-import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog } from './lib/spots.js';
+import { SEED_SPOTS, ORDER, searchCatalog, loadCatalog, normalizeSavedIds } from './lib/spots.js';
 import { fetchSpotForecast, fetchNowForSpots, fetchNowViaWorker, geocodePlace, findOffshoreDirection, describeForecastError } from './lib/forecast.js';
 import { fetchBuoyObservation } from './lib/buoy.js';
 import { defaultUnits } from './lib/locale.js';
@@ -183,6 +183,12 @@ export default function App() {
   // done visually (tap a marker) instead of only by typing into search. Separate from `view`
   // since onboarding has its own gate (`!onboarded`) ahead of the normal view switch below.
   const [onboardingGlobeOpen, setOnboardingGlobeOpen] = useState(false);
+  // The spots ticked so far on onboarding's first step, in the order they were ticked: the
+  // first becomes the go-to. Held here rather than in the view because search and the globe
+  // both add to it, and the view is unmounted while the globe is open.
+  const [onboardingPicks, setOnboardingPicks] = useState([]);
+  // Built-in spots chosen as yours -- see normalizeSavedIds in lib/spots.js.
+  const [savedIds, setSavedIds] = useState([]);
   const [menuOpen, setMenuOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [searchStep, setSearchStep] = useState('query');
@@ -514,6 +520,12 @@ export default function App() {
     })();
     (async () => {
       try {
+        const res = await storage.get('surf-saved-spots');
+        if (res && res.value) setSavedIds(normalizeSavedIds(JSON.parse(res.value)));
+      } catch { /* nothing saved yet */ }
+    })();
+    (async () => {
+      try {
         const res = await storage.get('surf-profile');
         // normalizeProfile, not a raw parse: this is localStorage, it survives app versions, and
         // a board id that no longer exists must fall back rather than score as nothing.
@@ -563,20 +575,41 @@ export default function App() {
     storage.set('surf-wave-scale', String(next)).catch(() => {});
   }
 
+  function persistSavedIds(next) {
+    const clean = normalizeSavedIds(next);
+    setSavedIds(clean);
+    storage.set('surf-saved-spots', JSON.stringify(clean)).catch(() => {});
+  }
+
   function completeOnboarding(id) {
     setGoToId(id);
     setOnboarded(true);
     storage.set('surf-onboarded', 'true').catch(() => {});
   }
-  function pickOnboardingSpot(id) {
-    setActiveId(id);
-    completeOnboarding(id);
+  // Ticks a spot on onboarding's first step, or unticks it.
+  function toggleOnboardingPick(id) {
+    setOnboardingPicks((prev) => (prev.includes(id) ? prev.filter((p) => p !== id) : [...prev, id]));
+  }
+  // Search and the globe add rather than toggle: finding a spot on purpose and having it
+  // untick itself because it was already ticked would read as the tap not working.
+  function addOnboardingPick(id) {
+    setOnboardingPicks((prev) => (prev.includes(id) ? prev : [...prev, id]));
+  }
+  // The end of onboarding. The first spot ticked is the go-to; every built-in one is saved as
+  // yours. Hand-added spots are already yours by being added, so they are not saved twice.
+  function finishOnboarding() {
+    const picks = onboardingPicks.filter((id) => spots[id]);
+    const goTo = picks[0] || activeId;
+    const builtIn = picks.filter((id) => ORDER.includes(id));
+    if (builtIn.length) persistSavedIds([...savedIds, ...builtIn]);
+    setActiveId(goTo);
+    completeOnboarding(goTo);
   }
   function openOnboardingGlobe() { setOnboardingGlobeOpen(true); }
   function closeOnboardingGlobe() { setOnboardingGlobeOpen(false); }
   function pickOnboardingSpotFromGlobe(id) {
     setOnboardingGlobeOpen(false);
-    pickOnboardingSpot(id);
+    addOnboardingPick(id);
   }
 
   // Replaces local state with an account's synced data (goToId, custom-added spots, alerts,
@@ -587,6 +620,7 @@ export default function App() {
   function applyRemoteAppData(appData) {
     if (!appData) return;
     if (appData.goToId) setGoToId(appData.goToId);
+    if (Array.isArray(appData.savedSpotIds)) persistSavedIds(appData.savedSpotIds);
     if (appData.units === 'metric' || appData.units === 'imperial') setUnits(appData.units);
     if (appData.waveScale != null) setWaveScale(normalizeScale(appData.waveScale));
     if (Array.isArray(appData.alerts)) { setAlerts(appData.alerts); persistAlertsLocally(appData.alerts); }
@@ -655,6 +689,7 @@ export default function App() {
   function currentAppData(overrides = {}) {
     return {
       goToId,
+      savedSpotIds: savedIds,
       customSpots: order.filter((id) => !ORDER.includes(id)).map((id) => spots[id]).filter(Boolean),
       alerts,
       units,
@@ -682,7 +717,7 @@ export default function App() {
     const t = setTimeout(() => pushAppData(session.sessionToken, currentAppData()), 800);
     return () => clearTimeout(t);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [session, goToId, order, spots, alerts, units, waveScale]);
+  }, [session, goToId, savedIds, order, spots, alerts, units, waveScale]);
 
   async function persistAlertsLocally(next) {
     try { await storage.set('surf-alerts', JSON.stringify(next)); } catch { /* best-effort */ }
@@ -872,7 +907,7 @@ export default function App() {
   );
 
   // Your own spots, always available -- no location permission, no ranking, your order.
-  const myIds = useMemo(() => mySpotIds(order, spots, goToId), [order, spots, goToId]);
+  const myIds = useMemo(() => mySpotIds(order, spots, goToId, savedIds), [order, spots, goToId, savedIds]);
   const myRows = useMemo(
     () => mySpotRows(myIds, spots, scoredForecast, nowHourTick),
     [myIds, spots, scoredForecast, nowHourTick],
@@ -1030,7 +1065,9 @@ export default function App() {
     }
   }
   function selectSearchMatch(id) {
-    setActiveId(id);
+    // During onboarding a match is a spot to tick, not one to go and look at.
+    if (!onboarded) addOnboardingPick(id);
+    else setActiveId(id);
     setView('home');
     setSearchOpen(false);
     setSearchStep('query');
@@ -1055,7 +1092,7 @@ export default function App() {
     setActiveId(id);
     closeSearch();
     loadSpotData(id, newSpot);
-    if (!onboarded) completeOnboarding(id);
+    if (!onboarded) addOnboardingPick(id);
     try {
       let existing = [];
       try { const res = await storage.get('surf-spots'); existing = res && res.value ? JSON.parse(res.value) : []; } catch { existing = []; }
@@ -1071,6 +1108,11 @@ export default function App() {
   }
 
   async function removeSpot(id) {
+    // A built-in spot you saved leaves your list and stays in the app: it is only unsaved.
+    if (ORDER.includes(id)) {
+      persistSavedIds(savedIds.filter((sid) => sid !== id));
+      return;
+    }
     if (order.length <= 1) { setToast('Keep at least one spot'); return; }
     const nextOrder = order.filter((oid) => oid !== id);
     setOrder(nextOrder);
@@ -1115,10 +1157,16 @@ export default function App() {
           onboardingGlobeOpen ? (
             <Suspense fallback={<GlobeLoading />}>
               <Globe order={order} dataRef={dataRef} onClose={closeOnboardingGlobe} onSelectSpot={pickOnboardingSpotFromGlobe} onVisibleSpots={loadConditionsFor}
-                title="Pick your go-to spot" hint="Tap a marker to set it as your go-to spot · drag to rotate, pinch or scroll to zoom" />
+                title="Pick your spots" hint="Tap a marker to add it to your spots · drag to rotate, pinch or scroll to zoom" />
             </Suspense>
           ) : (
-            <OnboardingView spots={spots} activeId={activeId} pickOnboardingSpot={pickOnboardingSpot} openSearch={openSearch} openGlobePicker={openOnboardingGlobe} completeOnboarding={completeOnboarding} />
+            <OnboardingView
+              spots={spots} picks={onboardingPicks} togglePick={toggleOnboardingPick}
+              openSearch={openSearch} openGlobePicker={openOnboardingGlobe}
+              surferProfile={surferProfile} updateProfile={updateProfile}
+              pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} enablePush={togglePush}
+              finish={finishOnboarding}
+            />
           )
         ) : view === 'globe' ? (
           <Suspense fallback={<GlobeLoading />}>
@@ -1141,7 +1189,7 @@ export default function App() {
         ) : view === 'alerts' ? (
           <AlertsView alerts={alerts} spots={spots} units={units} waveScale={waveScale} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
-          <ProfileView order={order} spots={spots} goToId={goToId} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} waveScale={waveScale} updateWaveScale={updateWaveScale} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
+          <ProfileView order={order} spots={spots} goToId={goToId} savedIds={savedIds} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} waveScale={waveScale} updateWaveScale={updateWaveScale} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
             pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
             session={session} onLoggedIn={handleLoginResult} onLogOut={handleLogOut} setToast={setToast}
             sessions={sessions} surferProfile={surferProfile} updateProfile={updateProfile} deleteSession={deleteSession} />
@@ -1182,7 +1230,7 @@ export default function App() {
 
         {menuOpen && (
           <NavDrawer
-            spots={spots} order={order} goToId={goToId} activeId={activeId}
+            spots={spots} order={order} goToId={goToId} savedIds={savedIds} activeId={activeId}
             onSelectSpot={viewSpot} openSearch={openSearch} onNavigate={handleNav}
             units={units} toggleUnits={toggleUnits} alertCount={alerts.length}
             onClose={() => setMenuOpen(false)}
@@ -1200,7 +1248,7 @@ export default function App() {
         )}
 
         {alertSheetOpen && alertDraft && (
-          <AlertSheet order={order} spots={spots} goToId={goToId} alertDraft={alertDraft} setAlertDraft={setAlertDraft} units={units} saveAlert={saveAlert} onClose={closeAlertSheet} />
+          <AlertSheet order={order} spots={spots} goToId={goToId} savedIds={savedIds} alertDraft={alertDraft} setAlertDraft={setAlertDraft} units={units} saveAlert={saveAlert} onClose={closeAlertSheet} />
         )}
       </div>
     </div>
