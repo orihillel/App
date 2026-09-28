@@ -130,6 +130,8 @@ function GlobeLoading() {
 // back in when it has been away longer than this. The wave model behind it runs four times a
 // day, so this is already far more often than the numbers actually change.
 const REFRESH_MS = 15 * 60 * 1000;
+// How many of your spots My spots loads a whole day for (see the effect that uses it).
+const MY_SPOTS_FULL_FORECASTS = 8;
 
 export default function App() {
   // Seeded, not the full catalog. The 400-spot list is 30KB gzipped -- 27% of everything the
@@ -892,7 +894,7 @@ export default function App() {
     else setLocating({ reason: result.reason, message: result.message });
   }, [here]);
 
-  const nowHourTick = view === 'nearby' ? new Date().getHours() : null;
+  const nowHourTick = view === 'nearby' || view === 'myspots' ? new Date().getHours() : null;
   const nearbyCandidates = useMemo(
     () => (here ? nearestSpots(spots, order, here) : []),
     [here, spots, order],
@@ -917,6 +919,19 @@ export default function App() {
   useEffect(() => {
     if (view === 'myspots' && myIds.length) loadConditionsFor(myIds);
   }, [view, myIds, loadConditionsFor]);
+  // ...and then the whole day for each, for the morning/midday/evening chips, which a one-hour
+  // reading cannot give. These are your own spots -- a handful, the ones you would open one by
+  // one anyway -- and each is fetched from this device at most once per refresh interval.
+  // Capped, so someone who saved forty spots does not spend forty full forecasts on one look.
+  useEffect(() => {
+    if (view !== 'myspots') return;
+    const have = dataRef.current.forecast;
+    for (const id of myIds.slice(0, MY_SPOTS_FULL_FORECASTS)) {
+      const entry = have[id];
+      const fresh = entry && !entry.now && entry.fetchedAt && Date.now() - entry.fetchedAt < REFRESH_MS;
+      if (!fresh && spots[id]) loadSpotData(id, spots[id]);
+    }
+  }, [view, myIds, spots, loadSpotData]);
 
   // Forget only these spots before asking again. Clearing the whole set would also forget every
   // marker the globe has ever requested, so one tap here would re-fetch hundreds of spots --
@@ -931,7 +946,8 @@ export default function App() {
       return next;
     });
     loadConditionsFor(myIds);
-  }, [myIds, loadConditionsFor]);
+    for (const id of myIds.slice(0, MY_SPOTS_FULL_FORECASTS)) if (spots[id]) loadSpotData(id, spots[id]);
+  }, [myIds, spots, loadConditionsFor, loadSpotData]);
 
   // Both of these sit below the values they depend on rather than beside the other effects.
   // A dependency array is evaluated during render, so an effect placed above a `const` it names

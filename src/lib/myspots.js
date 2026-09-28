@@ -50,8 +50,41 @@ export function mySpotRows(ids, spots, forecast, clockHour) {
       // A missing reading is its own state, not a zero. The row renders as still loading rather
       // than as flat, which is the distinction the whole app is built on.
       score: hour && Number.isFinite(hour.score) ? hour.score : null,
+      // Only a full forecast has a day to split; a one-hour reading leaves this null.
+      parts: entry && !entry.now ? dayParts(entry.hours, clockHour) : null,
     };
   }).filter((r) => r.spot);
+}
+
+// Today in three parts, because "is it on" is really "when is it on". A spot that is poor now
+// and good at six is worth knowing about before work, not after.
+//
+// Each part is rated by its best hour, not its average: you surf the good hour, and a morning
+// that is glassy at seven and blown out by ten was still a good morning. The hours are the
+// spot's own daylight hours (see lib/daylight.js), so a short winter day can leave a part
+// with nothing in it -- that part says so rather than borrowing a neighbour's hours.
+export const DAY_PARTS = [
+  { id: 'morning', label: 'Morning', from: 4, to: 10 },
+  { id: 'midday', label: 'Midday', from: 11, to: 14 },
+  { id: 'evening', label: 'Evening', from: 15, to: 21 },
+];
+
+export function dayParts(hours, clockHour) {
+  if (!Array.isArray(hours) || !hours.length) return null;
+  return DAY_PARTS.map(({ id, label, from, to }) => {
+    const inPart = hours.filter((h) => typeof h.hour === 'number' && h.hour >= from && h.hour <= to && h.rating);
+    if (!inPart.length) return { id, label, rating: null, score: null, past: clockHour != null && clockHour > to };
+    const best = inPart.reduce((a, b) => ((b.score ?? -Infinity) > (a.score ?? -Infinity) ? b : a));
+    return {
+      id, label,
+      rating: best.rating,
+      score: Number.isFinite(best.score) ? best.score : null,
+      hour: best.hour,
+      // Over by the clock: still shown, since how the morning went is worth seeing, but dimmed
+      // so the eye lands on what is still to come.
+      past: clockHour != null && clockHour > to,
+    };
+  });
 }
 
 // The one-line summary above the list: how many of yours are worth the drive right now.
