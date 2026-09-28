@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { X } from 'lucide-react';
+import { X, Repeat } from 'lucide-react';
 import * as THREE from 'three';
 import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleTo, vector3ToLatLon } from '../lib/geo3d.js';
@@ -18,7 +18,7 @@ import { fetchWaveGrid, fetchWaveFrames, fetchWindGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
-import { frameLabel, frameBuildLabel, lerpFrames } from '../lib/waveframes.js';
+import { frameLabel, frameBuildLabel, lerpFrames, advancePos, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long each frame of the animated week is held on screen.
@@ -143,6 +143,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   const [pos, setPos] = useState(0);
   const frameIdx = Math.round(pos);
   const [playing, setPlaying] = useState(false);
+  // Playback speed and repeat -- see advancePos in lib/waveframes.js.
+  const [speed, setSpeed] = useState(1);
+  const [loop, setLoop] = useState(false);
   const [framesState, setFramesState] = useState('idle'); // idle | loading | ready | unavailable
   const [framesBuild, setFramesBuild] = useState(null);
   const applyFrameRef = useRef(null);
@@ -252,19 +255,35 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     setFramesState('ready');
   }, [framesState]);
 
-  // Advance while playing, and stop at the end of the week rather than looping: a swell that
-  // jumps back to Monday reads as a glitch, not as a repeat.
+  // Advance while playing. At the end of the week it stops, unless repeat is on.
   useEffect(() => {
     if (!playing || !frames || framesState !== 'ready') return undefined;
+    const last = frames.list.length - 1;
     const timer = setInterval(() => {
-      setPos((p) => Math.min(frames.list.length - 1, p + 1 / SUB_STEPS));
+      setPos((p) => advancePos(p, last, { speed, subSteps: SUB_STEPS, loop }));
     }, FRAME_MS);
     return () => clearInterval(timer);
-  }, [playing, frames, framesState]);
+  }, [playing, frames, framesState, speed, loop]);
 
   useEffect(() => {
-    if (playing && frames && pos >= frames.list.length - 1) setPlaying(false);
-  }, [playing, frames, pos]);
+    if (playing && !loop && frames && pos >= frames.list.length - 1) setPlaying(false);
+  }, [playing, loop, frames, pos]);
+
+  // Left and right arrows step the week one frame at a time on a keyboard, pausing it: the
+  // desktop equivalent of dragging the scrubber, without having to find and focus it first.
+  const timelineReady = wavesOn && framesState === 'ready' && !!frames;
+  useEffect(() => {
+    if (!timelineReady) return undefined;
+    const last = frames.list.length - 1;
+    function onKey(e) {
+      if (!isTimelineKey(e)) return;
+      e.preventDefault();
+      setPlaying(false);
+      setPos((p) => stepFrame(p, e.key === 'ArrowRight' ? 1 : -1, last));
+    }
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [timelineReady, frames]);
 
   // Draw whichever frame is selected. Also the path back to "now" when the animation is turned
   // off, which redraws frame zero rather than leaving the last frame of the week on screen.
@@ -1972,8 +1991,35 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                     type="range" min={0} max={frames.list.length - 1} step={1} value={frameIdx}
                     aria-label="Forecast hour"
                     onChange={(e) => { setPlaying(false); setPos(Number(e.target.value)); }}
-                    style={{ flex: 1, accentColor: COLORS.tealBright, minHeight: 44 }}
+                    style={{ flex: 1, minWidth: 0, accentColor: COLORS.tealBright, minHeight: 44 }}
                   />
+                  <button
+                    className="tl-btn"
+                    onClick={() => setSpeed(nextSpeed)}
+                    aria-label={'Playback speed ' + speed + ' times, change'}
+                    style={{
+                      minWidth: 44, minHeight: 44, borderRadius: 8, flexShrink: 0,
+                      background: 'none', border: '1px solid ' + COLORS.navyBorder,
+                      color: speed === 1 ? COLORS.foamDim : COLORS.tealBright,
+                      fontFamily: 'JetBrains Mono, monospace', fontSize: 13, fontWeight: 700,
+                    }}
+                  >
+                    {speedLabel(speed)}
+                  </button>
+                  <button
+                    className="tl-btn"
+                    onClick={() => setLoop((v) => !v)}
+                    aria-pressed={loop}
+                    aria-label="Repeat the week"
+                    style={{
+                      minWidth: 44, minHeight: 44, borderRadius: 8, flexShrink: 0,
+                      display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      background: loop ? COLORS.navyCard : 'none',
+                      border: '1px solid ' + (loop ? COLORS.tealBright : COLORS.navyBorder),
+                    }}
+                  >
+                    <Repeat size={16} color={loop ? COLORS.tealBright : COLORS.foamDim} />
+                  </button>
                 </div>
                 <div style={{ fontSize: 11, color: COLORS.foamDim, textAlign: 'center', marginTop: 2 }}>
                   {frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now())}

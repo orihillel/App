@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { frameLabel, frameBuildLabel, lerpFrames } from './waveframes.js';
+import { frameLabel, frameBuildLabel, lerpFrames, PLAYBACK_SPEEDS, nextSpeed, speedLabel, advancePos, stepFrame, isTimelineKey } from './waveframes.js';
 
 describe('frameLabel', () => {
   it('reads a UTC frame in the viewer\'s own clock', () => {
@@ -110,5 +110,68 @@ describe('lerpFrames', () => {
         expect(d).toBeLessThan(360);
       }
     }
+  });
+});
+
+describe('playback', () => {
+  it('cycles the speeds and labels them', () => {
+    expect(nextSpeed(1)).toBe(2);
+    expect(nextSpeed(2)).toBe(0.5);
+    expect(nextSpeed(0.5)).toBe(1);
+    expect(PLAYBACK_SPEEDS.map(speedLabel)).toEqual(['½×', '1×', '2×']);
+  });
+
+  it('moves further per tick at a higher speed, not more often', () => {
+    expect(advancePos(0, 27, { speed: 1, subSteps: 6 })).toBeCloseTo(1 / 6);
+    expect(advancePos(0, 27, { speed: 2, subSteps: 6 })).toBeCloseTo(2 / 6);
+    expect(advancePos(0, 27, { speed: 0.5, subSteps: 6 })).toBeCloseTo(1 / 12);
+  });
+
+  it('stops on the last frame without repeat', () => {
+    expect(advancePos(26.9, 27, { speed: 2 })).toBe(27);
+    expect(advancePos(27, 27)).toBe(27);
+  });
+
+  it('shows the last frame, then starts over, with repeat on', () => {
+    expect(advancePos(26.9, 27, { speed: 2, loop: true })).toBe(27);
+    expect(advancePos(27, 27, { loop: true })).toBe(0);
+  });
+
+  it('copes with a week of one frame', () => {
+    expect(advancePos(0, 0, { loop: true })).toBe(0);
+    expect(stepFrame(0, 1, 0)).toBe(0);
+  });
+});
+
+describe('stepFrame', () => {
+  it('steps one whole frame each way and stops at the ends', () => {
+    expect(stepFrame(3, 1, 27)).toBe(4);
+    expect(stepFrame(3, -1, 27)).toBe(2);
+    expect(stepFrame(27, 1, 27)).toBe(27);
+    expect(stepFrame(0, -1, 27)).toBe(0);
+  });
+
+  it('lands on the neighbouring frame from between two', () => {
+    expect(stepFrame(3.2, 1, 27)).toBe(4);
+    expect(stepFrame(3.8, 1, 27)).toBe(4);
+    expect(stepFrame(3.2, -1, 27)).toBe(3);
+    expect(stepFrame(3.8, -1, 27)).toBe(3);
+  });
+});
+
+describe('isTimelineKey', () => {
+  const key = (k, extra = {}) => ({ key: k, target: { tagName: 'DIV' }, ...extra });
+  it('takes the bare left and right arrows', () => {
+    expect(isTimelineKey(key('ArrowLeft'))).toBe(true);
+    expect(isTimelineKey(key('ArrowRight'))).toBe(true);
+    expect(isTimelineKey(key('ArrowUp'))).toBe(false);
+    expect(isTimelineKey(key(' '))).toBe(false);
+  });
+
+  it('leaves them to a focused control or a shortcut', () => {
+    expect(isTimelineKey(key('ArrowRight', { target: { tagName: 'INPUT' } }))).toBe(false);
+    expect(isTimelineKey(key('ArrowRight', { target: { tagName: 'SELECT' } }))).toBe(false);
+    expect(isTimelineKey(key('ArrowRight', { target: { tagName: 'DIV', isContentEditable: true } }))).toBe(false);
+    expect(isTimelineKey(key('ArrowRight', { metaKey: true }))).toBe(false);
   });
 });

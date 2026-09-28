@@ -101,3 +101,50 @@ function lerpAngles(a, b, t) {
   }
   return out;
 }
+
+// The animated week's playback: how fast it runs, whether it starts over, and the arrow keys.
+//
+// Speed changes how far each tick moves rather than how often it ticks. The tick is already as
+// fast as a phone can repaint the overlay (see FRAME_MS in Globe.jsx); ticking twice as often
+// for 2x would build a backlog instead of going faster. Moving twice as far per tick costs
+// nothing extra, and half as far for 0.5x simply lands between frames, which the animation
+// already draws by blending the two either side (lerpFrames above).
+export const PLAYBACK_SPEEDS = [0.5, 1, 2];
+
+export function nextSpeed(speed) {
+  const i = PLAYBACK_SPEEDS.indexOf(speed);
+  return PLAYBACK_SPEEDS[(i + 1) % PLAYBACK_SPEEDS.length];
+}
+
+export function speedLabel(speed) {
+  return (speed === 0.5 ? '½' : String(speed)) + '×';
+}
+
+// One tick forward from `pos`, on a week whose last frame is `last`. Without loop it stops on
+// the last frame (the caller then stops playing). With loop the tick after the last frame goes
+// back to now, so the week is seen to end before it starts again rather than skipping its last
+// picture. Off by default: a swell jumping back to Monday is easy to misread as a glitch, so it
+// is something to ask for, not the default.
+export function advancePos(pos, last, { speed = 1, subSteps = 6, loop = false } = {}) {
+  if (!(last > 0)) return 0;
+  if (loop && pos >= last) return 0;
+  return Math.min(last, pos + speed / subSteps);
+}
+
+// One arrow-key press: the next or previous whole frame from wherever the animation is, so a
+// press from between two frames lands on the neighbouring one in that direction rather than
+// on the one it was already nearest.
+export function stepFrame(pos, delta, last) {
+  if (!(last > 0)) return 0;
+  const target = delta > 0 ? Math.floor(pos + 1e-9) + 1 : Math.ceil(pos - 1e-9) - 1;
+  return Math.max(0, Math.min(last, target));
+}
+
+// Whether a key press belongs to the timeline rather than to whatever has focus. The range
+// input already moves on its own arrow keys, and a text field needs them for its cursor.
+export function isTimelineKey(e) {
+  if (!e || (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight')) return false;
+  if (e.altKey || e.ctrlKey || e.metaKey || e.shiftKey) return false;
+  const tag = e.target && e.target.tagName;
+  return !(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable));
+}
