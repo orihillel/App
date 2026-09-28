@@ -35,7 +35,7 @@ export function MySpotsView({ rows, summary, units, waveScale = 1, goToId, onSel
       ) : null}
 
       <ul style={{ listStyle: 'none', margin: 0, padding: '0 16px 16px' }}>
-        {rows.map(({ id, spot, hour }) => (
+        {rows.map(({ id, spot, hour, parts }) => (
           <li key={id} style={{ marginBottom: 8 }}>
             <button
               className="tl-btn w-full" onClick={() => onSelectSpot(id)}
@@ -76,10 +76,35 @@ export function MySpotsView({ rows, summary, units, waveScale = 1, goToId, onSel
                   ) : null}
                 </span>
               ) : null}
+
+              {parts ? <DayParts parts={parts} /> : null}
             </button>
           </li>
         ))}
       </ul>
     </div>
+  );
+}
+
+// Morning, midday and evening, each rated by its best hour -- see dayParts in lib/myspots.js.
+function DayParts({ parts }) {
+  return (
+    <span className="flex" style={{ gap: 6, marginTop: 10 }}>
+      {parts.map((p) => (
+        <span key={p.id} aria-label={p.label + ': ' + (p.rating ? p.rating.toLowerCase() : 'no reading')}
+          style={{ flex: 1, minWidth: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, opacity: p.past ? 0.45 : 1 }}>
+          <span aria-hidden="true" style={{ fontSize: 10.5, color: COLORS.foamDim, letterSpacing: '0.04em' }}>{p.label}</span>
+          <span aria-hidden="true" style={{
+            width: '100%', textAlign: 'center', borderRadius: 4, padding: '3px 0',
+            fontFamily: 'JetBrains Mono, monospace', fontWeight: 700, fontSize: 10.5, letterSpacing: '0.08em',
+            background: p.rating ? ratingBg(p.rating) : 'none',
+            color: p.rating ? ratingText(p.rating) : COLORS.foamDim,
+            border: p.rating ? 'none' : '1px dashed ' + COLORS.navyBorder,
+          }}>
+            {p.rating || '—'}
+          </span>
+        </span>
+      ))}
+    </span>
   );
 }

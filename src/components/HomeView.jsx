@@ -8,6 +8,7 @@ import { swellTrend } from '../lib/swelltrend.js';
 import { camSearchUrl } from '../lib/webcam.js';
 import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
+import { windBars } from '../lib/windchart.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -34,7 +35,7 @@ export function HomeView({
   spot, isGoTo, makeGoTo, showSpotNav, onPrevSpot, onNextSpot, canPrevSpot = true, canNextSpot = true,
   h, dataState, fetchedAt, retry, errorReason,
   waveChart, hourIdx, setHourIdx, hourData, best, waterC, wetsuit, buoy, onLogSession, explain, onShare,
-  activeId, contData, contWaveLine, contTideLine, contWindLine, contSelected, contSelectedIdx, setContSelectedIdx,
+  activeId, contData, contWaveLine, contTideLine, contSelected, contSelectedIdx, setContSelectedIdx,
   tideToday, tide, tideNext, tideNow,
 }) {
   // A label reading "Updated 1 min ago" is only true for a minute. Nothing else on this screen
@@ -341,7 +342,6 @@ export function HomeView({
             <div className="flex items-center" style={{ gap: 9 }}>
               <span className="flex items-center" style={{ gap: 4, fontSize: 11, color: COLORS.foamDim }}><span style={{ width: 10, height: 2, background: COLORS.tealBright, display: 'inline-block', borderRadius: 1 }} />height</span>
               <span className="flex items-center" style={{ gap: 4, fontSize: 11, color: COLORS.foamDim }}><span style={{ width: 10, height: 0, borderTop: '1.5px dashed ' + COLORS.gold, display: 'inline-block' }} />tide</span>
-              <span className="flex items-center" style={{ gap: 4, fontSize: 11, color: COLORS.foamDim }}><span style={{ width: 10, height: 0, borderTop: '1.5px dotted ' + COLORS.coral, display: 'inline-block' }} />wind</span>
             </div>
           ) : null}
         </div>
@@ -359,7 +359,6 @@ export function HomeView({
               ))}
               <path d={contWaveLine.d + ' L' + contWaveLine.pts[contWaveLine.pts.length - 1][0] + ',70 L' + contWaveLine.pts[0][0] + ',70 Z'} fill={'url(#weekFill-' + activeId + ')'} stroke="none" />
               <path d={contTideLine.d} fill="none" stroke={COLORS.gold} strokeWidth="1.2" strokeDasharray="2,2" opacity="0.8" />
-              <path d={contWindLine.d} fill="none" stroke={COLORS.coral} strokeWidth="1.2" strokeDasharray="1,2" opacity="0.8" />
               <path d={contWaveLine.d} fill="none" stroke={COLORS.tealBright} strokeWidth="2" />
               {contData.map((p, i) => p.dayStart && p.windDeg != null && spot && (() => {
                 const arrowColor = windAngleColor(p.windDeg, spot.offshoreDeg);
@@ -394,6 +393,10 @@ export function HomeView({
           <EmptyChart height={78} label={dataState === 'loading' ? 'Loading this week…' : 'No data for this week yet'} loading={dataState === 'loading'} />
         )}
       </div>
+
+      {contData && spot ? (
+        <WindWeek points={contData} offshoreDeg={spot.offshoreDeg} selectedIdx={contSelectedIdx} onSelect={setContSelectedIdx} activeId={activeId} />
+      ) : null}
 
       {hourData ? (
         <div className="flex overflow-x-auto no-scrollbar px-4" style={{ gap: 8, marginTop: 14 }}>
@@ -441,6 +444,52 @@ export function HomeView({
         </div>
       </div>
     </>
+  );
+}
+
+// The week's wind, offshore above the line and onshore below -- see lib/windchart.js.
+function WindWeek({ points, offshoreDeg, selectedIdx, onSelect, activeId }) {
+  const chart = windBars(points, offshoreDeg, { width: 300, height: 64, pad: 10 });
+  if (!chart || !chart.bars.some(Boolean)) return null;
+  const { bars, mid } = chart;
+  const selected = selectedIdx != null ? bars[selectedIdx] : null;
+  return (
+    <div className="mx-4" style={{ marginTop: 10, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+        <span id={'windWeek-' + activeId} style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>WIND THIS WEEK</span>
+        <div className="flex items-center" style={{ gap: 9, fontSize: 11, color: COLORS.foamDim }}>
+          <span>▲ offshore</span>
+          <span>▼ onshore</span>
+        </div>
+      </div>
+      <div>
+        <svg viewBox="0 0 300 64" style={{ width: '100%', height: 64, display: 'block' }} role="img"
+          aria-labelledby={'windWeek-' + activeId}
+          aria-describedby={'windWeekKey-' + activeId}>
+          {points.map((p, i) => p.dayStart && bars[i] && (
+            <line key={'gl' + i} x1={bars[i].x} y1="0" x2={bars[i].x} y2="64" stroke={COLORS.foamFaint} strokeWidth="1" strokeDasharray="1,3" />
+          ))}
+          {bars.map((b, i) => b && (
+            <rect key={i} x={b.x - b.barW / 2} y={b.y} width={b.barW} height={b.h} rx="1"
+              fill={b.color} opacity={b.glassy ? 0.35 : 0.9} />
+          ))}
+          <line x1="0" y1={mid} x2="300" y2={mid} stroke={COLORS.foamDim} strokeWidth="0.75" opacity="0.6" />
+          {selected ? (
+            <line x1={selected.x} y1="0" x2={selected.x} y2="64" stroke={COLORS.coral} strokeWidth="1" />
+          ) : null}
+          <rect x="0" y="0" width="300" height="64" fill="transparent" style={{ cursor: 'pointer' }} onClick={(e) => {
+            const rect = e.currentTarget.getBoundingClientRect();
+            const x = ((e.clientX - rect.left) / rect.width) * 300;
+            let nearest = null, best = Infinity;
+            bars.forEach((b, i) => { if (!b) return; const d = Math.abs(b.x - x); if (d < best) { best = d; nearest = i; } });
+            if (nearest != null) onSelect(nearest);
+          }} />
+        </svg>
+      </div>
+      <div id={'windWeekKey-' + activeId} style={{ marginTop: 5, fontSize: 11.5, color: COLORS.foamDim, lineHeight: 1.45 }}>
+        Above the line, wind off the land cleans the waves up; below, wind off the sea chops them. Taller is stronger; green is straight offshore, red straight onshore.
+      </div>
+    </div>
   );
 }
 

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { mySpotIds, mySpotRows, mySpotsSummary } from './myspots.js';
+import { mySpotIds, mySpotRows, mySpotsSummary, dayParts } from './myspots.js';
 import { ORDER as SEED_ORDER } from './spots.js';
 
 const seedA = SEED_ORDER[0];
@@ -28,6 +28,10 @@ describe('mySpotIds', () => {
 
   it('drops ids with no spot behind them, including a go-to that no longer exists', () => {
     expect(mySpotIds(['mine1', 'ghost'], SPOTS, 'ghost')).toEqual(['mine1']);
+  });
+
+  it('includes built-in spots you saved, never twice', () => {
+    expect(mySpotIds([seedA, seedB, 'mine1'], SPOTS, seedA, [seedB, seedA])).toEqual([seedA, seedB, 'mine1']);
   });
 
   it('survives a missing order list', () => {
@@ -120,3 +124,47 @@ describe('mySpotsSummary', () => {
     expect(mySpotsSummary(mixed)).toBe('Mine One is the pick right now');
   });
 });
+
+describe('dayParts', () => {
+  const H = (hour, rating, score) => ({ hour, rating, score });
+  const DAY = [H(6, 'GOOD', 5), H(8, 'FAIR', 3), H(10, 'POOR', 1), H(12, 'POOR', 1), H(14, 'FAIR', 2), H(16, 'FAIR', 3), H(18, 'FIRING', 7)];
+
+  it('rates morning, midday and evening by their best hour', () => {
+    const parts = dayParts(DAY, 7);
+    expect(parts.map((p) => p.id)).toEqual(['morning', 'midday', 'evening']);
+    expect(parts.map((p) => p.rating)).toEqual(['GOOD', 'FAIR', 'FIRING']);
+    expect(parts[2].hour).toBe(18);
+  });
+
+  it('dims a part the clock has already passed', () => {
+    const parts = dayParts(DAY, 15);
+    expect(parts.map((p) => p.past)).toEqual([true, true, false]);
+    expect(dayParts(DAY, null).some((p) => p.past)).toBe(false);
+  });
+
+  it('leaves a part with no daylight hours empty rather than borrowing', () => {
+    // A short winter day: nothing before eleven.
+    const parts = dayParts([H(11, 'GOOD', 5), H(15, 'POOR', 1)], 9);
+    expect(parts[0].rating).toBeNull();
+    expect(parts[1].rating).toBe('GOOD');
+    expect(parts[2].rating).toBe('POOR');
+  });
+
+  it('has nothing to split without hours', () => {
+    expect(dayParts(null, 9)).toBeNull();
+    expect(dayParts([], 9)).toBeNull();
+  });
+});
+
+describe('mySpotRows day parts', () => {
+  it('splits a full forecast into parts and leaves a one-hour reading without', () => {
+    const forecast = {
+      mine1: { hours: [{ hour: 7, rating: 'GOOD', score: 5 }, { hour: 17, rating: 'POOR', score: 1 }] },
+      mine2: { now: true, hours: [{ hour: 9, rating: 'FAIR', score: 3 }] },
+    };
+    const rows = mySpotRows(['mine1', 'mine2'], SPOTS, forecast, 9);
+    expect(rows[0].parts.map((p) => p.rating)).toEqual(['GOOD', null, 'POOR']);
+    expect(rows[1].parts).toBeNull();
+  });
+});
+

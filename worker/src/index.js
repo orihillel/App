@@ -417,7 +417,13 @@ export async function checkSubscription(env, endpoint, record) {
 
   for (const alert of record.alerts) {
     try {
-      const spotForecast = await fetchSpotForecast({ lat: alert.lat, lon: alert.lon, offshoreDeg: alert.offshoreDeg });
+      // A rating alert is scored for the board and level it was set with, and against the
+      // spot's own swell window and best tide where the app sent them -- the same inputs the
+      // app scores with, so a notification cannot call a day good that the app calls fair.
+      const spot = { lat: alert.lat, lon: alert.lon, offshoreDeg: alert.offshoreDeg };
+      if (Array.isArray(alert.swellWindow)) spot.swellWindow = alert.swellWindow;
+      if (alert.bestTide) spot.bestTide = alert.bestTide;
+      const spotForecast = await fetchSpotForecast(spot, alert.kind === 'rating' ? alert.profile : undefined);
       const match = checkAlertMatch(alert, spotForecast);
       if (!match || !match.hit) continue;
 

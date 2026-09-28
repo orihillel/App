@@ -182,3 +182,29 @@ describe('pushAvailability', () => {
     expect(pushAvailability({ nav: null, win: null })).toBe('unsupported');
   });
 });
+
+describe('alertsPayload', () => {
+  let alertsPayload;
+  beforeEach(async () => { ({ alertsPayload } = await import('./push.js')); });
+  const spots = { trestles: { name: 'Lower Trestles', lat: 33.38, lon: -117.6, offshoreDeg: 60, swellWindow: [180, 300], bestTide: 'mid' } };
+
+  it('sends a rating alert with its window, days and the profile in use now', () => {
+    const [a] = alertsPayload(
+      [{ id: 'a1', spotId: 'trestles', leadTime: '1d', kind: 'rating', minRating: 'GOOD', fromHour: 6, toHour: 10, days: [0, 6] }],
+      spots, { board: 'longboard', skill: 'beginner' },
+    );
+    expect(a).toMatchObject({ kind: 'rating', minRating: 'GOOD', fromHour: 6, toHour: 10, days: [0, 6], profile: { board: 'longboard', skill: 'beginner' } });
+    expect(a).not.toHaveProperty('minWaveFt');
+  });
+
+  it('carries the spot fields the rating is scored with', () => {
+    const [a] = alertsPayload([{ id: 'a1', spotId: 'trestles', leadTime: '1d', minWaveFt: 3 }], spots);
+    expect(a).toMatchObject({ lat: 33.38, lon: -117.6, offshoreDeg: 60, swellWindow: [180, 300], bestTide: 'mid', minWaveFt: 3 });
+    expect(a).not.toHaveProperty('kind');
+  });
+
+  it('drops an alert whose spot no longer exists', () => {
+    expect(alertsPayload([{ id: 'a1', spotId: 'gone', leadTime: '1d', minWaveFt: 3 }], spots)).toEqual([]);
+  });
+});
+

@@ -61,3 +61,25 @@ describe('the week chart readout', () => {
     expect(screen.getByText(/Mon 7a · 2ft/)).toBeTruthy();
   });
 });
+
+describe('the week wind chart', () => {
+  const windy = [
+    { ...CONT_ROW, windSpd: 12, windDeg: 90, dayStart: true },  // SPOT.offshoreDeg is 90: straight offshore
+    { ...CONT_ROW, windSpd: 18, windDeg: 270 },                 // onshore
+  ];
+
+  it('shows the offshore/onshore chart when the week has wind', () => {
+    renderHome({ contData: windy, contWaveLine: { d: 'M0,0', pts: [[10, 10], [290, 10]] }, contSelectedIdx: null, contSelected: null });
+    expect(screen.getByText('WIND THIS WEEK')).toBeTruthy();
+    expect(screen.getByText(/wind off the land cleans the waves up/)).toBeTruthy();
+    // One bar per reading that has wind.
+    const svg = screen.getByRole('img', { name: 'WIND THIS WEEK' });
+    expect(svg.querySelectorAll('rect[rx]').length).toBe(2);
+  });
+
+  it('is left out when no reading carries wind', () => {
+    renderHome();
+    expect(screen.queryByText('WIND THIS WEEK')).toBeNull();
+  });
+});
+

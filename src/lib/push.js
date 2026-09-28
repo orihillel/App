@@ -58,6 +58,13 @@ export function pushAvailability({
   return 'unsupported';
 }
 
+// Whether first-run onboarding has an alerts step to show: push can be turned on now, or after
+// one step (an iPhone outside the Home Screen). On a build with no push backend, or a browser
+// with no push at all, there is nothing to offer and the step is skipped.
+export function hasAlertsStep(pushState) {
+  return pushState === 'ready' || pushState === 'ios-needs-install';
+}
+
 // A PushManager applicationServerKey wants raw bytes, not the base64url string the VAPID key
 // is generated/stored as — this is the standard conversion (same one every Web Push guide
 // uses, there's no built-in for it).
@@ -78,15 +85,24 @@ export async function getCurrentSubscription() {
   }
 }
 
+// A rating alert also carries the surfer profile in use now, since the Worker has no other way
+// of knowing what this person rides (see checkRatingAlert in lib/alerts.js).
+//
 // Denormalizes each alert with its spot's location — the Worker has no access to this app's
 // SPOTS data (and couldn't, for a user's own custom-added spots anyway), so the alert payload
 // carries what it needs to fetch and score that spot's forecast itself.
-function alertsPayload(alerts, spots) {
+export function alertsPayload(alerts, spots, profile) {
   return alerts
     .map((a) => {
       const s = spots[a.spotId];
       if (!s) return null;
-      return { id: a.id, spotId: a.spotId, spotName: s.name, lat: s.lat, lon: s.lon, offshoreDeg: s.offshoreDeg, minWaveFt: a.minWaveFt, leadTime: a.leadTime };
+      const base = { id: a.id, spotId: a.spotId, spotName: s.name, lat: s.lat, lon: s.lon, offshoreDeg: s.offshoreDeg, leadTime: a.leadTime };
+      if (Array.isArray(s.swellWindow)) base.swellWindow = s.swellWindow;
+      if (s.bestTide) base.bestTide = s.bestTide;
+      if (a.kind === 'rating') {
+        return { ...base, kind: 'rating', minRating: a.minRating, fromHour: a.fromHour, toHour: a.toHour, days: a.days, profile };
+      }
+      return { ...base, minWaveFt: a.minWaveFt };
     })
     .filter(Boolean);
 }
@@ -95,18 +111,18 @@ function alertsPayload(alerts, spots) {
 // whenever alerts change; a missing/unreachable Worker fails silently (best-effort, same as
 // this app's other storage.set(...).catch(() => {}) calls) since there's no good in-app way
 // to surface "your notification backend isn't deployed" to a user who never asked for it.
-export async function syncAlertsToPush(subscription, alerts, spots) {
+export async function syncAlertsToPush(subscription, alerts, spots, profile) {
   if (!isPushConfigured() || !subscription) return;
   try {
     await fetch(PUSH_API_URL + '/subscribe', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ subscription: subscription.toJSON(), alerts: alertsPayload(alerts, spots) }),
+      body: JSON.stringify({ subscription: subscription.toJSON(), alerts: alertsPayload(alerts, spots, profile) }),
     });
   } catch { /* best-effort */ }
 }
 
-export async function subscribeToPush(alerts, spots) {
+export async function subscribeToPush(alerts, spots, profile) {
   if (!isPushSupported()) throw new Error('Push notifications are not supported or configured here');
   const permission = await Notification.requestPermission();
   if (permission !== 'granted') throw new Error('Notification permission was not granted');
@@ -115,7 +131,7 @@ export async function subscribeToPush(alerts, spots) {
     userVisibleOnly: true,
     applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC_KEY),
   });
-  await syncAlertsToPush(subscription, alerts, spots);
+  await syncAlertsToPush(subscription, alerts, spots, profile);
   return subscription;
 }
 

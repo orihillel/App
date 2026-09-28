@@ -1,7 +1,7 @@
 import { useEffect, useRef } from 'react';
 import { X, Search, Globe2, Bell, User, MapPin, Plus, Star, Compass } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
-import { addedSpotIds, yourSpotIds } from '../lib/spots.js';
+import { removableSpotIds, yourSpotIds } from '../lib/spots.js';
 
 // The navigation drawer behind the header's hamburger.
 //
@@ -30,7 +30,7 @@ const buildId = typeof __BUILD_ID__ === 'string' ? __BUILD_ID__ : 'dev';
 const buildDate = typeof __BUILD_DATE__ === 'string' ? __BUILD_DATE__ : 'local';
 
 export function NavDrawer({
-  spots, order, goToId, activeId, onSelectSpot, openSearch, onNavigate,
+  spots, order, goToId, savedIds = [], activeId, onSelectSpot, openSearch, onNavigate,
   units, toggleUnits, alertCount = 0, onClose,
 }) {
   const panel = useRef(null);
@@ -44,8 +44,8 @@ export function NavDrawer({
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  const added = addedSpotIds(order, spots);
-  const yours = yourSpotIds(order, spots, goToId);
+  const added = removableSpotIds(order, spots, savedIds);
+  const yours = yourSpotIds(order, spots, goToId, savedIds);
   // Counted from the map this is handed rather than from the module, now that the catalog
   // arrives in its own chunk: before it lands these read the seed set, which is honest -- the
   // globe really does only have those markers yet.
