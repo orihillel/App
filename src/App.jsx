@@ -864,7 +864,6 @@ export default function App() {
   // which is enough to read the chart as disagreeing with the headline for the same hour.
   const contWaveLine = contData ? linePath(contData.map((p) => p.surfFt), 300, 70, 10) : null;
   const contTideLine = contData ? linePath(fillGaps(contData.map((p) => p.tideFt)), 300, 70, 10) : null;
-  const contWindLine = contData ? linePath(contData.map((p) => (p.windSpd != null ? p.windSpd : 0)), 300, 70, 10) : null;
   const contSelected = contData && contSelectedIdx != null ? contData[contSelectedIdx] : null;
   // The sampled hours are no longer a fixed list of eight — a short winter day at a
   // high-latitude spot yields fewer — so an index chosen for one spot can overshoot the next.
@@ -1208,7 +1207,7 @@ export default function App() {
             onShare={shareActiveSpot}
             buoy={buoy[activeId] || null}
             onLogSession={logSession} calibration={spotCalibration}
-            activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine} contWindLine={contWindLine}
+            activeId={activeId} contData={contData} contWaveLine={contWaveLine} contTideLine={contTideLine}
             contSelected={contSelected} contSelectedIdx={contSelectedIdx} setContSelectedIdx={setContSelectedIdx}
             tideToday={tideToday} tide={tide} tideNext={tideNext} tideNow={tideNow}
           />
