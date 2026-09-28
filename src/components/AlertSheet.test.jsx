@@ -109,3 +109,53 @@ describe('AlertSheet, the rest of the form', () => {
     expect(props.saveAlert).toHaveBeenCalled();
   });
 });
+
+describe('AlertSheet rating alerts', () => {
+  const RATING_DRAFT = { spotId: 'trestles', kind: 'rating', minRating: 'GOOD', fromHour: 6, toHour: 18, days: [0, 1, 2, 3, 4, 5, 6], minWaveFt: 3, leadTime: '1d' };
+
+  it('says whose rating it is', () => {
+    renderSheet({ alertDraft: RATING_DRAFT, surferProfile: { board: 'longboard', skill: 'beginner' } });
+    expect(screen.getByText(/Rated for your longboard at beginner level/)).toBeTruthy();
+  });
+
+  it('switches between a rating alert and a height alert', () => {
+    const props = renderSheet({ alertDraft: RATING_DRAFT });
+    expect(screen.queryByText('MINIMUM WAVE HEIGHT')).toBeNull();
+    fireEvent.click(screen.getByText('It hits a size'));
+    expect(props.setAlertDraft).toHaveBeenCalledWith(expect.objectContaining({ kind: 'size' }));
+  });
+
+  it('shows the height picker for a height alert, as before', () => {
+    renderSheet();
+    expect(screen.getByText('MINIMUM WAVE HEIGHT')).toBeTruthy();
+    expect(screen.queryByText('HOURS YOU CAN SURF')).toBeNull();
+  });
+
+  it('sets the minimum rating', () => {
+    const props = renderSheet({ alertDraft: RATING_DRAFT });
+    fireEvent.click(screen.getByText('Firing only'));
+    expect(props.setAlertDraft).toHaveBeenCalledWith(expect.objectContaining({ minRating: 'FIRING' }));
+  });
+
+  it('keeps the window the right way round when the start moves past the end', () => {
+    const props = renderSheet({ alertDraft: RATING_DRAFT });
+    fireEvent.change(screen.getByLabelText('From'), { target: { value: '20' } });
+    expect(props.setAlertDraft).toHaveBeenCalledWith(expect.objectContaining({ fromHour: 20, toHour: 20 }));
+  });
+
+  it('toggles single days and applies the weekday and weekend shortcuts', () => {
+    const props = renderSheet({ alertDraft: RATING_DRAFT });
+    fireEvent.click(screen.getByRole('button', { name: 'Wed' }));
+    expect(props.setAlertDraft).toHaveBeenLastCalledWith(expect.objectContaining({ days: [0, 1, 2, 4, 5, 6] }));
+    fireEvent.click(screen.getByText('Weekends'));
+    expect(props.setAlertDraft).toHaveBeenLastCalledWith(expect.objectContaining({ days: [0, 6] }));
+  });
+
+  it('will not save an alert with no days, which could never fire', () => {
+    const props = renderSheet({ alertDraft: { ...RATING_DRAFT, days: [] } });
+    const save = screen.getByText('Pick at least one day').closest('button');
+    expect(save.disabled).toBe(true);
+    fireEvent.click(save);
+    expect(props.saveAlert).not.toHaveBeenCalled();
+  });
+});

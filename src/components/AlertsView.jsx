@@ -1,6 +1,18 @@
 import { X } from 'lucide-react';
 import { COLORS } from '../lib/colors.js';
-import { formatWaveNum, heightUnit, leadTimeLabel } from '../lib/format.js';
+import { formatWaveNum, heightUnit, leadTimeLabel, hourLabel12 } from '../lib/format.js';
+import { daysLabel, DEFAULT_WINDOW } from '../lib/alerts.js';
+
+// What an alert watches, in one line.
+function alertSummary(a, units, waveScale) {
+  if (a.kind === 'rating') {
+    const from = Number.isFinite(a.fromHour) ? a.fromHour : DEFAULT_WINDOW.fromHour;
+    const to = Number.isFinite(a.toHour) ? a.toHour : DEFAULT_WINDOW.toHour;
+    return leadTimeLabel(a.leadTime) + ' · ' + (a.minRating === 'FIRING' ? 'firing' : 'good or better') + ' for you · '
+      + hourLabel12(from) + '–' + hourLabel12(to) + ', ' + daysLabel(a.days);
+  }
+  return leadTimeLabel(a.leadTime) + ' · ' + formatWaveNum(a.minWaveFt, units, waveScale) + heightUnit(units) + '+';
+}
 
 export function AlertsView({ alerts, spots, units, waveScale = 1, checkAlertMatch, openNewAlert, deleteAlert, onClose }) {
   return (
@@ -14,7 +26,7 @@ export function AlertsView({ alerts, spots, units, waveScale = 1, checkAlertMatc
       </div>
       <div style={{ padding: '0 20px', display: 'flex', flexDirection: 'column', gap: 10 }}>
         {alerts.length === 0 && (
-          <div style={{ fontSize: 12.5, color: COLORS.foamDim, padding: '10px 2px', lineHeight: 1.5 }}>No alerts yet. Pick a spot, a minimum wave height, and how far ahead you want the heads-up.</div>
+          <div style={{ fontSize: 12.5, color: COLORS.foamDim, padding: '10px 2px', lineHeight: 1.5 }}>No alerts yet. Pick a spot and the hours and days you can surf, and get told when it will be good for you.</div>
         )}
         {alerts.map((a) => {
           const s = spots[a.spotId];
@@ -24,9 +36,9 @@ export function AlertsView({ alerts, spots, units, waveScale = 1, checkAlertMatc
               <div className="flex items-start justify-between">
                 <div>
                   <div style={{ fontFamily: 'Space Grotesk, sans-serif', fontWeight: 600, fontSize: 14, color: COLORS.foam }}>{s ? s.name : 'Unknown spot'}</div>
-                  <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 2 }}>{leadTimeLabel(a.leadTime)} · {formatWaveNum(a.minWaveFt, units, waveScale)}{heightUnit(units)}+</div>
+                  <div style={{ fontSize: 11.5, color: COLORS.foamDim, marginTop: 2 }}>{alertSummary(a, units, waveScale)}</div>
                 </div>
-                <button className="tl-btn" onClick={() => deleteAlert(a.id)} style={{ background: 'none', border: 'none', padding: 4 }}><X size={15} color={COLORS.foamDim} /></button>
+                <button className="tl-btn" onClick={() => deleteAlert(a.id)} aria-label={'Delete alert for ' + (s ? s.name : 'this spot')} style={{ background: 'none', border: 'none', padding: 4 }}><X size={15} color={COLORS.foamDim} /></button>
               </div>
               <div style={{ fontSize: 11.5, color: match && match.hit ? COLORS.tealBright : COLORS.foamDim, marginTop: 8, fontWeight: match && match.hit ? 600 : 400 }}>
                 {match ? match.text : 'Waiting for forecast data…'}

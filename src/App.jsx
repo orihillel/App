@@ -20,7 +20,7 @@ import { shareSpot } from './lib/share.js';
 import { nearestSpots, rankNearby, DEFAULT_MAX_KM } from './lib/nearby.js';
 import { mySpotIds, mySpotRows, mySpotsSummary } from './lib/myspots.js';
 import { locate } from './lib/geolocate.js';
-import { checkAlertMatch } from './lib/alerts.js';
+import { checkAlertMatch, DEFAULT_WINDOW, ALL_DAYS } from './lib/alerts.js';
 import { pushAvailability, getCurrentSubscription, subscribeToPush, unsubscribeFromPush, syncAlertsToPush } from './lib/push.js';
 import { getSession, logout as clearStoredSession, fetchMyAccount, pushAppData, isAuthConfigured } from './lib/auth.js';
 import { OnboardingView } from './components/OnboardingView.jsx';
@@ -553,6 +553,9 @@ export default function App() {
     const next = normalizeProfile({ ...surferProfile, ...patch });
     setSurferProfile(next);
     storage.set('surf-profile', JSON.stringify(next)).catch(() => {});
+    // Rating alerts are scored with this in the background, so the Worker's copy has to move
+    // with it. A no-op without a push subscription.
+    if (alerts.some((a) => a.kind === 'rating')) syncAlertsToPush(pushSubscription, alerts, spots, next);
   }
 
   // Nothing is said on a successful share sheet -- the OS already showed one, and a toast on top
@@ -728,7 +731,7 @@ export default function App() {
     await persistAlertsLocally(next);
     // Keep the push-notification backend's copy of this device's alerts current — a no-op
     // if push isn't subscribed or configured (syncAlertsToPush checks both).
-    syncAlertsToPush(pushSubscription, next, spots);
+    syncAlertsToPush(pushSubscription, next, spots, surferProfile);
   }
 
   // Real (backend-driven) push notifications — see src/lib/push.js and worker/. Reflects
@@ -744,7 +747,7 @@ export default function App() {
         await unsubscribeFromPush();
         setPushSubscription(null);
       } else {
-        const sub = await subscribeToPush(alerts, spots);
+        const sub = await subscribeToPush(alerts, spots, surferProfile);
         setPushSubscription(sub);
       }
     } catch (e) {
@@ -1028,7 +1031,9 @@ export default function App() {
   }
 
   function openNewAlert() {
-    setAlertDraft({ spotId: goToId, minWaveFt: 3, leadTime: '1d' });
+    // Rated for you by default: see checkRatingAlert in lib/alerts.js for why a height is the
+    // weaker question. The height fields stay in the draft so switching kinds keeps them.
+    setAlertDraft({ spotId: goToId, kind: 'rating', minRating: 'GOOD', ...DEFAULT_WINDOW, days: ALL_DAYS, minWaveFt: 3, leadTime: '1d' });
     setAlertSheetOpen(true);
   }
   function closeAlertSheet() { setAlertSheetOpen(false); setAlertDraft(null); }
@@ -1036,8 +1041,16 @@ export default function App() {
     if (!alertDraft) return;
     // The sheet collects this in the heights this person reads; it is stored in the model's
     // own feet, because that is what matches it. See toModelFt.
-    const minWaveFt = toModelFt(alertDraft.minWaveFt, waveScale);
-    const next = [...alerts, { id: 'alert-' + Date.now(), ...alertDraft, minWaveFt }];
+    const id = 'alert-' + Date.now();
+    const { kind, spotId, leadTime } = alertDraft;
+    // Only the fields the chosen kind reads, so a stored alert says plainly which kind it is.
+    // No profile stored on it: the one in use is attached when alerts are sent to the Worker
+    // (see alertsPayload), so changing your board re-scores your alerts rather than leaving
+    // them on the board you had when you set them.
+    const alert = kind === 'rating'
+      ? { id, spotId, leadTime, kind, minRating: alertDraft.minRating, fromHour: alertDraft.fromHour, toHour: alertDraft.toHour, days: alertDraft.days }
+      : { id, spotId, leadTime, minWaveFt: toModelFt(alertDraft.minWaveFt, waveScale) };
+    const next = [...alerts, alert];
     setAlerts(next);
     persistAlerts(next);
     closeAlertSheet();
@@ -1202,7 +1215,7 @@ export default function App() {
             onSelectSpot={viewSpot} onClose={() => handleNav('home')}
           />
         ) : view === 'alerts' ? (
-          <AlertsView alerts={alerts} spots={spots} units={units} waveScale={waveScale} checkAlertMatch={(alert) => checkAlertMatch(alert, forecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
+          <AlertsView alerts={alerts} spots={spots} units={units} waveScale={waveScale} checkAlertMatch={(alert) => checkAlertMatch(alert, scoredForecast[alert.spotId])} openNewAlert={openNewAlert} deleteAlert={deleteAlert} onClose={() => handleNav('home')} />
         ) : view === 'profile' ? (
           <ProfileView order={order} spots={spots} goToId={goToId} savedIds={savedIds} setGoToSpot={setGoToSpot} units={units} toggleUnits={toggleUnits} waveScale={waveScale} updateWaveScale={updateWaveScale} alerts={alerts} openAlerts={() => handleNav('alerts')} removeSpot={removeSpot} onClose={() => handleNav('home')} onSelectSpot={viewSpot}
             pushState={pushAvailability()} pushSubscribed={!!pushSubscription} pushBusy={pushBusy} togglePush={togglePush}
@@ -1263,7 +1276,7 @@ export default function App() {
         )}
 
         {alertSheetOpen && alertDraft && (
-          <AlertSheet order={order} spots={spots} goToId={goToId} savedIds={savedIds} alertDraft={alertDraft} setAlertDraft={setAlertDraft} units={units} saveAlert={saveAlert} onClose={closeAlertSheet} />
+          <AlertSheet order={order} spots={spots} goToId={goToId} savedIds={savedIds} surferProfile={surferProfile} alertDraft={alertDraft} setAlertDraft={setAlertDraft} units={units} saveAlert={saveAlert} onClose={closeAlertSheet} />
         )}
       </div>
     </div>

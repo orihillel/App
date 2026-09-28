@@ -530,6 +530,23 @@ describe('checkSubscription (the cron logic)', () => {
     expect(await getSubscription(env, SUBSCRIPTION_JSON.endpoint)).toBeNull();
   });
 
+  it('scores a rating alert for the board and level it carries', async () => {
+    // Around 6-7ft of clean offshore surf: good on a shortboard for an advanced surfer, far too
+    // much for a beginner on a soft-top. Same ocean, same spot, opposite answers.
+    const ratingAlert = { ...ALERT, kind: 'rating', minRating: 'GOOD', fromHour: 0, toHour: 23, days: [] };
+    delete ratingAlert.minWaveFt;
+    sendPushNotification.mockResolvedValue(new Response(null, { status: 201 }));
+
+    stubForecastFetch({ waveM: 2, windMs: 2, windDeg: ALERT.offshoreDeg });
+    await checkSubscription(makeEnv(), SUBSCRIPTION_JSON.endpoint, { subscription: SUBSCRIPTION_JSON, alerts: [{ ...ratingAlert, profile: { board: 'shortboard', skill: 'advanced' } }], lastNotified: {} });
+    expect(sendPushNotification).toHaveBeenCalledTimes(1);
+    expect(sendPushNotification.mock.calls[0][1].body).toMatch(/for you today/);
+
+    sendPushNotification.mockClear();
+    await checkSubscription(makeEnv(), SUBSCRIPTION_JSON.endpoint, { subscription: SUBSCRIPTION_JSON, alerts: [{ ...ratingAlert, profile: { board: 'softtop', skill: 'beginner' } }], lastNotified: {} });
+    expect(sendPushNotification).not.toHaveBeenCalled();
+  });
+
   it('keeps checking other alerts on this subscription if one alert errors', async () => {
     vi.stubGlobal('fetch', vi.fn(() => Promise.resolve(new Response('boom', { status: 500 }))));
     const env = makeEnv();
