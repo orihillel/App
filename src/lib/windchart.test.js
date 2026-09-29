@@ -1,81 +1,84 @@
 import { describe, it, expect } from 'vitest';
-import { windBars, isOffshoreSide, MIN_SCALE_MPH, GLASSY_MPH } from './windchart.js';
+import { windGrid, windBand, arrowSize, WIND_BANDS, WIND_HOURS, ARROW_MIN, ARROW_MAX, offshoreFromLabel } from './windchart.js';
 
-// A beach facing west: wind from the east (90) blows off the land.
-const OFFSHORE = 90;
-const pt = (windSpd, windDeg, extra = {}) => ({ windSpd, windDeg, hour: 12, ...extra });
+const pt = (day, hour, windSpd, windDeg) => ({ day, hour, windSpd, windDeg });
 
-describe('isOffshoreSide', () => {
-  it('puts wind from the land above the line and wind from the sea below', () => {
-    expect(isOffshoreSide(90, OFFSHORE)).toBe(true);   // straight offshore
-    expect(isOffshoreSide(270, OFFSHORE)).toBe(false); // straight onshore
-    expect(isOffshoreSide(45, OFFSHORE)).toBe(true);
-    expect(isOffshoreSide(225, OFFSHORE)).toBe(false);
+// A day of three-hourly readings, midnight to 9pm.
+function day(name, spd = 10, deg = 270) {
+  return [0, 3, 6, 9, 12, 15, 18, 21].map((h) => pt(name, h, spd, deg));
+}
+
+describe('windBand', () => {
+  it('steps through four named strengths', () => {
+    expect(windBand(0).id).toBe('light');
+    expect(windBand(7.9).id).toBe('light');
+    expect(windBand(8).id).toBe('moderate');
+    expect(windBand(15).id).toBe('strong');
+    expect(windBand(22).id).toBe('very-strong');
+    expect(windBand(60).id).toBe('very-strong');
+    expect(windBand(null)).toBeNull();
   });
 
-  it('counts dead cross-shore as not blowing in', () => {
-    expect(isOffshoreSide(0, OFFSHORE)).toBe(true);
-    expect(isOffshoreSide(180, OFFSHORE)).toBe(true);
-  });
-
-  it('wraps round north', () => {
-    expect(isOffshoreSide(350, 10)).toBe(true);
-    expect(isOffshoreSide(170, 350)).toBe(false);
+  it('gives every band its own colour', () => {
+    expect(new Set(WIND_BANDS.map((b) => b.color)).size).toBe(WIND_BANDS.length);
   });
 });
 
-describe('windBars', () => {
-  it('draws offshore bars up from the centre line and onshore bars down from it', () => {
-    const { bars, mid } = windBars([pt(10, 90), pt(10, 270)], OFFSHORE, { height: 64 });
-    expect(bars[0].offshore).toBe(true);
-    expect(bars[0].y + bars[0].h).toBeCloseTo(mid); // ends at the line, extends upward
-    expect(bars[1].offshore).toBe(false);
-    expect(bars[1].y).toBe(mid);                     // starts at the line, extends downward
+describe('arrowSize', () => {
+  it('grows with the wind and stops growing at 30mph', () => {
+    expect(arrowSize(0)).toBe(ARROW_MIN);
+    expect(arrowSize(10)).toBeGreaterThan(arrowSize(5));
+    expect(arrowSize(30)).toBe(ARROW_MAX);
+    expect(arrowSize(60)).toBe(ARROW_MAX);
+  });
+});
+
+describe('windGrid', () => {
+  it('lays readings out one row a day and one column per surfable hour', () => {
+    const g = windGrid([...day('Mon'), ...day('Tue')], 90);
+    expect(g.hours).toEqual(WIND_HOURS);
+    expect(g.rows.map((r) => r.day)).toEqual(['Mon', 'Tue']);
+    expect(g.rows[0].cells.map((c) => c.hour)).toEqual(WIND_HOURS);
   });
 
-  it('makes the stronger wind the taller bar, whichever side it is on', () => {
-    const { bars } = windBars([pt(5, 90), pt(20, 270)], OFFSHORE);
-    expect(bars[1].h).toBeGreaterThan(bars[0].h);
+  it('points the arrow where the wind goes and names where it comes from', () => {
+    // A westerly (from 270) blows towards the east (90).
+    const c = windGrid(day('Mon', 10, 270), 90).rows[0].cells[0];
+    expect(c.from).toBe('W');
+    expect(c.travelDeg).toBe(90);
   });
 
-  it('keeps full height for a cross-shore wind rather than zeroing it', () => {
-    const { bars } = windBars([pt(20, 0), pt(20, 90)], OFFSHORE);
-    expect(bars[0].h).toBeCloseTo(bars[1].h);
-    expect(bars[0].color).not.toBe(bars[1].color); // the colour carries the angle
+  it('says whether each reading is offshore at this spot', () => {
+    const g = windGrid([pt('Mon', 6, 10, 90), pt('Mon', 9, 10, 270), pt('Mon', 12, 10, 0)], 90);
+    expect(g.rows[0].cells.slice(0, 3).map((c) => c.type)).toEqual(['offshore', 'onshore', 'cross']);
   });
 
-  it('does not let a calm week look like a gale', () => {
-    const { bars, top, mid } = windBars([pt(4, 90)], OFFSHORE, { height: 64 });
-    expect(top).toBe(MIN_SCALE_MPH);
-    expect(bars[0].h).toBeLessThan((mid - 2) / 3);
+  it('keeps each reading pointing back at its place in the week, for tap selection', () => {
+    const g = windGrid([...day('Mon'), ...day('Tue')], 90);
+    expect(g.rows[1].cells[0].idx).toBe(8 + 2); // Tuesday 6am: 8 readings on Monday, then 0am, 3am
   });
 
-  it('scales to the windiest reading when it is above the floor', () => {
-    const { top } = windBars([pt(30, 90), pt(10, 90)], OFFSHORE);
-    expect(top).toBe(30);
+  it('leaves a morning that has already gone empty rather than shifting the afternoon left', () => {
+    const g = windGrid([pt('Mon', 15, 10, 0), pt('Mon', 18, 10, 0), ...day('Tue')], 90);
+    expect(g.rows[0].cells.map(Boolean)).toEqual([false, false, false, true, true]);
   });
 
-  it('marks near-calm readings as glassy', () => {
-    const { bars } = windBars([pt(GLASSY_MPH - 1, 270), pt(GLASSY_MPH, 270)], OFFSHORE);
-    expect(bars[0].glassy).toBe(true);
-    expect(bars[1].glassy).toBe(false);
+  it('stops at a week', () => {
+    const names = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun', 'Mon', 'Tue'];
+    const g = windGrid(names.flatMap((n) => day(n)), 90);
+    expect(g.rows).toHaveLength(7);
   });
 
-  it('lines bars up with the week chart above it', () => {
-    // linePath in lib/format.js puts point i at pad + i * (width - 2 * pad) / (n - 1).
-    const { bars } = windBars([pt(5, 90), pt(5, 90), pt(5, 90)], OFFSHORE, { width: 300, pad: 10 });
-    expect(bars.map((b) => b.x)).toEqual([10, 150, 290]);
+  it('draws nothing when no reading carries wind', () => {
+    expect(windGrid([{ day: 'Mon', hour: 6, windSpd: null, windDeg: null }], 90)).toBeNull();
+    expect(windGrid([], 90)).toBeNull();
+    expect(windGrid(null, 90)).toBeNull();
   });
+});
 
-  it('leaves a gap for a reading with no wind rather than shifting the rest', () => {
-    const { bars } = windBars([pt(5, 90), { windSpd: null, windDeg: null }, pt(5, 90)], OFFSHORE, { width: 300, pad: 10 });
-    expect(bars[1]).toBeNull();
-    expect(bars[2].x).toBe(290);
-  });
-
-  it('draws nothing without a spot orientation or any readings', () => {
-    expect(windBars([pt(5, 90)], undefined)).toBeNull();
-    expect(windBars([], OFFSHORE)).toBeNull();
-    expect(windBars(null, OFFSHORE)).toBeNull();
+describe('offshoreFromLabel', () => {
+  it('names the direction offshore wind comes from', () => {
+    expect(offshoreFromLabel(90)).toBe('E');
+    expect(offshoreFromLabel(undefined)).toBeNull();
   });
 });

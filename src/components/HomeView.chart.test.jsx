@@ -1,6 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { render, screen } from '@testing-library/react';
 import { HomeView } from './HomeView.jsx';
+import { WIND_BANDS } from '../lib/windchart.js';
+
+const WIND_BAND_LABELS = WIND_BANDS.map((b) => b.label);
 
 // The week chart and the big number above it have to be the same quantity.
 //
@@ -64,17 +67,37 @@ describe('the week chart readout', () => {
 
 describe('the week wind chart', () => {
   const windy = [
-    { ...CONT_ROW, windSpd: 12, windDeg: 90, dayStart: true },  // SPOT.offshoreDeg is 90: straight offshore
-    { ...CONT_ROW, windSpd: 18, windDeg: 270 },                 // onshore
+    { ...CONT_ROW, hour: 6, windSpd: 5, windDeg: 90, dayStart: false },   // light, from E (offshore here)
+    { ...CONT_ROW, hour: 12, windSpd: 25, windDeg: 270, dayStart: false }, // very strong, from W
   ];
 
-  it('shows the offshore/onshore chart when the week has wind', () => {
-    renderHome({ contData: windy, contWaveLine: { d: 'M0,0', pts: [[10, 10], [290, 10]] }, contSelectedIdx: null, contSelected: null });
+  function renderWindy(extra = {}) {
+    return renderHome({ contData: windy, contWaveLine: { d: 'M0,0', pts: [[10, 10], [290, 10]] }, contSelectedIdx: null, contSelected: null, ...extra });
+  }
+
+  it('draws an arrow per reading, each labelled with its speed, direction and strength', () => {
+    renderWindy();
     expect(screen.getByText('WIND THIS WEEK')).toBeTruthy();
-    expect(screen.getByText(/wind off the land cleans the waves up/)).toBeTruthy();
-    // One bar per reading that has wind.
-    const svg = screen.getByRole('img', { name: 'WIND THIS WEEK' });
-    expect(svg.querySelectorAll('rect[rx]').length).toBe(2);
+    expect(screen.getByRole('button', { name: 'Mon 6a: 5 mph from E, light, offshore' })).toBeTruthy();
+    expect(screen.getByRole('button', { name: 'Mon 12p: 25 mph from W, very strong, onshore' })).toBeTruthy();
+  });
+
+  it('draws a stronger wind as a bigger arrow', () => {
+    renderWindy();
+    const size = (name) => Number(screen.getByRole('button', { name }).querySelector('svg').getAttribute('width'));
+    expect(size(/Mon 12p/)).toBeGreaterThan(size(/Mon 6a/));
+  });
+
+  it('keys the directions and says which one is offshore here', () => {
+    renderWindy();
+    expect(screen.getByText(/Arrows point where the wind is blowing/)).toBeTruthy();
+    expect(screen.getByText(/Offshore here is wind from/)).toBeTruthy();
+    WIND_BAND_LABELS.forEach((label) => expect(screen.getAllByText(new RegExp('^' + label)).length).toBeGreaterThan(0));
+  });
+
+  it('prints speeds in the reader\'s units', () => {
+    renderWindy({ units: 'metric' });
+    expect(screen.getByRole('button', { name: /Mon 12p: 40 kph from W/ })).toBeTruthy();
   });
 
   it('is left out when no reading carries wind', () => {
@@ -82,4 +105,3 @@ describe('the week wind chart', () => {
     expect(screen.queryByText('WIND THIS WEEK')).toBeNull();
   });
 });
-
