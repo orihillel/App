@@ -6,9 +6,9 @@ import { arcCentre } from '../lib/spotmodel.js';
 import { formatAge, compareToForecast, compareLabel } from '../lib/buoy.js';
 import { swellTrend } from '../lib/swelltrend.js';
 import { camSearchUrl } from '../lib/webcam.js';
-import { degToCompass, windAngleColor, ratingBg, ratingText, windColor } from '../lib/rating.js';
+import { degToCompass, ratingBg, ratingText, windColor } from '../lib/rating.js';
 import { formatWaveRange, formatWaveNum, formatHeight, formatSpeed, waveUnit, heightUnit, speedUnit, barHeight, hourLabel12, waveAvg, freshnessLabel } from '../lib/format.js';
-import { windBars } from '../lib/windchart.js';
+import { windGrid, WIND_BANDS, offshoreFromLabel } from '../lib/windchart.js';
 
 // Deep-links into Google Maps' turn-by-turn directions to this spot. Omitting `origin` makes
 // Maps use the visitor's current location and omitting `travelmode` leaves driving/walking/
@@ -360,15 +360,6 @@ export function HomeView({
               <path d={contWaveLine.d + ' L' + contWaveLine.pts[contWaveLine.pts.length - 1][0] + ',70 L' + contWaveLine.pts[0][0] + ',70 Z'} fill={'url(#weekFill-' + activeId + ')'} stroke="none" />
               <path d={contTideLine.d} fill="none" stroke={COLORS.gold} strokeWidth="1.2" strokeDasharray="2,2" opacity="0.8" />
               <path d={contWaveLine.d} fill="none" stroke={COLORS.tealBright} strokeWidth="2" />
-              {contData.map((p, i) => p.dayStart && p.windDeg != null && spot && (() => {
-                const arrowColor = windAngleColor(p.windDeg, spot.offshoreDeg);
-                return (
-                  <g key={'wd' + i} transform={'translate(' + contWaveLine.pts[i][0] + ',9) rotate(' + p.windDeg + ')'}>
-                    <line x1="0" y1="4" x2="0" y2="-4" stroke={arrowColor} strokeWidth="1.1" />
-                    <path d="M0,-5 L-2,-2 L2,-2 Z" fill={arrowColor} />
-                  </g>
-                );
-              })())}
               {contSelected && (
                 <circle cx={contWaveLine.pts[contSelectedIdx][0]} cy={contWaveLine.pts[contSelectedIdx][1]} r="3.5" fill={COLORS.coral} />
               )}
@@ -395,7 +386,7 @@ export function HomeView({
       </div>
 
       {contData && spot ? (
-        <WindWeek points={contData} offshoreDeg={spot.offshoreDeg} selectedIdx={contSelectedIdx} onSelect={setContSelectedIdx} activeId={activeId} />
+        <WindWeek points={contData} offshoreDeg={spot.offshoreDeg} selectedIdx={contSelectedIdx} onSelect={setContSelectedIdx} activeId={activeId} units={units} />
       ) : null}
 
       {hourData ? (
@@ -447,49 +438,104 @@ export function HomeView({
   );
 }
 
-// The week's wind, offshore above the line and onshore below -- see lib/windchart.js.
-function WindWeek({ points, offshoreDeg, selectedIdx, onSelect, activeId }) {
-  const chart = windBars(points, offshoreDeg, { width: 300, height: 64, pad: 10 });
-  if (!chart || !chart.bars.some(Boolean)) return null;
-  const { bars, mid } = chart;
-  const selected = selectedIdx != null ? bars[selectedIdx] : null;
+// The week's wind as arrows -- see lib/windchart.js.
+function WindWeek({ points, offshoreDeg, selectedIdx, onSelect, activeId, units }) {
+  const grid = windGrid(points, offshoreDeg);
+  if (!grid) return null;
+  const offFrom = offshoreFromLabel(offshoreDeg);
+  const cols = '34px repeat(' + grid.hours.length + ', 1fr)';
   return (
-    <div className="mx-4" style={{ marginTop: 10, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 14px' }}>
-      <div className="flex items-center justify-between" style={{ marginBottom: 5 }}>
+    <div className="mx-4" style={{ marginTop: 10, background: COLORS.navyCard, border: '1px solid ' + COLORS.navyBorder, borderRadius: 10, padding: '12px 12px 10px' }}>
+      <div className="flex items-center justify-between" style={{ marginBottom: 8 }}>
         <span id={'windWeek-' + activeId} style={{ fontSize: 12, color: COLORS.foamDim, letterSpacing: '0.08em', fontWeight: 600 }}>WIND THIS WEEK</span>
-        <div className="flex items-center" style={{ gap: 9, fontSize: 11, color: COLORS.foamDim }}>
-          <span>▲ offshore</span>
-          <span>▼ onshore</span>
+        <span style={{ fontSize: 11, color: COLORS.foamDim }}>{speedUnit(units)}</span>
+      </div>
+
+      <div role="group" aria-labelledby={'windWeek-' + activeId}>
+        <div aria-hidden="true" style={{ display: 'grid', gridTemplateColumns: cols, marginBottom: 2 }}>
+          <span />
+          {grid.hours.map((hr) => (
+            <span key={hr} style={{ textAlign: 'center', fontSize: 11, color: COLORS.foamDim, fontFamily: 'JetBrains Mono, monospace' }}>{hourLabel12(hr)}</span>
+          ))}
+        </div>
+        {grid.rows.map((row) => (
+          <div key={row.day + row.cells.map((c) => (c ? c.idx : '-')).join()}
+            style={{ display: 'grid', gridTemplateColumns: cols, alignItems: 'center', borderTop: '1px solid ' + COLORS.foamFaint }}>
+            <span aria-hidden="true" style={{ fontSize: 12, color: COLORS.foamDim, fontFamily: 'JetBrains Mono, monospace' }}>{row.day}</span>
+            {row.cells.map((c, i) => (c ? (
+              <button key={i} className="tl-btn" onClick={() => onSelect(c.idx)}
+                aria-label={row.day + ' ' + hourLabel12(c.hour) + ': ' + formatSpeed(c.mph, units) + ' ' + speedUnit(units) + ' from ' + c.from + ', ' + c.band.label.toLowerCase() + (c.type ? ', ' + c.type : '')}
+                aria-pressed={selectedIdx === c.idx}
+                style={{
+                  display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', gap: 1,
+                  minHeight: 50, padding: '3px 0', borderRadius: 8,
+                  background: selectedIdx === c.idx ? COLORS.foamFaint : 'none', border: 'none',
+                }}>
+                <WindArrow deg={c.travelDeg} size={c.size} color={c.band.color} />
+                <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5, lineHeight: 1.1, color: COLORS.foam }}>
+                  {formatSpeed(c.mph, units)} <span style={{ color: COLORS.foamDim }}>{c.from}</span>
+                </span>
+              </button>
+            ) : (
+              <span key={i} aria-hidden="true" style={{ textAlign: 'center', color: COLORS.foamFaint, fontSize: 12 }}>·</span>
+            )))}
+          </div>
+        ))}
+      </div>
+
+      <div style={{ borderTop: '1px solid ' + COLORS.foamFaint, marginTop: 4, paddingTop: 9 }}>
+        <div className="flex items-center" style={{ flexWrap: 'wrap', gap: '6px 12px', marginBottom: 7 }}>
+          {WIND_BANDS.map((b, i) => (
+            <span key={b.id} className="flex items-center" style={{ gap: 4, fontSize: 11.5, color: COLORS.foamDim }}>
+              <WindArrow deg={90} size={10 + i * 3} color={b.color} />
+              {b.label}{' '}
+              <span style={{ fontFamily: 'JetBrains Mono, monospace', fontSize: 10.5 }}>{bandRange(b, i, units)}</span>
+            </span>
+          ))}
+        </div>
+        <div className="flex items-start" style={{ gap: 10 }}>
+          <Compass />
+          <div style={{ fontSize: 11.5, color: COLORS.foamDim, lineHeight: 1.45 }}>
+            Arrows point where the wind is blowing. Letters say where it comes from: <span style={{ color: COLORS.foam }}>NW</span> blows from the northwest.
+            {offFrom ? <> Offshore here is wind from <span style={{ color: COLORS.tealBright, fontWeight: 600 }}>{offFrom}</span>.</> : null}
+          </div>
         </div>
       </div>
-      <div>
-        <svg viewBox="0 0 300 64" style={{ width: '100%', height: 64, display: 'block' }} role="img"
-          aria-labelledby={'windWeek-' + activeId}
-          aria-describedby={'windWeekKey-' + activeId}>
-          {points.map((p, i) => p.dayStart && bars[i] && (
-            <line key={'gl' + i} x1={bars[i].x} y1="0" x2={bars[i].x} y2="64" stroke={COLORS.foamFaint} strokeWidth="1" strokeDasharray="1,3" />
-          ))}
-          {bars.map((b, i) => b && (
-            <rect key={i} x={b.x - b.barW / 2} y={b.y} width={b.barW} height={b.h} rx="1"
-              fill={b.color} opacity={b.glassy ? 0.35 : 0.9} />
-          ))}
-          <line x1="0" y1={mid} x2="300" y2={mid} stroke={COLORS.foamDim} strokeWidth="0.75" opacity="0.6" />
-          {selected ? (
-            <line x1={selected.x} y1="0" x2={selected.x} y2="64" stroke={COLORS.coral} strokeWidth="1" />
-          ) : null}
-          <rect x="0" y="0" width="300" height="64" fill="transparent" style={{ cursor: 'pointer' }} onClick={(e) => {
-            const rect = e.currentTarget.getBoundingClientRect();
-            const x = ((e.clientX - rect.left) / rect.width) * 300;
-            let nearest = null, best = Infinity;
-            bars.forEach((b, i) => { if (!b) return; const d = Math.abs(b.x - x); if (d < best) { best = d; nearest = i; } });
-            if (nearest != null) onSelect(nearest);
-          }} />
-        </svg>
-      </div>
-      <div id={'windWeekKey-' + activeId} style={{ marginTop: 5, fontSize: 11.5, color: COLORS.foamDim, lineHeight: 1.45 }}>
-        Above the line, wind off the land cleans the waves up; below, wind off the sea chops them. Taller is stronger; green is straight offshore, red straight onshore.
-      </div>
     </div>
+  );
+}
+
+// "0–8", "8–15", "22+" in the reader's units.
+function bandRange(band, i, units) {
+  const lo = i === 0 ? 0 : WIND_BANDS[i - 1].maxMph;
+  const conv = (mph) => formatSpeed(mph, units);
+  return Number.isFinite(band.maxMph) ? conv(lo) + '–' + conv(band.maxMph) : conv(lo) + '+';
+}
+
+// An arrow pointing up, turned to `deg` (0 = north, clockwise), `size` px long.
+function WindArrow({ deg, size, color }) {
+  return (
+    <svg width={size} height={size} viewBox="-10 -10 20 20" aria-hidden="true" style={{ display: 'block', flexShrink: 0 }}>
+      <g transform={'rotate(' + deg + ')'}>
+        <line x1="0" y1="8" x2="0" y2="-3" stroke={color} strokeWidth="2.6" strokeLinecap="round" />
+        <path d="M0,-9.5 L-5.2,-2.2 L5.2,-2.2 Z" fill={color} />
+      </g>
+    </svg>
+  );
+}
+
+// North up, so "points down" can be read as "blowing south".
+function Compass() {
+  const L = { fontSize: 7.5, fill: COLORS.foamDim, fontFamily: 'JetBrains Mono, monospace', textAnchor: 'middle', dominantBaseline: 'central' };
+  return (
+    <svg width="40" height="40" viewBox="-20 -20 40 40" aria-hidden="true" style={{ flexShrink: 0 }}>
+      <circle r="12" fill="none" stroke={COLORS.foamFaint} strokeWidth="1" />
+      <path d="M0,-11 L-3,-3 L3,-3 Z" fill={COLORS.foam} />
+      <text x="0" y="-16.5" style={{ ...L, fill: COLORS.foam, fontWeight: 700 }}>N</text>
+      <text x="16.5" y="0" style={L}>E</text>
+      <text x="0" y="16.5" style={L}>S</text>
+      <text x="-16.5" y="0" style={L}>W</text>
+    </svg>
   );
 }
 

@@ -1,63 +1,96 @@
-import { angDiff, windAngleColor } from './rating.js';
+import { degToCompass, windType } from './rating.js';
+import { windTravelBearing } from './windscale.js';
 
-// The week's wind as bars that point at what it does to the waves: above the line when it blows
-// offshore, below when it blows onshore, taller the stronger it is.
+// The week's wind as a grid of arrows: one row a day, one column for each surfable time of day.
 //
-// The week chart used to carry wind as a dotted speed line over the wave curve, with a small
-// arrow at the start of each day. Speed alone is half the answer -- 15mph offshore grooms a
-// face and 15mph onshore ruins it -- and the direction was only drawn once a day, while the
-// sea breeze that decides most afternoons turns round inside one. Splitting the chart at a
-// centre line puts both halves of the answer into one glance: a row of bars above the line is
-// a clean week, a row below it is a blown-out one.
+// Each arrow says three things at once, and each thing has its own channel so none has to be
+// decoded from another:
+//   - where it blows: the arrow points the way the wind is travelling, the same convention as
+//     the wind arrows on the globe (see windTravelBearing in lib/windscale.js), and the compass
+//     letters under it say where it comes from, the way every forecast names a wind;
+//   - how hard: the arrow grows with the speed, and its colour steps through four named bands,
+//     with the number itself printed underneath;
+//   - what it does here: the key names the direction that is offshore at this spot.
 //
-// Height is the full speed rather than only its offshore component. That component is zero for
-// a wind blowing straight along the beach, and a 20mph cross-shore wind is not nothing: the
-// bar keeps its full height and its colour (the same green-to-red angle scale as the arrows)
-// says how straight on or off it is.
+// This replaced a bar chart that put offshore above a centre line and onshore below. It was
+// accurate and did not read: a bar has no direction, so "which way is it blowing" -- the first
+// thing anyone asks of a wind forecast -- was the one thing it could not show.
 
-// Below this a wind barely touches the surface whatever its direction -- the same threshold
-// the rating treats as glassy (see scoreBreakdown in lib/rating.js).
-export const GLASSY_MPH = 3;
+// The times of day shown. Three-hourly readings from dawn to evening; the night ones are left
+// out because nobody surfs them, and seven rows of eight would not fit a phone.
+export const WIND_HOURS = [6, 9, 12, 15, 18];
 
-// The smallest top of the scale. Without a floor a calm week would scale 4mph to full height
-// and look like a gale.
-export const MIN_SCALE_MPH = 15;
+// Strength bands, in mph (what the forecast carries). Placed where wind changes a surf session
+// rather than evenly: under 8 the surface stays clean whatever the direction, by 15 direction is
+// everything, past 22 very little is rideable.
+//
+// Colours are the app's own accents plus one violet, checked for colour-blind separation on the
+// card background; size and the printed number carry strength too, so colour never works alone.
+export const WIND_BANDS = [
+  { id: 'light', label: 'Light', maxMph: 8, color: '#39E6C4' },
+  { id: 'moderate', label: 'Moderate', maxMph: 15, color: '#FFC24B' },
+  { id: 'strong', label: 'Strong', maxMph: 22, color: '#FF6A47' },
+  { id: 'very-strong', label: 'Very strong', maxMph: Infinity, color: '#E040FB' },
+];
 
-// Which side of the line: true when the wind is blowing off the land (within 90 degrees of the
-// spot's offshore direction), false when it is blowing in off the sea. Dead cross-shore counts
-// as offshore -- it is not blowing in -- and its colour is what says it is cross.
-export function isOffshoreSide(windDeg, offshoreDeg) {
-  return angDiff(windDeg, offshoreDeg) <= 90;
+export function windBand(mph) {
+  if (!Number.isFinite(mph)) return null;
+  return WIND_BANDS.find((b) => mph < b.maxMph) || WIND_BANDS[WIND_BANDS.length - 1];
 }
 
-// One bar per reading, laid out on the same x positions the week chart's line uses (see
-// linePath in lib/format.js), so a bar sits directly under the wave height it goes with.
+// Arrow length in px: a calm reading is still an arrow you can see the direction of, and the
+// size stops growing at 30mph, past which nothing about the session changes.
+export const ARROW_MIN = 11;
+export const ARROW_MAX = 28;
+export function arrowSize(mph) {
+  if (!Number.isFinite(mph)) return ARROW_MIN;
+  const t = Math.max(0, Math.min(1, mph / 30));
+  return Math.round(ARROW_MIN + t * (ARROW_MAX - ARROW_MIN));
+}
+
+// One cell: everything the grid draws for a reading, or null for a gap.
+function cellFor(p, idx, offshoreDeg) {
+  if (!p || !Number.isFinite(p.windSpd) || !Number.isFinite(p.windDeg)) return null;
+  const band = windBand(p.windSpd);
+  return {
+    idx,
+    hour: p.hour,
+    mph: p.windSpd,
+    fromDeg: p.windDeg,
+    travelDeg: windTravelBearing(p.windDeg),
+    from: degToCompass(p.windDeg),
+    band,
+    size: arrowSize(p.windSpd),
+    type: Number.isFinite(offshoreDeg) ? windType(p.windDeg, offshoreDeg) : null,
+  };
+}
+
+// The readings laid out by day and hour. `idx` is each reading's position in `points`, so a tap
+// on a cell can select the same moment on the wave chart above.
 //
-// Readings with no wind are kept as gaps (null) rather than dropped, so the positions of the
-// rest do not shift.
-export function windBars(points, offshoreDeg, { width = 300, height = 64, pad = 10 } = {}) {
-  if (!Array.isArray(points) || !points.length || !Number.isFinite(offshoreDeg)) return null;
-  const speeds = points.map((p) => (p && Number.isFinite(p.windSpd) ? p.windSpd : null));
-  const top = Math.max(MIN_SCALE_MPH, ...speeds.filter((s) => s != null));
-  const mid = height / 2;
-  const half = mid - 2; // a little room at the edges
-  const n = points.length;
-  const step = n > 1 ? (width - pad * 2) / (n - 1) : 0;
-  const barW = Math.max(1, Math.min(6, step * 0.7));
-  const bars = points.map((p, i) => {
-    const spd = speeds[i];
-    if (spd == null || !Number.isFinite(p.windDeg)) return null;
-    const x = n > 1 ? pad + i * step : width / 2;
-    const offshore = isOffshoreSide(p.windDeg, offshoreDeg);
-    const h = Math.max(1, (spd / top) * half);
-    return {
-      x, barW,
-      y: offshore ? mid - h : mid,
-      h,
-      offshore,
-      glassy: spd < GLASSY_MPH,
-      color: windAngleColor(p.windDeg, offshoreDeg),
-    };
+// Days are taken in the order they come, and a day that starts part-way (today, opened in the
+// afternoon) keeps its empty morning cells rather than shifting its readings left under the
+// wrong hours.
+export function windGrid(points, offshoreDeg, { hours = WIND_HOURS, maxDays = 7 } = {}) {
+  if (!Array.isArray(points) || !points.length) return null;
+  const rows = [];
+  let row = null;
+  points.forEach((p, idx) => {
+    if (!p || !p.day) return;
+    if (!row || row.day !== p.day) {
+      if (rows.length >= maxDays) { row = { day: p.day, full: true }; return; }
+      row = { day: p.day, cells: hours.map(() => null) };
+      rows.push(row);
+    }
+    if (row.full) return;
+    const col = hours.indexOf(p.hour);
+    if (col >= 0) row.cells[col] = cellFor(p, idx, offshoreDeg);
   });
-  return { bars, mid, top, width, height };
+  const kept = rows.filter((r) => r.cells.some(Boolean));
+  return kept.length ? { hours, rows: kept } : null;
+}
+
+// The key's line about this spot: which way the wind has to come from to be offshore here.
+export function offshoreFromLabel(offshoreDeg) {
+  return Number.isFinite(offshoreDeg) ? degToCompass(offshoreDeg) : null;
 }
