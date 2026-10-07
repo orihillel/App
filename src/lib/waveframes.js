@@ -148,3 +148,22 @@ export function isTimelineKey(e) {
   const tag = e.target && e.target.tagName;
   return !(tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || (e.target && e.target.isContentEditable));
 }
+
+// What the overlay should show at `pos` through the week: a frame (or a blend of two), or null
+// for the live map.
+//
+// Null at "now" with nothing playing. The week's first frame is the same moment as the live
+// map, but drawn from a coarser grid -- 5 degrees against the live map's 2 -- so showing it
+// there swapped a sharp picture for a blocky one the moment the week loaded, and nothing ever
+// swapped it back: hiding and re-showing the overlay rewinds to "now", which drew frame zero
+// again, still captioned live. While playing, frame zero is drawn like any other, so the
+// animation does not change sharpness every time it passes the start.
+export function weekFrameAt(list, pos, playing) {
+  if (!Array.isArray(list) || !list.length) return null;
+  if (!playing && pos <= 0) return null;
+  const last = list.length - 1;
+  const i = Math.max(0, Math.min(last, Math.floor(pos)));
+  const t = pos - i;
+  // Exactly on a frame, draw it; between two, draw the blend.
+  return t > 0 && i < last ? lerpFrames(list[i], list[i + 1], t) : list[i];
+}
