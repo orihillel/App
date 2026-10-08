@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { BASEMAP } from './basemap.js';
+import * as THREE from 'three';
+import { BASEMAP, muteBasemap, mutedColor } from './basemap.js';
 
 // The parts of a KTX2 file's header that say what is inside it. The layout is fixed by the
 // KTX 2.0 specification: a 12-byte identifier, nine 32-bit fields, then the index of where the
@@ -56,5 +57,52 @@ describe('the shipped base map', () => {
     // UASTC was 8MB for this image (see scripts/build-basemap.mjs). A rebuild that drifts back
     // toward that should fail here rather than on a phone.
     expect(bytes.length).toBeLessThan(2 * 1024 * 1024);
+  });
+});
+
+describe('muteBasemap', () => {
+  const phong = () => ({ ...THREE.ShaderLib.phong, uniforms: THREE.UniformsUtils.clone(THREE.ShaderLib.phong.uniforms) });
+
+  it('patches three\'s own Phong shader, after the map is read and before it is lit', () => {
+    const shader = phong();
+    const uniforms = { uMute: { value: 0 }, uMuteMask: { value: null }, uMuteHasMask: { value: 0 } };
+    expect(muteBasemap(shader, uniforms)).toBe(true);
+    expect(shader.uniforms.uMute).toBe(uniforms.uMute); // the same object, so the fade is one write
+    const frag = shader.fragmentShader;
+    expect(frag.indexOf('diffuseColor.rgb = mix( diffuseColor.rgb, muted, uMute )'))
+      .toBeGreaterThan(frag.indexOf('#include <map_fragment>'));
+    expect(frag.indexOf('diffuseColor.rgb = mix( diffuseColor.rgb, muted, uMute )'))
+      .toBeLessThan(frag.indexOf('#include <lights_fragment_begin>'));
+    expect(shader.vertexShader).toContain('vMuteUv = uv;');
+  });
+
+  it('leaves a shader it does not recognise alone, rather than breaking the globe', () => {
+    const shader = { vertexShader: 'void main() {}', fragmentShader: 'void main() {}', uniforms: {} };
+    expect(muteBasemap(shader, { uMute: { value: 1 } })).toBe(false);
+    expect(shader.fragmentShader).toBe('void main() {}');
+    expect(shader.uniforms.uMute).toBeUndefined();
+  });
+});
+
+describe('mutedColor', () => {
+  const lum = (c) => 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2];
+  const sat = (c) => Math.max(...c) - Math.min(...c);
+
+  it('turns the sea one flat dark colour whatever the photograph shows there', () => {
+    expect(mutedColor([0.01, 0.03, 0.08], 0)).toEqual(mutedColor([0.05, 0.2, 0.3], 0));
+    expect(lum(mutedColor([0.05, 0.2, 0.3], 0))).toBeLessThan(0.02);
+  });
+
+  it('keeps land\'s light and shade, in grey rather than green and brown', () => {
+    const forest = mutedColor([0.02, 0.05, 0.01], 1);
+    const desert = mutedColor([0.35, 0.25, 0.12], 1);
+    const ice = mutedColor([0.8, 0.82, 0.85], 1);
+    expect(lum(forest)).toBeLessThan(lum(desert));
+    expect(lum(desert)).toBeLessThan(lum(ice));
+    for (const c of [forest, desert, ice]) expect(sat(c)).toBeLessThan(0.1);
+  });
+
+  it('keeps land lighter than the sea, so the coast still reads', () => {
+    expect(lum(mutedColor([0.02, 0.05, 0.01], 1))).toBeGreaterThan(lum(mutedColor([0.02, 0.05, 0.01], 0)));
   });
 });

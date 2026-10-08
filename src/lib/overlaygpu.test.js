@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import { DataUtils } from 'three';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
-  OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT,
+  OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, arrowDrift, ARROW_DRIFT_TRAVEL, ARROW_DRIFT_SECONDS,
+  overlayLimbFade, OVERLAY_LIMB_FADE,
 } from './overlaygpu.js';
 import { makeGridSampler, gridCellCount, gridCells, gridRows, MIN_DIRECTION_AGREEMENT } from './wavegrid.js';
 import { waveColor, WAVE_SCALE_MAX, swellTravelBearing } from './wavescale.js';
@@ -269,6 +270,36 @@ describe('OVERLAY_FRAGMENT', () => {
   it('does not convert colour spaces or tone-map, so the legend bytes reach the screen as they are', () => {
     expect(OVERLAY_FRAGMENT).not.toMatch(/colorspace_fragment|tonemapping_fragment/);
   });
+
+  it('thins toward the horizon as overlayLimbFade does', () => {
+    expect(OVERLAY_FRAGMENT).toContain('smoothstep( 0.0, ' + OVERLAY_LIMB_FADE + ', facing )');
+  });
+});
+
+describe('overlayLimbFade', () => {
+  it('is whole across the face of the globe and gone at the horizon', () => {
+    expect(overlayLimbFade(1)).toBe(1);
+    expect(overlayLimbFade(OVERLAY_LIMB_FADE)).toBe(1);
+    expect(overlayLimbFade(0)).toBe(0);
+    expect(overlayLimbFade(-0.2)).toBe(0);
+  });
+
+  it('only touches the outermost sliver of the disc at the default zoom', () => {
+    // From three radii out, where on the disc (as a share of its radius on screen) the overlay
+    // starts to thin: the point whose facing is OVERLAY_LIMB_FADE.
+    const d = 3;
+    const facingAt = (a) => {
+      const p = [Math.sin(a), 0, Math.cos(a)];
+      const t = [-p[0], 0, d - p[2]];
+      return (p[0] * t[0] + p[2] * t[2]) / Math.hypot(t[0], t[2]);
+    };
+    const screenR = (a) => Math.sin(a) / (d - Math.cos(a));
+    let a = 0;
+    while (facingAt(a) > OVERLAY_LIMB_FADE) a += 1e-4;
+    const horizon = Math.acos(1 / d);
+    // About the outer twentieth of the disc.
+    expect(screenR(a) / screenR(horizon)).toBeGreaterThan(0.94);
+  });
 });
 
 describe('the arrow shaders', () => {
@@ -287,7 +318,52 @@ describe('the arrow shaders', () => {
   });
 
   it('draw the arrows in the pale tint, untouched by colour management', () => {
-    expect(ARROW_FRAGMENT).toContain('vec4( 0.9568627450980393, 0.9686274509803922, 0.9647058823529412, 0.72 )');
+    expect(ARROW_FRAGMENT).toContain('vec4( 0.9568627450980393, 0.9686274509803922, 0.9647058823529412, 0.72 * vAlpha )');
     expect(ARROW_FRAGMENT).not.toMatch(/colorspace_fragment|tonemapping_fragment/);
+  });
+});
+
+describe('arrowDrift', () => {
+  it('glides from half its travel behind its point to half ahead', () => {
+    expect(arrowDrift(0).offset).toBeCloseTo(-ARROW_DRIFT_TRAVEL / 2, 10);
+    expect(arrowDrift(0.5).offset).toBeCloseTo(0, 10);
+    expect(arrowDrift(1).offset).toBeCloseTo(ARROW_DRIFT_TRAVEL / 2, 10);
+    let last = -Infinity;
+    for (let t = 0; t <= 1; t += 0.01) {
+      expect(arrowDrift(t).offset).toBeGreaterThan(last);
+      last = arrowDrift(t).offset;
+    }
+  });
+
+  it('is invisible at both ends, so the jump back to the start is never seen', () => {
+    expect(arrowDrift(0).fade).toBe(0);
+    expect(arrowDrift(1).fade).toBe(0);
+    expect(arrowDrift(0.02).fade).toBeLessThan(0.1);
+    expect(arrowDrift(0.98).fade).toBeLessThan(0.1);
+  });
+
+  it('is fully drawn through the middle of the glide', () => {
+    for (const t of [0.3, 0.5, 0.65]) expect(arrowDrift(t).fade).toBe(1);
+  });
+
+  it('moves a few pixels a second at the default zoom, not a blur', () => {
+    // Arrows there are about 0.016 globe radii a unit, seen from two radii away by a 45 degree
+    // camera on a 460px-tall screen: about 4.4 pixels a unit.
+    const pxPerUnit = (0.016 / 2) * (230 / Math.tan((22.5 * Math.PI) / 180));
+    const pxPerSecond = (ARROW_DRIFT_TRAVEL / ARROW_DRIFT_SECONDS) * pxPerUnit;
+    expect(pxPerSecond).toBeGreaterThan(2);
+    expect(pxPerSecond).toBeLessThan(8);
+  });
+});
+
+describe('the arrow shaders\' glide', () => {
+  it('follow arrowDrift', () => {
+    expect(ARROW_VERTEX).toContain('float offset = ( t - 0.5 ) * ' + ARROW_DRIFT_TRAVEL.toFixed(1));
+    expect(ARROW_VERTEX).toContain('uTime / ' + ARROW_DRIFT_SECONDS);
+  });
+
+  it('hold the arrows still and whole with the motion off', () => {
+    expect(ARROW_VERTEX).toContain('vAlpha = mix( 1.0, fade, uMotion )');
+    expect(ARROW_VERTEX).toContain('offset * uMotion');
   });
 });

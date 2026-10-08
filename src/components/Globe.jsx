@@ -12,7 +12,9 @@ import {
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance } from '../lib/swellarrows.js';
 import { MARKER_RADIUS, MARKER_VERTEX, MARKER_FRAGMENT, surfaceFacing, markerShown, markerSizeFactor } from '../lib/markerdots.js';
-import { BASEMAP } from '../lib/basemap.js';
+import { BASEMAP, BASEMAP_MUTE_MS, muteBasemap } from '../lib/basemap.js';
+import { ATMOSPHERE_RADIUS, ATMOSPHERE_VERTEX, ATMOSPHERE_FRAGMENT, starFade } from '../lib/atmosphere.js';
+import { planFlight } from '../lib/flight.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
 import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
@@ -23,10 +25,16 @@ import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { frameLabel, frameBuildLabel, weekFrameAt, advanceTimeline, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
-  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT,
+  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
 } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
-import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS } from '../lib/motion.js';
+import { createQualityGovernor, governorTick } from '../lib/quality.js';
+import {
+  velocityComponents, regularizeVelocity, degreesPerSecondPerKph, particlePxPerKph, viewCapRadius, particleCount, stateTexel,
+  PARTICLE_STATE_SIZE, MAX_PARTICLES, PARTICLE_TRAIL_SECONDS,
+  PARTICLE_UPDATE_VERTEX, PARTICLE_UPDATE_FRAGMENT, PARTICLE_DRAW_VERTEX, PARTICLE_DRAW_FRAGMENT,
+} from '../lib/windparticles.js';
+import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS, AMBIENT_MOTION_MS } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long one six-hour step of the week takes to play at 1x: the whole week in about twelve
@@ -398,7 +406,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // close. Phones' tile-based GPUs resolve 4x MSAA cheaply, so 2x with MSAA keeps edges smooth
     // for well under half the fill cost. A 2x cap is the usual advice for three.js on phones.
     const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
-    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    // Opaque, drawing its own background in the page's colour. A transparent canvas is blended
+    // onto the page by the browser on every frame, and anything translucent drawn over empty
+    // background -- the glow round the globe, the stars -- left the canvas itself translucent
+    // there, premultiplied alpha the compositor then had to undo.
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false });
+    renderer.setClearColor(COLORS.navy, 1);
     // outputEncoding/sRGBEncoding was renamed to outputColorSpace/SRGBColorSpace in newer
     // Three.js and removed entirely in later versions — set whichever this build actually has.
     if ('outputColorSpace' in renderer && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -407,6 +420,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Capped at 2x (see above). This was raised to 3x once because coastlines looked soft
     // zoomed in on a 3x phone; that was with MSAA off. With it on, 2x keeps the edges clean.
     renderer.setPixelRatio(pixelRatio);
+    // And lowered from there, a step at a time, on a device that cannot keep up -- raised again
+    // once it can. See lib/quality.js; applied from the frame loop below.
+    let currentPixelRatio = pixelRatio;
+    const quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
+    function applyPixelRatio(ratio) {
+      currentPixelRatio = ratio;
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(width, height);
+      state.dataDirty = true; // the canvas was cleared by the resize: draw it again
+    }
     container.appendChild(renderer.domElement);
     setGlobeError(false);
 
@@ -434,7 +457,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
           idle: !drawnSince,
           calls: info.calls, triangles: info.triangles, lines: info.lines,
-          pixelRatio, width: renderer.domElement.width, height: renderer.domElement.height,
+          pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
+          width: renderer.domElement.width, height: renderer.domElement.height,
           paintMs: perf.paintMs,
         }).join('\n');
       };
@@ -468,6 +492,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // draw as visible bands. Dithering breaks them up for the cost of one noise lookup.
       dithering: true,
     });
+    // Quietened under an overlay: see muteBasemap in lib/basemap.js. `uMute` is eased toward 1
+    // while an overlay is shown and back to 0 when it goes, and the land mask arrives with the
+    // overlay.
+    const muteUniforms = {
+      uMute: { value: 0 },
+      uMuteMask: { value: null },
+      uMuteHasMask: { value: 0 },
+    };
+    oceanMat.onBeforeCompile = (shader) => { muteBasemap(shader, muteUniforms); };
     let mapTexture = null;
 
     // Whenever a texture goes on, the tint has to come off with it.
@@ -836,6 +869,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         uDirWeek: { value: null },
         uShell: { value: ARROW_SHELL },
         uScale: { value: 0 },
+        uTime: { value: 0 },
+        uMotion: { value: 0 },
       },
       vertexShader: ARROW_VERTEX,
       fragmentShader: ARROW_FRAGMENT,
@@ -872,6 +907,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       set.texture = fieldTexture(packHalfRG(premul, cover), layout, THREE.RGFormat);
       set.dirTexture = set.dirs
         ? fieldTexture(packHalf(regularizeDirections(set.dirs, layout)), layout, THREE.RGBAFormat)
+        : null;
+      // The wind itself, speed and direction together, for its particles.
+      set.velTexture = set.velocity
+        ? fieldTexture(packHalf(regularizeVelocity(set.velocity.east, set.velocity.north, layout)), layout, THREE.RGBAFormat)
         : null;
       set.v = layoutV(layout);
     }
@@ -1018,10 +1057,34 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return 0.016 * Math.max(distance - R, 0.02) / (3 - R);
     }
 
-    function updateArrows() {
+    // The arrows' glide (see ARROW_VERTEX in lib/overlaygpu.js): how far into it they are, in
+    // seconds, and how much of it is showing -- eased up to 1 while anyone is looking and back
+    // down to 0, the arrows at rest on their points, once the globe has been left alone.
+    const ARROW_SETTLE_MS = 700;
+    let arrowTime = 0;
+    let arrowMotion = 0;
+    // The wind's particles show its direction better than arrows can, and both at once is
+    // clutter: while they are drawn, the arrows step aside.
+    function arrowsShown() {
+      return !!arrowMesh && wavesOnRef.current && dirsShown && !particlesWanted();
+    }
+    // Whether the arrows are gliding or settling, which keeps the frame loop drawing.
+    function arrowsMoving() {
+      return !reducedMotion && arrowsShown() && (motionAllowed() || arrowMotion > 0);
+    }
+
+    function updateArrows(dtMs) {
       if (!arrowMesh) return;
-      arrowMesh.visible = wavesOnRef.current && dirsShown;
-      if (!arrowMesh.visible) return;
+      arrowMesh.visible = arrowsShown();
+      if (!arrowMesh.visible) { arrowMotion = 0; return; }
+      const wanted = !reducedMotion && motionAllowed() ? 1 : 0;
+      const step = dtMs / ARROW_SETTLE_MS;
+      arrowMotion = wanted > arrowMotion ? Math.min(wanted, arrowMotion + step) : Math.max(wanted, arrowMotion - step);
+      // Wrapped at a whole number of glides, which the shader cannot tell from not wrapping, so
+      // the time never grows large enough to cost the shader its precision.
+      if (arrowMotion > 0) arrowTime = (arrowTime + dtMs / 1000) % (ARROW_DRIFT_SECONDS * 1000);
+      arrowMat.uniforms.uTime.value = arrowTime;
+      arrowMat.uniforms.uMotion.value = arrowMotion;
       // The camera's own half-FOV, so the count follows what is actually on screen rather than
       // a hard-coded guess at it.
       const geo = arrowMesh.geometry;
@@ -1157,6 +1220,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       arrowMat.uniforms.uDirLive.value = set.dirTexture;
       dirsShown = !!set.dirTexture;
       shownKey = 'live:' + name;
+      noteInput(); // a layer just shown is being looked at: its particles, if any, should move
       painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
@@ -1291,6 +1355,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           const windStep = gridStepOf(grid);
           const speeds = decodeSpeeds(base64ToBytes(grid.data));
           const dirs = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
+          // The wind as east and north components, for its particles (see lib/windparticles.js),
+          // with gaps filled exactly as the colours' are so the streaks run to the same shore.
+          const velocity = dirs && particlesPossible ? velocityComponents(speeds, dirs) : null;
           liveLayers.wind = {
             // Gaps are filled only when the coastline mask is there to stop the fill at the
             // shore, exactly as the swell does -- without one, "no reading" is the only thing
@@ -1300,10 +1367,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             raw: speeds,
             dirs,
             step: windStep,
+            velocity: velocity && waveMaskTexture
+              ? { east: fillGridGaps(velocity.east, 2, windStep), north: fillGridGaps(velocity.north, 2, windStep) }
+              : velocity,
           };
           setWindMeta({
             ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
             arrows: !!dirs, noDirections: !grid.dirs,
+            // Drawn as moving streaks rather than arrows: see the particles below.
+            particles: !!velocity,
           });
           setWindState('ready');
           if (layerRef.current === 'wind') applyLiveLayer('wind');
@@ -1311,6 +1383,200 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         .catch(() => { windRequested = false; setWindState('unavailable'); setWindMeta({ ok: false }); });
     }
     loadWindRef.current = ensureWindLayer;
+
+    // The wind's particles: a few thousand streaks carried across the globe by the live wind,
+    // in place of its arrows. See lib/windparticles.js.
+    //
+    // Where every particle is lives in a float texture the GPU both reads and writes, which
+    // needs float render targets -- in WebGL2 that is EXT_color_buffer_float, offered nearly
+    // everywhere. Without it, and for anyone whose system asks for less motion, the wind keeps
+    // its arrows, exactly as before.
+    const reducedMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const particlesPossible = !reducedMotion && renderer.extensions.has('EXT_color_buffer_float');
+    // How long the particles take to fade in when the wind is shown, in milliseconds.
+    const PARTICLE_FADE_MS = 400;
+    let particles = null;
+    // The last time anyone touched the globe. The particles, and the arrows' glide, run for
+    // AMBIENT_MOTION_MS after it (see lib/motion.js), then hold still so a globe left open stops
+    // drawing.
+    let lastInputAt = performance.now();
+    function noteInput() { lastInputAt = performance.now(); }
+    function motionAllowed() { return performance.now() - lastInputAt < AMBIENT_MOTION_MS; }
+
+    // Whether the particles belong on screen: the overlay shows the live wind, and the wind came
+    // with directions to make them from.
+    function particlesWanted() {
+      const set = liveLayers.wind;
+      return particlesPossible && wavesOnRef.current && shownKey === 'live:wind' && !!(set && set.velTexture);
+    }
+    // And whether they are moving, which keeps the frame loop drawing.
+    function particlesRunning() {
+      return particlesWanted() && motionAllowed();
+    }
+
+    // Two state textures, read from one and written to the other in turn; the pass that moves
+    // the particles; and the streaks. Built the first time the wind is shown.
+    function buildParticles() {
+      const target = () => new THREE.WebGLRenderTarget(PARTICLE_STATE_SIZE, PARTICLE_STATE_SIZE, {
+        type: THREE.FloatType,
+        format: THREE.RGBAFormat,
+        // Each texel is one particle, read exactly: a float texture cannot be filtered on every
+        // device, and an average of two particles is not a particle.
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        generateMipmaps: false,
+        depthBuffer: false,
+        stencilBuffer: false,
+      });
+      // The wind and the mask, shared by both passes.
+      const field = {
+        uVelocity: { value: null },
+        uVelocityV: { value: new THREE.Vector2(1, 0) },
+        uLandMask: { value: waveMaskTexture },
+        uHasMask: { value: waveMaskTexture ? 1 : 0 },
+      };
+      const updateMat = new THREE.ShaderMaterial({
+        uniforms: {
+          ...field,
+          uState: { value: null },
+          uViewCenter: { value: new THREE.Vector3(0, 0, 1) },
+          uViewCos: { value: 0 },
+          uGrowthCos: { value: 0 },
+          uGrowth: { value: 0 },
+          uScale: { value: 0 },
+          uDt: { value: 0 },
+          uFrame: { value: 0 },
+        },
+        vertexShader: PARTICLE_UPDATE_VERTEX,
+        fragmentShader: PARTICLE_UPDATE_FRAGMENT,
+        depthTest: false,
+        depthWrite: false,
+      });
+      // One triangle over the whole target: every texel, so every particle, gets a fragment.
+      const updateGeo = new THREE.BufferGeometry();
+      updateGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+      const updateMesh = new THREE.Mesh(updateGeo, updateMat);
+      updateMesh.frustumCulled = false;
+      const updateScene = new THREE.Scene();
+      updateScene.add(updateMesh);
+
+      // A streak is a strip of two triangles: x is 0 at the head and 1 at the tail, y the side.
+      const drawGeo = new THREE.InstancedBufferGeometry();
+      drawGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, -1, 0, 0, 1, 0, 1, -1, 0, 1, 1, 0], 3));
+      drawGeo.setIndex([0, 2, 1, 1, 2, 3]);
+      const texels = new Float32Array(MAX_PARTICLES * 2);
+      for (let i = 0; i < MAX_PARTICLES; i++) texels.set(stateTexel(i), i * 2);
+      drawGeo.setAttribute('aTexel', new THREE.InstancedBufferAttribute(texels, 2));
+      drawGeo.instanceCount = 0;
+      const drawMat = new THREE.ShaderMaterial({
+        uniforms: {
+          ...field,
+          uState: { value: null },
+          uShell: { value: R },
+          uTrail: { value: 0 },
+          uViewport: { value: new THREE.Vector2(1, 1) },
+          uPixelRatio: { value: 1 },
+          uOpacity: { value: 0 },
+        },
+        vertexShader: PARTICLE_DRAW_VERTEX,
+        fragmentShader: PARTICLE_DRAW_FRAGMENT,
+        transparent: true,
+        // Nothing hides a streak but the globe, and round the back its shader has faded it out
+        // -- the markers' rule. A strip faces whichever way its streak happens to run.
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const drawMesh = new THREE.Mesh(drawGeo, drawMat);
+      drawMesh.renderOrder = 2; // where the arrows they replace were: over the overlay, under the markers
+      drawMesh.frustumCulled = false; // the geometry is a unit strip; only the shader knows where
+      drawMesh.visible = false;
+      globeGroup.add(drawMesh);
+      return {
+        targets: [target(), target()], read: 0, field, updateMat, updateGeo, updateScene,
+        updateCamera: new THREE.Camera(), drawGeo, drawMat, drawMesh,
+        frame: 0, opacity: 0, viewCos: null,
+      };
+    }
+
+    const particleView = new THREE.Quaternion();
+    // Called on every frame drawn, before the scene is: moves the particles on by `dtMs` if they
+    // are running, and sets the streaks up to draw where they are now.
+    function stepParticles(dtMs, running) {
+      if (!particlesWanted()) {
+        if (particles && particles.drawMesh.visible) {
+          particles.drawMesh.visible = false;
+          particles.opacity = 0; // so they fade in again next time
+        }
+        return;
+      }
+      if (!particles) particles = buildParticles();
+      const p = particles;
+      const set = liveLayers.wind;
+      p.field.uVelocity.value = set.velTexture;
+      p.field.uVelocityV.value.fromArray(set.v);
+      p.field.uLandMask.value = waveMaskTexture;
+      p.field.uHasMask.value = waveMaskTexture ? 1 : 0;
+
+      const halfFov = (camera.fov * Math.PI) / 360;
+      // The patch of globe in view, a little past the screen's corners so particles drift in
+      // from beyond the edge rather than appearing at it -- and never past the horizon.
+      const cap = Math.min(Math.acos(1 / state.distance), viewCapRadius(state.distance, halfFov, width / height) * 1.1);
+      const viewCos = Math.cos(cap);
+      const scale = degreesPerSecondPerKph(state.distance, halfFov, height, particlePxPerKph(state.distance));
+      // A first update even when idle: there has to be something to draw.
+      if (running || p.frame === 0) {
+        const u = p.updateMat.uniforms;
+        // The point straight under the camera, in the globe's own frame: the camera sits on +Z,
+        // and the globe is turned.
+        particleView.setFromEuler(globeGroup.rotation).invert();
+        u.uViewCenter.value.set(0, 0, 1).applyQuaternion(particleView);
+        u.uViewCos.value = viewCos;
+        // Zooming out: the share of particles the new ring of view should hold are reborn in it.
+        // Its area over the whole view's, with a cap's area going as one minus its cosine.
+        if (p.viewCos != null && viewCos < p.viewCos) {
+          u.uGrowthCos.value = p.viewCos;
+          u.uGrowth.value = 1 - (1 - p.viewCos) / (1 - viewCos);
+        } else {
+          u.uGrowthCos.value = viewCos;
+          u.uGrowth.value = 0;
+        }
+        u.uScale.value = scale;
+        u.uDt.value = running ? dtMs / 1000 : 0;
+        p.frame = (p.frame % 1000000) + 1;
+        u.uFrame.value = p.frame;
+        u.uState.value = p.targets[p.read].texture;
+        const write = 1 - p.read;
+        renderer.setRenderTarget(p.targets[write]);
+        renderer.render(p.updateScene, p.updateCamera);
+        renderer.setRenderTarget(null);
+        p.read = write;
+        p.viewCos = viewCos;
+      }
+
+      const d = p.drawMat.uniforms;
+      d.uState.value = p.targets[p.read].texture;
+      d.uTrail.value = PARTICLE_TRAIL_SECONDS * scale;
+      d.uViewport.value.set(renderer.domElement.width, renderer.domElement.height);
+      d.uPixelRatio.value = currentPixelRatio;
+      p.opacity = Math.min(1, p.opacity + dtMs / PARTICLE_FADE_MS);
+      d.uOpacity.value = p.opacity;
+      p.drawGeo.instanceCount = particleCount(state.distance, halfFov, width, height);
+      p.drawMesh.visible = true;
+      // Still fading in: keep drawing until it has, even if the particles themselves are frozen.
+      if (p.opacity < 1) state.dataDirty = true;
+    }
+
+    function disposeParticles() {
+      if (!particles) return;
+      particles.targets.forEach((t) => t.dispose());
+      particles.updateGeo.dispose();
+      particles.updateMat.dispose();
+      particles.drawGeo.dispose();
+      particles.drawMat.dispose();
+      particles = null;
+    }
 
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
@@ -1368,7 +1634,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     starGeo.setAttribute('position', new THREE.BufferAttribute(starPositions, 3));
     // THREE.PointsMaterial with no sprite texture renders each point as a hard-edged square —
     // at this small a size that reads as "pixelated" flecks rather than soft stars, so give it
-    // a small radial-gradient dot texture instead (same technique as the atmosphere glow below).
+    // a small radial-gradient dot texture instead.
     const starDotCanvas = document.createElement('canvas');
     starDotCanvas.width = 32; starDotCanvas.height = 32;
     const sdctx = starDotCanvas.getContext('2d');
@@ -1379,28 +1645,35 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     sdctx.fillStyle = starDotGrad;
     sdctx.fillRect(0, 0, 32, 32);
     const starDotTexture = new THREE.CanvasTexture(starDotCanvas);
-    const starMat = new THREE.PointsMaterial({ map: starDotTexture, color: 0xdfeaf2, size: 0.05, transparent: true, opacity: 0.85, sizeAttenuation: true, depthWrite: false });
+    const STAR_OPACITY = 0.85;
+    const starMat = new THREE.PointsMaterial({ map: starDotTexture, color: 0xdfeaf2, size: 0.05, transparent: true, opacity: STAR_OPACITY, sizeAttenuation: true, depthWrite: false });
     const stars = new THREE.Points(starGeo, starMat);
     scene.add(stars);
 
-    // soft teal atmosphere glow behind the globe
-    const glowCanvas = document.createElement('canvas');
-    glowCanvas.width = 256; glowCanvas.height = 256;
-    const gctx = glowCanvas.getContext('2d');
-    const glowGrad = gctx.createRadialGradient(128, 128, 0, 128, 128, 128);
-    glowGrad.addColorStop(0, 'rgba(79,204,184,0.5)');
-    glowGrad.addColorStop(0.45, 'rgba(79,204,184,0.2)');
-    glowGrad.addColorStop(1, 'rgba(79,204,184,0)');
-    gctx.fillStyle = glowGrad;
-    gctx.fillRect(0, 0, 256, 256);
-    // Deliberately left without a colour space, unlike the map's. These stops were chosen by eye
-    // on builds that read them as linear, which is the pale teal on screen; marking them sRGB
-    // would turn the glow a darker, stronger teal that nobody picked.
-    const glowTexture = new THREE.CanvasTexture(glowCanvas);
-    const glowMat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
-    const glowSprite = new THREE.Sprite(glowMat);
-    glowSprite.scale.set(2.7, 2.7, 1);
-    scene.add(glowSprite);
+    // The base map's mute (see muteUniforms): eased toward 1 while an overlay is drawn, and back.
+    function updateMute(dtMs) {
+      muteUniforms.uMuteMask.value = waveMaskTexture;
+      muteUniforms.uMuteHasMask.value = waveMaskTexture ? 1 : 0;
+      const wanted = wavesOnRef.current && waveMesh ? 1 : 0;
+      const u = muteUniforms.uMute;
+      if (u.value === wanted) return;
+      const step = dtMs / BASEMAP_MUTE_MS;
+      u.value = wanted > u.value ? Math.min(wanted, u.value + step) : Math.max(wanted, u.value - step);
+      state.dataDirty = true; // keep drawing until the fade is done
+    }
+
+    // The atmosphere: a shell a little larger than the globe, drawn from the inside so only the
+    // ring outside the globe's edge shows. See lib/atmosphere.js.
+    const atmosphereGeo = new THREE.SphereGeometry(R * ATMOSPHERE_RADIUS, 96, 64);
+    const atmosphereMat = new THREE.ShaderMaterial({
+      vertexShader: ATMOSPHERE_VERTEX,
+      fragmentShader: ATMOSPHERE_FRAGMENT,
+      side: THREE.BackSide,
+      transparent: true,
+      depthWrite: false,
+    });
+    const atmosphere = new THREE.Mesh(atmosphereGeo, atmosphereMat);
+    scene.add(atmosphere);
 
     // Every spot marker in one instanced draw instead of one mesh each. With 150+ spots that's
     // the difference between 150+ draw calls per frame and exactly one — the single biggest
@@ -1556,6 +1829,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // visible against a cap of 14, the extra eight all stale. Clearing the pool on rebuild
       // makes the next frame's placement authoritative.
       for (let i = 0; i < labelPool.length; i++) {
+        stopLabelFade(labelPool[i]);
         if (labelPool[i].style.display !== 'none') labelPool[i].style.display = 'none';
       }
       refreshMarkerData();
@@ -1670,14 +1944,57 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // several dozen -- so it turns the globe to that patch of coast and zooms a step closer,
     // which is the thing that breaks the cluster back into its members. Two or three taps
     // walks you down from a continent to a single break.
+    //
+    // It flies there, on the path in lib/flight.js, rather than handing the new position to the
+    // per-frame easing a wheel notch uses. Under reduced motion it jumps.
+    let flight = null;
+    const flightView = new THREE.Quaternion();
+    const flightEuler = new THREE.Euler();
     function chooseMarker(m) {
       if (m.count <= 1) { onSelectSpot(m.id); return; }
+      const toDistance = clampDistance(state.targetDistance * CLUSTER_ZOOM_STEP);
       const { rotX, rotY } = rotationToFace(m.lat, m.lon);
-      // The short way round: without this, a cluster just past the antimeridian sends the
-      // globe most of a turn to reach a point a few degrees away.
-      state.targetRotX = shortestAngleTo(state.targetRotX, rotX);
-      state.targetRotY = shortestAngleTo(state.targetRotY, rotY);
-      state.targetDistance = clampDistance(state.targetDistance * CLUSTER_ZOOM_STEP);
+      state.velX = 0; state.velY = 0;
+      if (reducedMotion) {
+        // The short way round: without this, a cluster just past the antimeridian sends the
+        // globe most of a turn to reach a point a few degrees away.
+        state.rotX = state.targetRotX = rotX;
+        state.rotY = state.targetRotY = shortestAngleTo(state.rotY, rotY);
+        state.distance = state.targetDistance = toDistance;
+        state.dataDirty = true;
+        return;
+      }
+      // Where the camera looks now, in the globe's own frame: it sits on +Z, and the globe is
+      // turned.
+      flightView.setFromEuler(flightEuler.set(state.rotX, state.rotY, 0)).invert();
+      const from = new THREE.Vector3(0, 0, 1).applyQuaternion(flightView);
+      const to = latLonToVector3(m.lat, m.lon, 1);
+      flight = {
+        start: performance.now(),
+        plan: planFlight({
+          fromDir: [from.x, from.y, from.z],
+          toDir: [to.x, to.y, to.z],
+          fromDistance: state.distance,
+          toDistance,
+          tanHalfFov,
+        }),
+      };
+    }
+    // The flight's pose for this frame, written straight to the globe's position and its target
+    // both, so the ordinary easing has nothing left to do. Returns whether one is under way.
+    function flyStep(now) {
+      if (!flight) return false;
+      const k = flight.plan.duration > 0 ? (now - flight.start) / flight.plan.duration : 1;
+      const pose = flight.plan.pose(Math.min(1, k));
+      const here = vector3ToLatLon({ x: pose.dir[0], y: pose.dir[1], z: pose.dir[2] });
+      if (here) {
+        const { rotX, rotY } = rotationToFace(here.lat, here.lon);
+        state.rotX = state.targetRotX = rotX;
+        state.rotY = state.targetRotY = shortestAngleTo(state.rotY, rotY);
+      }
+      state.distance = state.targetDistance = pose.distance;
+      if (k >= 1) flight = null;
+      return true;
     }
     function isTap(downX, downY, downTime, upX, upY) {
       return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
@@ -1813,6 +2130,50 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       cb(ids);
     }
 
+    // Labels fade in and out rather than popping, over Mapbox's 300 ms. A label comes and goes
+    // whenever another wins its space or its dot turns away, and during a drag that is several a
+    // second: switched on and off they flickered; faded, they settle. Through the Web Animations
+    // API, which runs on the compositor and needs no extra frames drawn here; under reduced
+    // motion, or where it is missing, they switch as before.
+    const LABEL_FADE_IN_MS = 300;
+    const LABEL_FADE_OUT_MS = 200;
+    function labelOpacity(el) {
+      const timing = el.fade && el.fade.effect && el.fade.effect.getComputedTiming();
+      if (!timing || timing.progress == null) return el.style.display === 'none' ? 0 : 1;
+      return el.fade.from + (el.fade.to - el.fade.from) * timing.progress;
+    }
+    function stopLabelFade(el) {
+      if (!el.fade) return;
+      el.fade.onfinish = null;
+      el.fade.cancel();
+      el.fade = null;
+    }
+    function fadeLabel(el, to, ms) {
+      const from = labelOpacity(el);
+      stopLabelFade(el);
+      el.style.display = 'block';
+      if (reducedMotion || typeof el.animate !== 'function' || from === to) {
+        if (to === 0) el.style.display = 'none';
+        return;
+      }
+      // From wherever a fade it interrupts had got to, for the rest of the time, so a label that
+      // changes its mind half way never jumps.
+      const anim = el.animate([{ opacity: from }, { opacity: to }], {
+        duration: ms * Math.abs(to - from), easing: to ? 'ease-out' : 'ease-in', fill: 'forwards',
+      });
+      anim.from = from;
+      anim.to = to;
+      el.fade = anim;
+      anim.onfinish = () => {
+        if (el.fade !== anim) return;
+        if (to === 0) el.style.display = 'none';
+        el.fade = null;
+        anim.cancel(); // its last frame is the element's own style now
+      };
+    }
+    function fadeLabelIn(el) { fadeLabel(el, 1, LABEL_FADE_IN_MS); }
+    function fadeLabelOut(el) { fadeLabel(el, 0, LABEL_FADE_OUT_MS); }
+
     const labelCandidates = [];
     const labelShow = new Set();
     function updateLabels() {
@@ -1869,11 +2230,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const m = markers[i];
         const show = m.labelWanted && labelShow.has(i);
         if (!show) {
-          if (m.labelShown) { m.label.style.display = 'none'; m.labelShown = false; }
+          if (m.labelShown) { fadeLabelOut(m.label); m.labelShown = false; }
+          // On its way out: it goes on following its dot until it has gone.
+          if (m.label.fade && m.labelWanted) {
+            const anchor = m.count > 1 ? 'translate(-50%, -50%)' : 'translate(-50%, -130%)';
+            m.label.style.transform = `${anchor} translate(${m.screenX}px, ${m.screenY}px)`;
+          }
           continue;
         }
         if (!m.labelShown) {
-          m.label.style.display = 'block'; m.labelShown = true;
+          fadeLabelIn(m.label); m.labelShown = true;
           // Placed this frame from an estimated size; it is measured on the next one (above).
           // That next frame has to happen even if nothing else moves, or a label wider than
           // its estimate keeps overlapping its neighbour until the globe is touched again.
@@ -1887,6 +2253,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
 
     function onMouseDown(e) {
+      noteInput();
+      flight = null; // a hand on the globe takes it back
       state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
       state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
       state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
@@ -1894,6 +2262,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function onMouseMove(e) {
       if (!state.dragging) return;
+      noteInput();
       const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
       state.lastX = e.clientX; state.lastY = e.clientY;
       applyDrag(dx, dy);
@@ -1909,9 +2278,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function onWheel(e) {
       e.preventDefault();
+      noteInput();
+      flight = null;
       state.targetDistance = clampDistance(state.targetDistance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
     }
     function touchStart(e) {
+      noteInput();
+      flight = null;
       if (e.touches.length === 1) {
         state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
         state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
@@ -1921,6 +2294,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function touchMove(e) {
       e.preventDefault();
+      noteInput();
       if (e.touches.length === 1 && state.dragging) {
         const dx = e.touches[0].clientX - state.lastX, dy = e.touches[0].clientY - state.lastY;
         state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
@@ -2040,12 +2414,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const SETTLED = 0.00005; // gap below which easing has visually arrived
     let lastTick = null;     // the previous animation frame's timestamp, drawn or not
     let lastDrawnAt = null;  // the previous *drawn* frame's timestamp, for the perf display
+    let drewLastTick = false; // whether the previous tick drew, for the quality governor
     function animate(ts) {
       const now = typeof ts === 'number' ? ts : performance.now();
       const playDt = frameDelta(now, lastTick, PLAYBACK_MAX_FRAME_MS);
       const dt = Math.min(playDt, MAX_FRAME_MS);
+      const tickMs = lastTick == null ? 0 : now - lastTick;
       lastTick = now;
       const overlayMoving = updateOverlayTime(playDt);
+      const particlesMoving = particlesRunning();
+      const arrowsGliding = arrowsMoving();
+      const flying = flyStep(now);
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
       if (coasting) {
         state.targetRotY += state.velY * dt;
@@ -2060,7 +2439,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dRotX = state.targetRotX - state.rotX;
       const dRotY = state.targetRotY - state.rotY;
       const dDist = state.targetDistance - state.distance;
-      const moving = overlayMoving || coasting || state.dragging
+      const moving = flying || overlayMoving || particlesMoving || arrowsGliding || coasting || state.dragging
         || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
 
       // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
@@ -2068,6 +2447,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // this, which on a phone is battery burned for no visible result.
       if (!moving && !state.dataDirty) {
         lastDrawnAt = null; // the next drawn frame follows a pause, not a frame
+        // A tick that does nothing arrives once a refresh: how the governor learns the screen.
+        governorTick(quality, { intervalMs: tickMs, drew: false, prevDrew: drewLastTick });
+        drewLastTick = false;
         state.raf = requestAnimationFrame(animate);
         return;
       }
@@ -2094,7 +2476,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       ensureCoastline();
       ensureWaveOverlay();
       if (waveMesh) waveMesh.visible = wavesOnRef.current;
-      updateArrows();
+      stepParticles(dt, particlesMoving);
+      updateArrows(dt);
+      // The stars give way as the camera comes down to the surface (see lib/atmosphere.js).
+      const starsShown = starFade(state.distance);
+      starMat.opacity = STAR_OPACITY * starsShown;
+      stars.visible = starsShown > 0;
+      updateMute(dt);
       if (coastlineMesh) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
         coastlineMat.opacity = o;
@@ -2106,6 +2494,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         perf.drawn++;
       }
       lastDrawnAt = now;
+      const nextRatio = governorTick(quality, { intervalMs: tickMs, drew: true, prevDrew: drewLastTick });
+      drewLastTick = true;
+      if (nextRatio != null) applyPixelRatio(nextRatio);
       state.raf = requestAnimationFrame(animate);
     }
     animate();
@@ -2147,9 +2538,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // The pool, not `markers`: markers holds only the clusters the current zoom produced, so
       // tearing down from it orphans every label belonging to a set that has since re-formed.
       // (Measured: 751 label nodes alive after two mounts, against 403 spots.)
-      labelPool.forEach((el) => { if (el.parentNode) el.parentNode.removeChild(el); });
+      labelPool.forEach((el) => { stopLabelFade(el); if (el.parentNode) el.parentNode.removeChild(el); });
       starGeo.dispose(); starMat.dispose(); starDotTexture.dispose();
-      glowTexture.dispose(); glowMat.dispose();
+      atmosphereGeo.dispose(); atmosphereMat.dispose();
       if (mapTexture) mapTexture.dispose();
       oceanMat.dispose(); oceanMesh.geometry.dispose();
       if (satelliteTexture) satelliteTexture.dispose();
@@ -2163,7 +2554,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       for (const set of Object.values(liveLayers)) {
         if (set.texture) set.texture.dispose();
         if (set.dirTexture) set.dirTexture.dispose();
+        if (set.velTexture) set.velTexture.dispose();
       }
+      disposeParticles();
       for (const name of Object.keys(luts)) luts[name].dispose();
       if (week) {
         week.texture.dispose();
@@ -2354,8 +2747,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
                   {windLegendCaption(
                     framesState === 'ready' && frames && frames.layer === 'wind' && frameIdx > 0
-                      ? { ...windMeta, frameLabel: 'forecast for ' + frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now()) }
-                      : windMeta,
+                      ? { ...windMeta, particles: false, frameLabel: 'forecast for ' + frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now()) }
+                      // The week is drawn with arrows: the streaks belong to the live wind alone.
+                      : playing ? { ...windMeta, particles: false } : windMeta,
                     units,
                   )}
                 </div>

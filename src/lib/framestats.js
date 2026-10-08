@@ -85,7 +85,7 @@ function count(v) {
 
 // The lines the display shows. `idle` when nothing has been drawn lately, so a still globe reads
 // as working as intended rather than as zero frames a second.
-export function perfLines(summary, { idle = false, calls, triangles, lines, pixelRatio, width, height, paintMs } = {}) {
+export function perfLines(summary, { idle = false, calls, triangles, lines, pixelRatio, pixelRatioMax, width, height, paintMs } = {}) {
   const out = [];
   if (idle || !summary) {
     out.push('idle · drawing only on change');
@@ -96,7 +96,11 @@ export function perfLines(summary, { idle = false, calls, triangles, lines, pixe
     out.push('JS ' + ms(summary.cpuP50) + ' / ' + ms(summary.cpuP95) + ' ms per frame (p50/p95)');
   }
   out.push('draws ' + count(calls) + ' · tris ' + count(triangles) + ' · lines ' + count(lines));
-  if (pixelRatio != null) out.push('px ratio ' + pixelRatio + ' · ' + width + '×' + height);
+  if (pixelRatio != null) {
+    // Below the device's own when the quality governor has stepped it down (lib/quality.js).
+    const ratio = pixelRatioMax != null && pixelRatioMax !== pixelRatio ? pixelRatio + ' of ' + pixelRatioMax : String(pixelRatio);
+    out.push('px ratio ' + ratio + ' · ' + width + '×' + height);
+  }
   if (paintMs != null) out.push('overlay paint ' + ms(paintMs) + ' ms');
   return out;
 }

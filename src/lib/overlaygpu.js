@@ -207,11 +207,25 @@ export function weekSlot(pos, count, playing) {
 // go to the canvas untouched, which is what keeps the globe's colours identical to the legend's.
 export const OVERLAY_VERTEX = /* glsl */ `
 varying vec2 vUv;
+varying vec3 vWorld;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+  vec4 world = modelMatrix * vec4( position, 1.0 );
+  vWorld = world.xyz;
+  gl_Position = projectionMatrix * viewMatrix * world;
 }
 `;
+
+// How the overlay thins toward the globe's edge: drawn whole wherever the surface faces the camera
+// more squarely than this (the cosine between its normal and the line to the camera), fading to
+// nothing at the horizon. At the default zoom that is the outermost few per cent of the disc,
+// where the colours are foreshortened past reading anyway; it lets the globe's edge be the
+// atmosphere's rather than a hard rim of colour.
+export const OVERLAY_LIMB_FADE = 0.3;
+export function overlayLimbFade(facing) {
+  const t = Math.min(1, Math.max(0, facing / OVERLAY_LIMB_FADE));
+  return t * t * (3 - 2 * t);
+}
 
 export const OVERLAY_FRAGMENT = /* glsl */ `
 uniform sampler2D uLive;        // the live field: R = value x coverage, G = coverage
@@ -228,6 +242,7 @@ uniform float uMix;             // ...and how far between them
 uniform float uOpacity;
 uniform float uHasMask;
 varying vec2 vUv;
+varying vec3 vWorld;
 
 void main() {
   vec2 f;
@@ -255,6 +270,11 @@ void main() {
     float landEdge = max( fwidth( landCoverage ), 1e-5 );
     alpha *= 1.0 - smoothstep( -landEdge, landEdge, landCoverage );
   }
+
+  // Thinning toward the horizon: overlayLimbFade in lib/overlaygpu.js. The globe is centred on
+  // the origin, so a point's own direction is its normal.
+  float facing = dot( normalize( vWorld ), normalize( cameraPosition - vWorld ) );
+  alpha *= smoothstep( 0.0, ${OVERLAY_LIMB_FADE}, facing );
   gl_FragColor = vec4( rgb, alpha * uOpacity );
 }
 `;
@@ -274,6 +294,38 @@ void main() {
 // The direction fields say where the swell or wind comes from, as every source reports them,
 // and both layers draw where it is going (swellTravelBearing, windTravelBearing): the shader
 // turns every bearing round, and a test pins both layers to that.
+//
+// And they move. A static arrow says which way; one that glides forward a little and fades, over
+// and over, says the sea is going that way -- the wave glyphs on Windy's swell map do the same.
+// Each arrow runs the loop below on its own phase, so the field shimmers rather than pulsing in
+// step, and all of it is the vertex shader's arithmetic on a time uniform. `uMotion` blends from
+// the still arrows to the moving ones, so they can settle back to rest instead of freezing
+// half-faded when the globe stops drawing.
+
+// How long one glide takes, in seconds, and how far an arrow goes in it, in the arrow's own units
+// (it is 1.75 of them from tail to tip): about one arrow length, a few pixels a second.
+export const ARROW_DRIFT_SECONDS = 2.4;
+export const ARROW_DRIFT_TRAVEL = 2.0;
+// The share of the glide spent fading in at the start, and out at the end.
+export const ARROW_DRIFT_FADE_IN = 0.25;
+export const ARROW_DRIFT_FADE_OUT = 0.3;
+
+// Where an arrow is in its glide at `t`, from 0 to 1: how far along its direction it has gone,
+// from half the travel behind its point on the lattice to half ahead, and how visible it is. Gone
+// at both ends, so the jump from the end of one glide back to the start of the next is never
+// seen. The shader's arithmetic, line for line.
+export function arrowDrift(t) {
+  const offset = (t - 0.5) * ARROW_DRIFT_TRAVEL;
+  const fade = smoothstep(0, ARROW_DRIFT_FADE_IN, t) * (1 - smoothstep(1 - ARROW_DRIFT_FADE_OUT, 1, t));
+  return { offset, fade };
+}
+function smoothstep(a, b, x) {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+}
+
+const glslNum = (v) => (Number.isInteger(v) ? v.toFixed(1) : String(v));
+
 export const ARROW_VERTEX = /* glsl */ `
 attribute vec2 aLatLon;           // where the arrow stands: latitude, longitude, in degrees
 uniform sampler2D uDirLive;       // the live directions: R, G = east, north sums; B = weight
@@ -286,6 +338,16 @@ uniform float uLayer1;
 uniform float uMix;
 uniform float uShell;             // the radius the arrows lie at
 uniform float uScale;             // their size, which follows the zoom
+uniform float uTime;              // seconds, for the glide
+uniform float uMotion;            // 0 holds every arrow still at its point, 1 sets them gliding
+varying float vAlpha;
+
+// Each arrow's own place in the glide: a hash of which arrow it is (PCG).
+float arrowPhase( uint id ) {
+  uint state = id * 747796405u + 2891336453u;
+  uint word = ( ( state >> ( ( state >> 28u ) + 4u ) ) ^ state ) * 277803737u;
+  return float( ( word >> 22u ) ^ word ) * ( 1.0 / 4294967296.0 );
+}
 
 void main() {
   float lat = aLatLon.x;
@@ -317,7 +379,14 @@ void main() {
   // Where it is going: the reverse of where it comes from.
   vec3 forward = -( east * d.r + north * d.g ) / max( len, 1e-6 );
   vec3 side = cross( forward, normal );
-  vec3 p = normal * uShell + ( side * position.x + forward * position.y ) * ( uScale * shown );
+
+  // arrowDrift in lib/overlaygpu.js.
+  float t = fract( uTime / ${glslNum(ARROW_DRIFT_SECONDS)} + arrowPhase( uint( gl_InstanceID ) ) );
+  float offset = ( t - 0.5 ) * ${glslNum(ARROW_DRIFT_TRAVEL)};
+  float fade = smoothstep( 0.0, ${glslNum(ARROW_DRIFT_FADE_IN)}, t ) * ( 1.0 - smoothstep( ${glslNum(1 - ARROW_DRIFT_FADE_OUT)}, 1.0, t ) );
+  vAlpha = mix( 1.0, fade, uMotion );
+
+  vec3 p = normal * uShell + ( side * position.x + forward * ( position.y + offset * uMotion ) ) * ( uScale * shown );
   gl_Position = projectionMatrix * modelViewMatrix * vec4( p, 1.0 );
 }
 `;
@@ -328,9 +397,9 @@ void main() {
 // 10m+ seas are vanishingly rare. sRGB bytes, written as they are, like the overlay's.
 export const ARROW_RGB = [0xf4, 0xf7, 0xf6];
 export const ARROW_OPACITY = 0.72;
-const glslFloat = (v) => (Number.isInteger(v) ? v.toFixed(1) : String(v));
 export const ARROW_FRAGMENT = /* glsl */ `
+varying float vAlpha;
 void main() {
-  gl_FragColor = vec4( ${ARROW_RGB.map((c) => glslFloat(c / 255)).join(', ')}, ${glslFloat(ARROW_OPACITY)} );
+  gl_FragColor = vec4( ${ARROW_RGB.map((c) => glslNum(c / 255)).join(', ')}, ${glslNum(ARROW_OPACITY)} * vAlpha );
 }
 `;

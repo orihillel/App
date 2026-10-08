@@ -106,6 +106,12 @@ describe('windLegendCaption', () => {
       .toContain('arrows show where the wind is blowing');
   });
 
+  it('says the streaks move with the wind when they are drawn instead of arrows', () => {
+    const c = windLegendCaption({ generatedAt: Date.now(), arrows: true, particles: true }, 'metric');
+    expect(c).toContain('streaks move with the wind');
+    expect(c).not.toContain('arrows');
+  });
+
   it('separates a grid with no directions from one whose directions failed', () => {
     expect(windLegendCaption({ generatedAt: Date.now(), noDirections: true }, 'metric'))
       .toContain('no wind directions in this grid yet');
