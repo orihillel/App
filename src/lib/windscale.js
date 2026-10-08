@@ -149,7 +149,10 @@ export function windLegendCaption(meta, units, now = Date.now()) {
   else parts.push(gridAgeLabel(meta && meta.generatedAt, now) || 'age unknown');
   if (meta && meta.stale) parts.push('last good data');
   if (meta && meta.coarse) parts.push('coarse edge — coastline unavailable');
-  if (meta && meta.arrows) parts.push('arrows show where the wind is blowing');
+  // The live wind moves rather than pointing, where the device can draw it moving (see
+  // lib/windparticles.js); the week, and any device that cannot, keeps the arrows.
+  if (meta && meta.particles) parts.push('streaks move with the wind');
+  else if (meta && meta.arrows) parts.push('arrows show where the wind is blowing');
   else if (meta && meta.noDirections) parts.push('no wind directions in this grid yet');
   return parts.join(' · ');
 }

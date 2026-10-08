@@ -27,6 +27,11 @@ import {
 } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
 import { createQualityGovernor, governorTick } from '../lib/quality.js';
+import {
+  velocityComponents, regularizeVelocity, degreesPerSecondPerKph, particlePxPerKph, viewCapRadius, particleCount, stateTexel,
+  PARTICLE_STATE_SIZE, MAX_PARTICLES, PARTICLE_TRAIL_SECONDS, PARTICLE_IDLE_MS,
+  PARTICLE_UPDATE_VERTEX, PARTICLE_UPDATE_FRAGMENT, PARTICLE_DRAW_VERTEX, PARTICLE_DRAW_FRAGMENT,
+} from '../lib/windparticles.js';
 import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
@@ -885,6 +890,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       set.dirTexture = set.dirs
         ? fieldTexture(packHalf(regularizeDirections(set.dirs, layout)), layout, THREE.RGBAFormat)
         : null;
+      // The wind itself, speed and direction together, for its particles.
+      set.velTexture = set.velocity
+        ? fieldTexture(packHalf(regularizeVelocity(set.velocity.east, set.velocity.north, layout)), layout, THREE.RGBAFormat)
+        : null;
       set.v = layoutV(layout);
     }
     // Whether a direction field has anything in it at all.
@@ -1032,7 +1041,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     function updateArrows() {
       if (!arrowMesh) return;
-      arrowMesh.visible = wavesOnRef.current && dirsShown;
+      // The wind's particles show its direction better than arrows can, and both at once is
+      // clutter: while they are drawn, the arrows step aside.
+      arrowMesh.visible = wavesOnRef.current && dirsShown && !particlesWanted();
       if (!arrowMesh.visible) return;
       // The camera's own half-FOV, so the count follows what is actually on screen rather than
       // a hard-coded guess at it.
@@ -1169,6 +1180,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       arrowMat.uniforms.uDirLive.value = set.dirTexture;
       dirsShown = !!set.dirTexture;
       shownKey = 'live:' + name;
+      noteInput(); // a layer just shown is being looked at: its particles, if any, should move
       painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
@@ -1303,6 +1315,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           const windStep = gridStepOf(grid);
           const speeds = decodeSpeeds(base64ToBytes(grid.data));
           const dirs = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
+          // The wind as east and north components, for its particles (see lib/windparticles.js),
+          // with gaps filled exactly as the colours' are so the streaks run to the same shore.
+          const velocity = dirs && particlesPossible ? velocityComponents(speeds, dirs) : null;
           liveLayers.wind = {
             // Gaps are filled only when the coastline mask is there to stop the fill at the
             // shore, exactly as the swell does -- without one, "no reading" is the only thing
@@ -1312,10 +1327,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             raw: speeds,
             dirs,
             step: windStep,
+            velocity: velocity && waveMaskTexture
+              ? { east: fillGridGaps(velocity.east, 2, windStep), north: fillGridGaps(velocity.north, 2, windStep) }
+              : velocity,
           };
           setWindMeta({
             ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
             arrows: !!dirs, noDirections: !grid.dirs,
+            // Drawn as moving streaks rather than arrows: see the particles below.
+            particles: !!velocity,
           });
           setWindState('ready');
           if (layerRef.current === 'wind') applyLiveLayer('wind');
@@ -1323,6 +1343,198 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         .catch(() => { windRequested = false; setWindState('unavailable'); setWindMeta({ ok: false }); });
     }
     loadWindRef.current = ensureWindLayer;
+
+    // The wind's particles: a few thousand streaks carried across the globe by the live wind,
+    // in place of its arrows. See lib/windparticles.js.
+    //
+    // Where every particle is lives in a float texture the GPU both reads and writes, which
+    // needs float render targets -- in WebGL2 that is EXT_color_buffer_float, offered nearly
+    // everywhere. Without it, and for anyone whose system asks for less motion, the wind keeps
+    // its arrows, exactly as before.
+    const reducedMotion = typeof window.matchMedia === 'function'
+      && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const particlesPossible = !reducedMotion && renderer.extensions.has('EXT_color_buffer_float');
+    // How long the particles take to fade in when the wind is shown, in milliseconds.
+    const PARTICLE_FADE_MS = 400;
+    let particles = null;
+    // The last time anyone touched the globe. The particles run for PARTICLE_IDLE_MS after it,
+    // then hold still so a globe left open stops drawing.
+    let lastInputAt = performance.now();
+    function noteInput() { lastInputAt = performance.now(); }
+
+    // Whether the particles belong on screen: the overlay shows the live wind, and the wind came
+    // with directions to make them from.
+    function particlesWanted() {
+      const set = liveLayers.wind;
+      return particlesPossible && wavesOnRef.current && shownKey === 'live:wind' && !!(set && set.velTexture);
+    }
+    // And whether they are moving, which keeps the frame loop drawing.
+    function particlesRunning() {
+      return particlesWanted() && performance.now() - lastInputAt < PARTICLE_IDLE_MS;
+    }
+
+    // Two state textures, read from one and written to the other in turn; the pass that moves
+    // the particles; and the streaks. Built the first time the wind is shown.
+    function buildParticles() {
+      const target = () => new THREE.WebGLRenderTarget(PARTICLE_STATE_SIZE, PARTICLE_STATE_SIZE, {
+        type: THREE.FloatType,
+        format: THREE.RGBAFormat,
+        // Each texel is one particle, read exactly: a float texture cannot be filtered on every
+        // device, and an average of two particles is not a particle.
+        minFilter: THREE.NearestFilter,
+        magFilter: THREE.NearestFilter,
+        generateMipmaps: false,
+        depthBuffer: false,
+        stencilBuffer: false,
+      });
+      // The wind and the mask, shared by both passes.
+      const field = {
+        uVelocity: { value: null },
+        uVelocityV: { value: new THREE.Vector2(1, 0) },
+        uLandMask: { value: waveMaskTexture },
+        uHasMask: { value: waveMaskTexture ? 1 : 0 },
+      };
+      const updateMat = new THREE.ShaderMaterial({
+        uniforms: {
+          ...field,
+          uState: { value: null },
+          uViewCenter: { value: new THREE.Vector3(0, 0, 1) },
+          uViewCos: { value: 0 },
+          uGrowthCos: { value: 0 },
+          uGrowth: { value: 0 },
+          uScale: { value: 0 },
+          uDt: { value: 0 },
+          uFrame: { value: 0 },
+        },
+        vertexShader: PARTICLE_UPDATE_VERTEX,
+        fragmentShader: PARTICLE_UPDATE_FRAGMENT,
+        depthTest: false,
+        depthWrite: false,
+      });
+      // One triangle over the whole target: every texel, so every particle, gets a fragment.
+      const updateGeo = new THREE.BufferGeometry();
+      updateGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 3, -1, 0, -1, 3, 0], 3));
+      const updateMesh = new THREE.Mesh(updateGeo, updateMat);
+      updateMesh.frustumCulled = false;
+      const updateScene = new THREE.Scene();
+      updateScene.add(updateMesh);
+
+      // A streak is a strip of two triangles: x is 0 at the head and 1 at the tail, y the side.
+      const drawGeo = new THREE.InstancedBufferGeometry();
+      drawGeo.setAttribute('position', new THREE.Float32BufferAttribute([0, -1, 0, 0, 1, 0, 1, -1, 0, 1, 1, 0], 3));
+      drawGeo.setIndex([0, 2, 1, 1, 2, 3]);
+      const texels = new Float32Array(MAX_PARTICLES * 2);
+      for (let i = 0; i < MAX_PARTICLES; i++) texels.set(stateTexel(i), i * 2);
+      drawGeo.setAttribute('aTexel', new THREE.InstancedBufferAttribute(texels, 2));
+      drawGeo.instanceCount = 0;
+      const drawMat = new THREE.ShaderMaterial({
+        uniforms: {
+          ...field,
+          uState: { value: null },
+          uShell: { value: R },
+          uTrail: { value: 0 },
+          uViewport: { value: new THREE.Vector2(1, 1) },
+          uPixelRatio: { value: 1 },
+          uOpacity: { value: 0 },
+        },
+        vertexShader: PARTICLE_DRAW_VERTEX,
+        fragmentShader: PARTICLE_DRAW_FRAGMENT,
+        transparent: true,
+        // Nothing hides a streak but the globe, and round the back its shader has faded it out
+        // -- the markers' rule. A strip faces whichever way its streak happens to run.
+        depthTest: false,
+        depthWrite: false,
+        side: THREE.DoubleSide,
+      });
+      const drawMesh = new THREE.Mesh(drawGeo, drawMat);
+      drawMesh.renderOrder = 2; // where the arrows they replace were: over the overlay, under the markers
+      drawMesh.frustumCulled = false; // the geometry is a unit strip; only the shader knows where
+      drawMesh.visible = false;
+      globeGroup.add(drawMesh);
+      return {
+        targets: [target(), target()], read: 0, field, updateMat, updateGeo, updateScene,
+        updateCamera: new THREE.Camera(), drawGeo, drawMat, drawMesh,
+        frame: 0, opacity: 0, viewCos: null,
+      };
+    }
+
+    const particleView = new THREE.Quaternion();
+    // Called on every frame drawn, before the scene is: moves the particles on by `dtMs` if they
+    // are running, and sets the streaks up to draw where they are now.
+    function stepParticles(dtMs, running) {
+      if (!particlesWanted()) {
+        if (particles && particles.drawMesh.visible) {
+          particles.drawMesh.visible = false;
+          particles.opacity = 0; // so they fade in again next time
+        }
+        return;
+      }
+      if (!particles) particles = buildParticles();
+      const p = particles;
+      const set = liveLayers.wind;
+      p.field.uVelocity.value = set.velTexture;
+      p.field.uVelocityV.value.fromArray(set.v);
+      p.field.uLandMask.value = waveMaskTexture;
+      p.field.uHasMask.value = waveMaskTexture ? 1 : 0;
+
+      const halfFov = (camera.fov * Math.PI) / 360;
+      // The patch of globe in view, a little past the screen's corners so particles drift in
+      // from beyond the edge rather than appearing at it -- and never past the horizon.
+      const cap = Math.min(Math.acos(1 / state.distance), viewCapRadius(state.distance, halfFov, width / height) * 1.1);
+      const viewCos = Math.cos(cap);
+      const scale = degreesPerSecondPerKph(state.distance, halfFov, height, particlePxPerKph(state.distance));
+      // A first update even when idle: there has to be something to draw.
+      if (running || p.frame === 0) {
+        const u = p.updateMat.uniforms;
+        // The point straight under the camera, in the globe's own frame: the camera sits on +Z,
+        // and the globe is turned.
+        particleView.setFromEuler(globeGroup.rotation).invert();
+        u.uViewCenter.value.set(0, 0, 1).applyQuaternion(particleView);
+        u.uViewCos.value = viewCos;
+        // Zooming out: the share of particles the new ring of view should hold are reborn in it.
+        // Its area over the whole view's, with a cap's area going as one minus its cosine.
+        if (p.viewCos != null && viewCos < p.viewCos) {
+          u.uGrowthCos.value = p.viewCos;
+          u.uGrowth.value = 1 - (1 - p.viewCos) / (1 - viewCos);
+        } else {
+          u.uGrowthCos.value = viewCos;
+          u.uGrowth.value = 0;
+        }
+        u.uScale.value = scale;
+        u.uDt.value = running ? dtMs / 1000 : 0;
+        p.frame = (p.frame % 1000000) + 1;
+        u.uFrame.value = p.frame;
+        u.uState.value = p.targets[p.read].texture;
+        const write = 1 - p.read;
+        renderer.setRenderTarget(p.targets[write]);
+        renderer.render(p.updateScene, p.updateCamera);
+        renderer.setRenderTarget(null);
+        p.read = write;
+        p.viewCos = viewCos;
+      }
+
+      const d = p.drawMat.uniforms;
+      d.uState.value = p.targets[p.read].texture;
+      d.uTrail.value = PARTICLE_TRAIL_SECONDS * scale;
+      d.uViewport.value.set(renderer.domElement.width, renderer.domElement.height);
+      d.uPixelRatio.value = currentPixelRatio;
+      p.opacity = Math.min(1, p.opacity + dtMs / PARTICLE_FADE_MS);
+      d.uOpacity.value = p.opacity;
+      p.drawGeo.instanceCount = particleCount(state.distance, halfFov, width, height);
+      p.drawMesh.visible = true;
+      // Still fading in: keep drawing until it has, even if the particles themselves are frozen.
+      if (p.opacity < 1) state.dataDirty = true;
+    }
+
+    function disposeParticles() {
+      if (!particles) return;
+      particles.targets.forEach((t) => t.dispose());
+      particles.updateGeo.dispose();
+      particles.updateMat.dispose();
+      particles.drawGeo.dispose();
+      particles.drawMat.dispose();
+      particles = null;
+    }
 
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
@@ -1899,6 +2111,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
 
     function onMouseDown(e) {
+      noteInput();
       state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
       state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
       state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
@@ -1906,6 +2119,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function onMouseMove(e) {
       if (!state.dragging) return;
+      noteInput();
       const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
       state.lastX = e.clientX; state.lastY = e.clientY;
       applyDrag(dx, dy);
@@ -1921,9 +2135,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function onWheel(e) {
       e.preventDefault();
+      noteInput();
       state.targetDistance = clampDistance(state.targetDistance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
     }
     function touchStart(e) {
+      noteInput();
       if (e.touches.length === 1) {
         state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
         state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
@@ -1933,6 +2149,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function touchMove(e) {
       e.preventDefault();
+      noteInput();
       if (e.touches.length === 1 && state.dragging) {
         const dx = e.touches[0].clientX - state.lastX, dy = e.touches[0].clientY - state.lastY;
         state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
@@ -2060,6 +2277,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const tickMs = lastTick == null ? 0 : now - lastTick;
       lastTick = now;
       const overlayMoving = updateOverlayTime(playDt);
+      const particlesMoving = particlesRunning();
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
       if (coasting) {
         state.targetRotY += state.velY * dt;
@@ -2074,7 +2292,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dRotX = state.targetRotX - state.rotX;
       const dRotY = state.targetRotY - state.rotY;
       const dDist = state.targetDistance - state.distance;
-      const moving = overlayMoving || coasting || state.dragging
+      const moving = overlayMoving || particlesMoving || coasting || state.dragging
         || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
 
       // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
@@ -2111,6 +2329,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       ensureCoastline();
       ensureWaveOverlay();
       if (waveMesh) waveMesh.visible = wavesOnRef.current;
+      stepParticles(dt, particlesMoving);
       updateArrows();
       if (coastlineMesh) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
@@ -2183,7 +2402,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       for (const set of Object.values(liveLayers)) {
         if (set.texture) set.texture.dispose();
         if (set.dirTexture) set.dirTexture.dispose();
+        if (set.velTexture) set.velTexture.dispose();
       }
+      disposeParticles();
       for (const name of Object.keys(luts)) luts[name].dispose();
       if (week) {
         week.texture.dispose();
@@ -2374,8 +2595,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                 <div style={{ fontSize: 9.5, color: COLORS.foamDim, marginTop: 5, textAlign: 'center' }}>
                   {windLegendCaption(
                     framesState === 'ready' && frames && frames.layer === 'wind' && frameIdx > 0
-                      ? { ...windMeta, frameLabel: 'forecast for ' + frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now()) }
-                      : windMeta,
+                      ? { ...windMeta, particles: false, frameLabel: 'forecast for ' + frameLabel(frames.list[frameIdx] && frames.list[frameIdx].t, Date.now()) }
+                      // The week is drawn with arrows: the streaks belong to the live wind alone.
+                      : playing ? { ...windMeta, particles: false } : windMeta,
                     units,
                   )}
                 </div>
