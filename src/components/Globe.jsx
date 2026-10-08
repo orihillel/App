@@ -19,6 +19,8 @@ import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { frameLabel, frameBuildLabel, weekFrameAt, advancePos, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
+import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
+import { frameDelta, easeAlpha, decayFactor, blendVelocity } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long each frame of the animated week is held on screen.
@@ -377,6 +379,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       distance: 3.0, targetDistance: 3.0,
       rotX: 0.3, rotY: 0.6, targetRotX: 0.3, targetRotY: 0.6, velX: 0, velY: 0,
       dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0,
+      lastMoveAt: 0, // performance.now() of the last drag movement, for velocity and the still-release test
       dataDirty: true, // set when marker colors/labels change, so an idle frame still redraws once
     };
     camera.position.set(0, 0, state.distance);
@@ -387,27 +390,58 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // on the tile-based GPUs in phones, which is where this app actually runs. It was only
     // needed because the near/far range was wide; the per-frame near plane below keeps that
     // range tight enough that an ordinary 24-bit depth buffer has precision to spare.
-    // At 3x device pixel ratio the scene is already supersampled 9:1 against CSS pixels, which
-    // resolves edges about as well as MSAA does -- so paying for both is close to pure waste.
-    // Dropping MSAA at 3x buys back most of what the higher resolution costs.
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 3);
-    const renderer = new THREE.WebGLRenderer({ antialias: pixelRatio < 3, alpha: true });
+    // At most 2x the CSS resolution, with MSAA always on.
+    //
+    // This was 3x, with MSAA off at 3x on the reasoning that 9:1 supersampling resolves edges
+    // about as well. It does, but at 2.25 times the pixels: on a 390x844 iPhone, 3x is 3.0
+    // million pixels shaded every frame against 1.3 million at 2x, and the globe also draws
+    // thousands of markers, a translucent overlay and close to a million coastline vertices up
+    // close. Phones' tile-based GPUs resolve 4x MSAA cheaply, so 2x with MSAA keeps edges smooth
+    // for well under half the fill cost. A 2x cap is the usual advice for three.js on phones.
+    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
     // outputEncoding/sRGBEncoding was renamed to outputColorSpace/SRGBColorSpace in newer
     // Three.js and removed entirely in later versions — set whichever this build actually has.
     if ('outputColorSpace' in renderer && THREE.SRGBColorSpace) renderer.outputColorSpace = THREE.SRGBColorSpace;
     else if ('outputEncoding' in renderer && THREE.sRGBEncoding) renderer.outputEncoding = THREE.sRGBEncoding;
     renderer.setSize(width, height);
-    // Render at the screen's real pixel density, up to 3x (set just above the renderer).
-    //
-    // This was capped at 2 on the reasoning that the extra pixels were "not visible at this
-    // size". That was true of the globe it was written for -- a small, barely-zoomable sphere.
-    // It is not true now: the zoom range magnifies the globe about 2.8x, and a 3x phone was
-    // being handed two-thirds of its native resolution, which is exactly what makes coastlines
-    // look soft when you zoom in. Every edge on screen -- the silhouette, the coastlines, the
-    // marker dots -- is sampled at 1.5x fewer pixels per axis than the display can show.
+    // Capped at 2x (see above). This was raised to 3x once because coastlines looked soft
+    // zoomed in on a 3x phone; that was with MSAA off. With it on, 2x keeps the edges clean.
     renderer.setPixelRatio(pixelRatio);
     container.appendChild(renderer.domElement);
     setGlobeError(false);
+
+    // The on-screen performance display: off unless the page was opened with ?perf=1 (and
+    // remembered after that; ?perf=0 forgets it). See lib/framestats.js for what it measures.
+    // Written straight to the DOM twice a second rather than through React state, because a
+    // display that re-rendered this component to report frame times would be measuring itself.
+    let perfStore = null;
+    try { perfStore = window.localStorage; } catch { /* blocked storage: the URL alone decides */ }
+    const perf = readPerfFlag(window.location.search, perfStore)
+      ? { stats: createFrameStats(), drawn: 0, shownDrawn: 0, paintMs: null, hud: document.createElement('div'), timer: null }
+      : null;
+    if (perf) {
+      perf.hud.setAttribute('data-perf-hud', '');
+      Object.assign(perf.hud.style, {
+        position: 'absolute', top: '6px', left: '6px', zIndex: '5', pointerEvents: 'none',
+        background: 'rgba(5,12,20,0.78)', color: '#F4F7F6', borderRadius: '6px', padding: '5px 7px',
+        font: '10.5px/1.45 "JetBrains Mono", ui-monospace, monospace', whiteSpace: 'pre',
+      });
+      container.appendChild(perf.hud);
+      const showPerf = () => {
+        const drawnSince = perf.drawn - perf.shownDrawn;
+        perf.shownDrawn = perf.drawn;
+        const info = renderer.info.render;
+        perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
+          idle: !drawnSince,
+          calls: info.calls, triangles: info.triangles, lines: info.lines,
+          pixelRatio, width: renderer.domElement.width, height: renderer.domElement.height,
+          paintMs: perf.paintMs,
+        }).join('\n');
+      };
+      showPerf();
+      perf.timer = setInterval(showPerf, 500);
+    }
 
     // Set by cleanup so async work (the satellite texture below) can tell it arrived too late.
     let cancelled = false;
@@ -1058,6 +1092,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const set = liveLayers[name];
       const draw = LAYER_DRAW[name] && drawFor(name);
       if (!set || !draw || !waveCanvasCtx || !waveTexture) return false;
+      const paintStart = perf ? performance.now() : 0;
       const step = set.step || GRID_LAT_STEP;
       paintWaveCanvas(waveCanvasCtx, set.values, step, 1, draw.colorFn);
       painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
@@ -1078,6 +1113,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         arrowPoints = buildArrowField(set.dirs, waveLand, step, draw.toTravel);
         arrowScaleAt = 0; // force the next layout pass to re-orient every instance
       }
+      // The repaint only; the upload it triggers lands in the next frame's JS time.
+      if (perf) perf.paintMs = performance.now() - paintStart;
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
       return true;
@@ -1145,6 +1182,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function applyWaveFrame(frame, step, name = 'swell') {
       const draw = drawFor(name);
       if (!frame || !waveCanvasCtx || !waveTexture) return;
+      const paintStart = perf ? performance.now() : 0;
       const heights = waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights;
       paintWaveCanvas(waveCanvasCtx, heights, step, ANIM_COARSEN, draw.colorFn);
       painted = { read: frame.heights, dirs: frame.dirs, step, layer: name, frame: frame.t || null };
@@ -1169,6 +1207,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         arrowPoints = buildArrowField(frame.dirs, waveLand, step, draw.toTravel);
         arrowScaleAt = 0;
       }
+      if (perf) perf.paintMs = performance.now() - paintStart;
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
     }
@@ -1540,8 +1579,23 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // Remember the last bit of movement as velocity, so releasing mid-drag hands off into a
       // coasting flick rather than stopping dead. Blended with the previous value so one noisy
       // final pointer sample can't send the globe spinning off.
-      state.velY = state.velY * 0.6 + rotY * 0.4;
-      state.velX = state.velX * 0.6 + rotX * 0.4;
+      //
+      // In radians per millisecond, from the time between events. It used to be radians per
+      // event, which made a flick depend on how often the screen delivered touches: half as
+      // fast on a 120 Hz phone, whose events carry half the movement each. The floor stops two
+      // events coalesced into the same millisecond from reading as a near-infinite speed.
+      const now = performance.now();
+      const dt = Math.max(now - state.lastMoveAt, 4);
+      state.lastMoveAt = now;
+      state.velY = blendVelocity(state.velY, rotY / dt, dt);
+      state.velX = blendVelocity(state.velX, rotX / dt, dt);
+    }
+    // Lifting a finger that had stopped is not a flick. Without this, the last movement before
+    // the pause was still sitting in the velocity and the globe set off on its own the moment
+    // you let go of it.
+    const STILL_RELEASE_MS = 80;
+    function settleOnRelease() {
+      if (performance.now() - state.lastMoveAt > STILL_RELEASE_MS) { state.velX = 0; state.velY = 0; }
     }
     // Percent-of-current-distance zoom (both wheel and pinch below) rather than a fixed step,
     // so zooming feels the same proportionally whether you're already in close or way out --
@@ -1583,11 +1637,21 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const VISIBLE_MAX_SPOTS = 120;
     let lastReportAt = 0;
     let lastReportKey = '';
+    // The globe only draws while something changes, and this is called from a drawn frame --
+    // so a report throttled away during the last moments of a drag would otherwise never be
+    // made, and the spots the drag ended on would never be fetched. A throttled call leaves one
+    // trailing report behind instead, made from the last frame drawn.
+    let reportTimer = null;
     function reportVisibleSpots() {
       const cb = visibleCbRef.current;
       if (!cb) return;
       const now = performance.now();
-      if (now - lastReportAt < VISIBLE_REPORT_MS) return;
+      if (now - lastReportAt < VISIBLE_REPORT_MS) {
+        if (!reportTimer) {
+          reportTimer = setTimeout(() => { reportTimer = null; reportVisibleSpots(); }, VISIBLE_REPORT_MS - (now - lastReportAt) + 20);
+        }
+        return;
+      }
       lastReportAt = now;
 
       const onScreen = [];
@@ -1672,7 +1736,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           if (m.labelShown) { m.label.style.display = 'none'; m.labelShown = false; }
           continue;
         }
-        if (!m.labelShown) { m.label.style.display = 'block'; m.labelShown = true; }
+        if (!m.labelShown) {
+          m.label.style.display = 'block'; m.labelShown = true;
+          // Placed this frame from an estimated size; it is measured on the next one (above).
+          // That next frame has to happen even if nothing else moves, or a label wider than
+          // its estimate keeps overlapping its neighbour until the globe is touched again.
+          if (!m.labelW) state.dataDirty = true;
+        }
         // transform rather than left/top: this is a compositor-only property, so moving a label
         // doesn't force the browser into a layout pass for every visible label every frame.
         const anchor = m.count > 1 ? 'translate(-50%, -50%)' : 'translate(-50%, -130%)';
@@ -1684,6 +1754,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
       state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
       state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
+      state.lastMoveAt = performance.now();
     }
     function onMouseMove(e) {
       if (!state.dragging) return;
@@ -1692,7 +1763,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       applyDrag(dx, dy);
     }
     function onMouseUp(e) {
+      if (!state.dragging) return;
       state.dragging = false;
+      settleOnRelease();
       if (isTap(state.downX, state.downY, state.downTime, e.clientX, e.clientY)) {
         state.velX = 0; state.velY = 0; // a tap is not a flick
         pickSpotAt(e.clientX, e.clientY);
@@ -1707,6 +1780,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
         state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
         state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
+        state.lastMoveAt = performance.now();
       } else if (e.touches.length === 2) { state.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
     }
     function touchMove(e) {
@@ -1727,11 +1801,19 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     function touchEnd(e) {
       state.dragging = false; state.pinchDist = null;
+      settleOnRelease();
       const t = e.changedTouches && e.changedTouches[0];
       if (t && isTap(state.downX, state.downY, state.downTime, t.clientX, t.clientY)) {
         state.velX = 0; state.velY = 0; // a tap is not a flick
         pickSpotAt(t.clientX, t.clientY);
       }
+    }
+    // The system took the touch away -- an incoming call, a notification pulled down, a
+    // system gesture. Not a release and certainly not a tap: without this, `dragging` stayed
+    // true and the globe kept treating the next unrelated touch as the end of the old drag.
+    function touchCancel() {
+      state.dragging = false; state.pinchDist = null;
+      state.velX = 0; state.velY = 0;
     }
 
     renderer.domElement.addEventListener('mousedown', onMouseDown);
@@ -1741,6 +1823,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     renderer.domElement.addEventListener('touchstart', touchStart, { passive: true });
     renderer.domElement.addEventListener('touchmove', touchMove, { passive: false });
     renderer.domElement.addEventListener('touchend', touchEnd);
+    renderer.domElement.addEventListener('touchcancel', touchCancel);
 
     // Marker colors and label text come from live forecast data, which changes on the order of
     // minutes — not per frame. The old loop recomputed and rewrote all of it every single frame
@@ -1750,6 +1833,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function refreshMarkerData() {
       const live = dataRef.current;
       let colorsChanged = false;
+      let textChanged = false;
       let spotsWithReading = 0;
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
@@ -1771,8 +1855,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           spotsWithReading++;
           if (bestScore == null || hr.score > bestScore) { bestScore = hr.score; bestRating = hr.rating; }
         }
-        markerMesh.setColorAt(i, instanceColor.set(bestScore == null ? '#33465C' : scoreToColor(bestScore)));
-        colorsChanged = true;
+        // Only written when it changed. This runs every second, and it used to rewrite every
+        // colour and mark the globe for a redraw each time, so a globe nobody was touching still
+        // drew a full frame once a second, forever.
+        const color = bestScore == null ? '#33465C' : scoreToColor(bestScore);
+        if (color !== m.color) {
+          markerMesh.setColorAt(i, instanceColor.set(color));
+          m.color = color;
+          colorsChanged = true;
+        }
         const spotObj = live.spots[m.id];
         const text = m.count > 1
           ? String(m.count)
@@ -1783,7 +1874,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           ? m.count + ' spots' + (bestRating ? ' · best ' + bestRating : ' · no readings yet')
           : text;
         if (title !== m.labelTitle) { m.label.title = title; m.label.setAttribute('aria-label', title); m.labelTitle = title; }
-        if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; }
+        // New text can change a label's size, and so where labels fit: worth a redraw.
+        if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; textChanged = true; }
       }
       if (colorsChanged && markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
       // What the legend reports. "124 of 403" is the difference between a colour scale that
@@ -1792,7 +1884,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         lastReadingCount = spotsWithReading;
         setLiveCount(spotsWithReading);
       }
-      state.dataDirty = true; // colors/labels may have changed, so the next frame must draw
+      if (colorsChanged || textChanged) state.dataDirty = true; // something to show: draw once
     }
     updateClusters(); // builds the first set of markers, and colours them
     const dataTimer = setInterval(refreshMarkerData, 1000);
@@ -1800,20 +1892,29 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Smoothing. Input writes to the *target* rotation/distance; each frame eases the rendered
     // values toward it. That's what makes this feel smooth rather than stepwise: a wheel notch
     // glides instead of snapping, and a flick keeps coasting (momentum) instead of stopping
-    // dead the instant you lift your finger. Eased per-frame by a fixed fraction, so it stays
-    // responsive (most of the gap closes within a couple of frames) without the raw jitter of
-    // applying pointer deltas straight to the camera.
-    const EASE = 0.28;          // fraction of the remaining gap closed per frame
-    const FRICTION = 0.94;      // how quickly flick momentum bleeds off
-    const MIN_VELOCITY = 0.00002; // below this, momentum has visually stopped — drop it
+    // dead the instant you lift your finger.
+    //
+    // The constants are per 60 Hz frame and applied per unit of time (see lib/motion.js). They
+    // used to be applied per frame, so a 120 Hz phone eased twice as fast and stopped a flick in
+    // half the distance, Low Power Mode's 30 fps moved everything at half speed, and a run of
+    // slow frames stretched a fling out over seconds.
+    const EASE = 0.28;          // fraction of the remaining gap closed per 60 Hz frame
+    const FRICTION = 0.94;      // share of flick speed kept per 60 Hz frame
+    const MIN_VELOCITY = 0.0000012; // rad/ms; below this, momentum has visually stopped -- drop it
     const SETTLED = 0.00005; // gap below which easing has visually arrived
-    function animate() {
+    let lastTick = null;     // the previous animation frame's timestamp, drawn or not
+    let lastDrawnAt = null;  // the previous *drawn* frame's timestamp, for the perf display
+    function animate(ts) {
+      const now = typeof ts === 'number' ? ts : performance.now();
+      const dt = frameDelta(now, lastTick);
+      lastTick = now;
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
       if (coasting) {
-        state.targetRotY += state.velY;
-        state.targetRotX = Math.max(-1.2, Math.min(1.2, state.targetRotX + state.velX));
-        state.velX *= FRICTION;
-        state.velY *= FRICTION;
+        state.targetRotY += state.velY * dt;
+        state.targetRotX = Math.max(-1.2, Math.min(1.2, state.targetRotX + state.velX * dt));
+        const keep = decayFactor(FRICTION, dt);
+        state.velX *= keep;
+        state.velY *= keep;
       } else if (!state.dragging) {
         state.velX = 0; state.velY = 0;
       }
@@ -1828,14 +1929,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // identical image. A globe sitting still cost exactly as much as one being dragged before
       // this, which on a phone is battery burned for no visible result.
       if (!moving && !state.dataDirty) {
+        lastDrawnAt = null; // the next drawn frame follows a pause, not a frame
         state.raf = requestAnimationFrame(animate);
         return;
       }
       state.dataDirty = false;
+      const workStart = perf ? performance.now() : 0;
 
-      state.rotX += dRotX * EASE;
-      state.rotY += dRotY * EASE;
-      state.distance += dDist * EASE;
+      const ease = easeAlpha(EASE, dt);
+      state.rotX += dRotX * ease;
+      state.rotY += dRotY * ease;
+      state.distance += dDist * ease;
       // Snap the last sliver so easing actually terminates instead of asymptotically crawling,
       // which would keep the "moving" test true (and the renderer busy) forever.
       if (Math.abs(state.targetRotX - state.rotX) <= SETTLED) state.rotX = state.targetRotX;
@@ -1859,6 +1963,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         coastlineMesh.visible = o > 0;
       }
       renderer.render(scene, camera);
+      if (perf) {
+        if (lastDrawnAt != null) recordFrame(perf.stats, now - lastDrawnAt, performance.now() - workStart);
+        perf.drawn++;
+      }
+      lastDrawnAt = now;
       state.raf = requestAnimationFrame(animate);
     }
     animate();
@@ -1887,6 +1996,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       markDirtyRef.current = null;
       cancelAnimationFrame(state.raf);
       clearInterval(dataTimer);
+      if (reportTimer) clearTimeout(reportTimer);
+      if (perf) { clearInterval(perf.timer); if (perf.hud.parentNode) perf.hud.parentNode.removeChild(perf.hud); }
       renderer.domElement.removeEventListener('mousedown', onMouseDown);
       window.removeEventListener('mousemove', onMouseMove);
       window.removeEventListener('mouseup', onMouseUp);
@@ -1894,6 +2005,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       renderer.domElement.removeEventListener('touchstart', touchStart);
       renderer.domElement.removeEventListener('touchmove', touchMove);
       renderer.domElement.removeEventListener('touchend', touchEnd);
+      renderer.domElement.removeEventListener('touchcancel', touchCancel);
       // The pool, not `markers`: markers holds only the clusters the current zoom produced, so
       // tearing down from it orphans every label belonging to a set that has since re-formed.
       // (Measured: 751 label nodes alive after two mounts, against 403 spots.)
