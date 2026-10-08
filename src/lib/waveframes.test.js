@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { frameLabel, frameBuildLabel, lerpFrames, weekFrameAt, PLAYBACK_SPEEDS, nextSpeed, speedLabel, advancePos, stepFrame, isTimelineKey } from './waveframes.js';
+import { frameLabel, frameBuildLabel, lerpFrames, weekFrameAt, PLAYBACK_SPEEDS, nextSpeed, speedLabel, advanceTimeline, LOOP_HOLD_STEPS, stepFrame, isTimelineKey } from './waveframes.js';
 
 describe('frameLabel', () => {
   it('reads a UTC frame in the viewer\'s own clock', () => {
@@ -121,24 +121,41 @@ describe('playback', () => {
     expect(PLAYBACK_SPEEDS.map(speedLabel)).toEqual(['½×', '1×', '2×']);
   });
 
-  it('moves further per tick at a higher speed, not more often', () => {
-    expect(advancePos(0, 27, { speed: 1, subSteps: 6 })).toBeCloseTo(1 / 6);
-    expect(advancePos(0, 27, { speed: 2, subSteps: 6 })).toBeCloseTo(2 / 6);
-    expect(advancePos(0, 27, { speed: 0.5, subSteps: 6 })).toBeCloseTo(1 / 12);
+  it('moves one forecast step per stepMs at 1x, scaled by speed', () => {
+    expect(advanceTimeline(0, 27, 450, { speed: 1, stepMs: 450 }).pos).toBeCloseTo(1);
+    expect(advanceTimeline(0, 27, 450, { speed: 2, stepMs: 450 }).pos).toBeCloseTo(2);
+    expect(advanceTimeline(0, 27, 450, { speed: 0.5, stepMs: 450 }).pos).toBeCloseTo(0.5);
   });
 
-  it('stops on the last frame without repeat', () => {
-    expect(advancePos(26.9, 27, { speed: 2 })).toBe(27);
-    expect(advancePos(27, 27)).toBe(27);
+  it('plays at the same pace whatever the frame rate', () => {
+    // A second of 120 Hz frames and a second of 30 Hz frames reach the same place.
+    let at120 = 0;
+    for (let i = 0; i < 120; i++) at120 = advanceTimeline(at120, 27, 1000 / 120, { stepMs: 450 }).pos;
+    let at30 = 0;
+    for (let i = 0; i < 30; i++) at30 = advanceTimeline(at30, 27, 1000 / 30, { stepMs: 450 }).pos;
+    expect(at120).toBeCloseTo(1000 / 450, 6);
+    expect(at30).toBeCloseTo(at120, 6);
   });
 
-  it('shows the last frame, then starts over, with repeat on', () => {
-    expect(advancePos(26.9, 27, { speed: 2, loop: true })).toBe(27);
-    expect(advancePos(27, 27, { loop: true })).toBe(0);
+  it('stops on the last frame without repeat, and says so', () => {
+    expect(advanceTimeline(26.9, 27, 450, { speed: 2, stepMs: 450 })).toEqual({ pos: 27, ended: true });
+    expect(advanceTimeline(26, 27, 100, { stepMs: 450 }).ended).toBe(false);
+  });
+
+  it('holds the last frame for half a step, then starts over, with repeat on', () => {
+    const atEnd = advanceTimeline(26.9, 27, 90, { stepMs: 450, loop: true });
+    expect(atEnd.pos).toBeCloseTo(27.1);
+    expect(atEnd.ended).toBe(false);
+    expect(advanceTimeline(27 + LOOP_HOLD_STEPS - 0.01, 27, 45, { stepMs: 450, loop: true }).pos).toBe(0);
+  });
+
+  it('ignores a negative or missing frame time', () => {
+    expect(advanceTimeline(3, 27, -16, { stepMs: 450 }).pos).toBe(3);
+    expect(advanceTimeline(3, 27, undefined, { stepMs: 450 }).pos).toBe(3);
   });
 
   it('copes with a week of one frame', () => {
-    expect(advancePos(0, 0, { loop: true })).toBe(0);
+    expect(advanceTimeline(0, 0, 16, { loop: true }).pos).toBe(0);
     expect(stepFrame(0, 1, 0)).toBe(0);
   });
 });

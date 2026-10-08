@@ -12,42 +12,33 @@ import {
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
-import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing } from '../lib/wavescale.js';
-import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, windTravelBearing } from '../lib/windscale.js';
+import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing, WAVE_SCALE_MAX } from '../lib/wavescale.js';
+import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, windTravelBearing, WIND_SCALE_MAX } from '../lib/windscale.js';
 import { fetchWaveGrid, fetchWaveFrames, fetchWindGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
-import { frameLabel, frameBuildLabel, weekFrameAt, advancePos, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
+import { frameLabel, frameBuildLabel, weekFrameAt, advanceTimeline, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
+import { regularizeField, packHalfRG, weekTextureSize, buildLut, LUT_SIZE, weekSlot, OVERLAY_VERTEX, OVERLAY_FRAGMENT } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
-import { frameDelta, easeAlpha, decayFactor, blendVelocity } from '../lib/motion.js';
+import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
-// How long each frame of the animated week is held on screen.
+// How long one six-hour step of the week takes to play at 1x: the whole week in about twelve
+// seconds, long enough to follow a swell across an ocean and short enough to watch twice.
 //
-// 450ms is a compromise measured rather than chosen: a frame costs a full repaint of the
-// 720x360 overlay texture, and running faster than the repaint takes turns the animation into a
-// backlog. At this cadence the whole week plays in about twelve seconds, which is long enough
-// to follow a swell across an ocean and short enough to watch twice.
-// How long one six-hour step of the week takes on screen, and how many pictures are drawn
-// inside it.
-//
-// The frames are six hours apart because that is what the upstream budget allows to fetch -- but
-// the eye does not have to be shown the same six steps the network was. Drawing straight from
-// one frame to the next is 28 jumps and reads as a slideshow at any speed; interpolating six
-// pictures inside each step turns the same data into motion, at no cost upstream at all.
-//
-// 450ms a step and 6 sub-steps is 75ms a picture -- about 13 a second -- and the whole week in
-// twelve and a half seconds. The work behind each picture was measured at 23ms of JavaScript
-// before this, and the sub-steps below are cheaper than that again.
+// It used to be a timer as well: 450 ms a step cut into six 75 ms pictures, each a full CPU
+// repaint of the overlay, because a repaint was all a phone could afford that often. The GPU
+// now blends the two steps either side of the moment shown on every frame the screen draws
+// (see lib/overlaygpu.js), so this is only a pace -- the motion between steps is continuous.
 const STEP_MS = 450;
-const SUB_STEPS = 6;
-const FRAME_MS = STEP_MS / SUB_STEPS;
 
-// How coarsely an animation frame is sampled. 3 means every third texel in each direction, so a
-// ninth of the work. See paintWaveCanvas for why that is not a ninth of the quality -- the
-// picture is drawn from 186 numbers however finely it is sampled.
-const ANIM_COARSEN = 3;
+// The longest frame the playback clock counts in full. Motion clamps a frame at 100 ms (see
+// lib/motion.js) so a stall does not fling the globe; playback is a clock, and clamping it that
+// hard made the week play slower on a device drawing fewer than ten frames a second. A quarter
+// of a second keeps real-time pace down to four frames a second, while a return from the
+// background still does not jump the week a day ahead.
+const PLAYBACK_MAX_FRAME_MS = 250;
 
 // Interactive 3D globe of every saved spot, colored by live conditions. Owns its own WebGL
 // lifecycle: mounting this component is equivalent to the parent switching to the globe view,
@@ -136,24 +127,24 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   const [layer, setLayer] = useState('swell'); // swell | wind
   const [windMeta, setWindMeta] = useState(null);
   const [windState, setWindState] = useState('idle'); // idle | loading | ready | unavailable
-  // The animated week. `frames` is the decoded set, `frameIdx` which one is drawn, `playing`
-  // whether the timer is advancing it. Held here rather than in the WebGL effect so the
-  // controls can read them; the effect exposes one imperative function to draw a frame.
+  // The animated week. `frames` is the decoded set, `frameIdx` the frame nearest the moment on
+  // screen, `playing` whether it is running.
   const [frames, setFrames] = useState(null);
-  // A continuous position through the week rather than an index, so the picture can sit between
-  // two frames. The scrubber and the label still work in whole frames.
-  const [pos, setPos] = useState(0);
-  const frameIdx = Math.round(pos);
+  // The playhead itself: a continuous position through the week, in forecast steps. It lives in
+  // a ref because the render loop advances it on every frame it draws, and putting that through
+  // React state would re-render this whole component sixty or more times a second to move a
+  // picture React does not draw. React gets `frameIdx`, which changes once a step, for the
+  // scrubber and the label; the loop reports it when it changes.
+  const timelineRef = useRef({ pos: 0, playing: false, speed: 1, loop: false });
+  const [frameIdx, setFrameIdx] = useState(0);
   const [playing, setPlaying] = useState(false);
-  // Playback speed and repeat -- see advancePos in lib/waveframes.js.
+  // Playback speed and repeat -- see advanceTimeline in lib/waveframes.js.
   const [speed, setSpeed] = useState(1);
   const [loop, setLoop] = useState(false);
   const [framesState, setFramesState] = useState('idle'); // idle | loading | ready | unavailable
   const [framesBuild, setFramesBuild] = useState(null);
-  const applyFrameRef = useRef(null);
-  // Puts the live map back after the week has been on screen. See weekFrameAt in
-  // lib/waveframes.js for when that is.
-  const showLiveRef = useRef(null);
+  // Hands a decoded week to the WebGL effect, which uploads it to the GPU once.
+  const setWeekRef = useRef(null);
   // The three.js scene is built once in a mount effect, so React state cannot reach it. Same
   // Read through a ref for the same reason dataRef exists: the render loop is set up once, and
   // closing over the prop would pin whichever version of it existed at mount.
@@ -174,14 +165,30 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // it has to say so explicitly or the screen would not update until the next drag.
   const markDirtyRef = useRef(null);
   useEffect(() => { if (markDirtyRef.current) markDirtyRef.current(); }, [wavesOn]);
+
+  // Moves the playhead to `p` from a control -- the scrubber, an arrow key, a rewind. The render
+  // loop picks the new position up on the frame this asks for.
+  const seek = useCallback((p) => {
+    timelineRef.current.pos = p;
+    setFrameIdx(Math.round(p));
+    if (markDirtyRef.current) markDirtyRef.current();
+  }, []);
+  // Play, speed and repeat are React state, for the buttons; the loop reads them from the ref.
+  useEffect(() => {
+    const tl = timelineRef.current;
+    tl.playing = playing;
+    tl.speed = speed;
+    tl.loop = loop;
+    if (markDirtyRef.current) markDirtyRef.current();
+  }, [playing, speed, loop]);
   // Nothing painted, nothing to have read.
   useEffect(() => { if (!wavesOn) setReading(null); }, [wavesOn]);
 
   // Turning the overlay off ends the animation and rewinds to now. Otherwise "Show live swell"
   // would bring back whatever hour was last on screen -- a map of Thursday, labelled live.
   useEffect(() => {
-    if (!wavesOn) { setPlaying(false); setPos(0); }
-  }, [wavesOn]);
+    if (!wavesOn) { setPlaying(false); seek(0); }
+  }, [wavesOn, seek]);
 
   // Pick a layer, fetching it first if this is the first time it has been asked for.
   //
@@ -197,14 +204,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // The week belongs to the layer that fetched it. Switching drops it and rewinds to now, so
     // the animation cannot carry on painting one layer's frames under the other's legend --
     // the same mistake the arrows used to make.
+    // Stopped here as well as through state: the render loop reads the ref, and could otherwise
+    // draw the old layer's week for a frame before React's update reaches it.
+    timelineRef.current.playing = false;
     setPlaying(false);
-    setPos(0);
+    seek(0);
     setFrames(null);
     setFramesState('idle');
     setFramesBuild(null);
     if (next === 'wind' && loadWindRef.current) loadWindRef.current();
     if (applyLayerRef.current) applyLayerRef.current(next);
-  }, []);
+  }, [seek]);
 
   // Turning the overlay off returns to the swell. The layer is a reading of the live map, and
   // coming back to "Show live swell" on the wind would contradict the button that opened it.
@@ -222,9 +232,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // Fetch and decode the week, once, the first time the animation is asked for.
   //
   // Decoded here rather than in the WebGL effect because it is pure array work with no WebGL in
-  // it, and because doing it once up front means a frame change costs a repaint rather than a
-  // decode. 28 frames of 186 cells is about five thousand numbers -- the whole week is smaller
-  // than one of the textures it paints.
+  // it. The effect then resamples the whole week onto the GPU once (see setWeek there), so
+  // moving through it costs a uniform write rather than a decode or a repaint.
   const loadFramesOnce = useCallback(async () => {
     if (framesState === 'loading' || framesState === 'ready') return;
     // Which week. Read from the ref rather than closed over, so a layer switch mid-flight
@@ -263,23 +272,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         dirs: typeof f.dirs === 'string' ? decodeDirections(base64ToBytes(f.dirs)) : null,
       })),
     });
-    setPos(0);
+    seek(0);
     setFramesState('ready');
-  }, [framesState]);
+  }, [framesState, seek]);
 
-  // Advance while playing. At the end of the week it stops, unless repeat is on.
-  useEffect(() => {
-    if (!playing || !frames || framesState !== 'ready') return undefined;
-    const last = frames.list.length - 1;
-    const timer = setInterval(() => {
-      setPos((p) => advancePos(p, last, { speed, subSteps: SUB_STEPS, loop }));
-    }, FRAME_MS);
-    return () => clearInterval(timer);
-  }, [playing, frames, framesState, speed, loop]);
-
-  useEffect(() => {
-    if (playing && !loop && frames && pos >= frames.list.length - 1) setPlaying(false);
-  }, [playing, loop, frames, pos]);
+  // Playing the week is the render loop's job (see updateOverlayTime in the WebGL effect): it
+  // advances the playhead by the time each frame took, and stops it at the end unless repeat
+  // is on. Nothing here ticks.
 
   // Left and right arrows step the week one frame at a time on a keyboard, pausing it: the
   // desktop equivalent of dragging the scrubber, without having to find and focus it first.
@@ -291,20 +290,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (!isTimelineKey(e)) return;
       e.preventDefault();
       setPlaying(false);
-      setPos((p) => stepFrame(p, e.key === 'ArrowRight' ? 1 : -1, last));
+      seek(stepFrame(timelineRef.current.pos, e.key === 'ArrowRight' ? 1 : -1, last));
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [timelineReady, frames]);
+  }, [timelineReady, frames, seek]);
 
-  // Draw whichever frame is selected. Also the path back to "now" when the animation is turned
-  // off, which redraws frame zero rather than leaving the last frame of the week on screen.
+  // The week goes to the GPU once, when it arrives, and is dropped when it goes (a layer switch
+  // drops it). Which moment of it is drawn is decided per frame by the render loop.
   useEffect(() => {
-    if (framesState !== 'ready' || !frames || !applyFrameRef.current) return;
-    const frame = weekFrameAt(frames.list, pos, playing);
-    if (!frame) { if (showLiveRef.current) showLiveRef.current(); return; }
-    applyFrameRef.current(frame, frames.latStep, frames.layer || 'swell');
-  }, [frames, pos, framesState, playing]);
+    if (setWeekRef.current) setWeekRef.current(framesState === 'ready' ? frames : null);
+  }, [frames, framesState]);
 
   // What the last tap on the ocean read. Held as state rather than drawn into the scene so it
   // is selectable text at a real font size -- the entire point of it is to be legible when the
@@ -697,8 +693,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     //
     // Three separate concerns, and they want three different resolutions:
     //
-    //   - the swell field is interpolated from a 10-degree grid and has nothing finer to say
-    //     than half a degree, so it is painted at 720x360 and left to filter smoothly;
+    //   - the swell field is resampled to a 360x180 texture of numbers, which the GPU filters
+    //     and colours per screen pixel (see lib/overlaygpu.js);
     //   - where land *is* comes from the coastline, at 4096x2048 — about 10km a texel;
     //   - how hard the boundary between them looks is not a resolution at all. The mask holds
     //     the *fraction* of each texel that is land, and the shader thresholds it at a half
@@ -707,24 +703,28 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     //     first way this was written — makes the edge exactly as soft as a texel is wide, which
     //     at the closest zoom is a couple of hundred device pixels of blur.
     const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
-    const WAVE_TEX_W = 720;
-    const WAVE_TEX_H = 360;
+    // The live field's texture, holding numbers rather than colours: 1 degree a texel, half the
+    // 2-degree grid's spacing, so the GPU's bilinear filter follows the grid's own equal-area
+    // rows closely. The CPU painter coloured 720x360; a quarter of the texels draws the same
+    // picture -- measured within 1 dE of it -- for a quarter of the one-off resampling cost.
+    const LIVE_TEX_W = 360;
+    const LIVE_TEX_H = 180;
     const LAND_MASK_W = 4096;
     const LAND_MASK_H = 2048;
     let waveMesh = null;
-    let waveTexture = null;
+    let overlayMat = null;
     let waveMaskTexture = null;
     let waveRequested = false;
-    // Held for the animation: the canvas the overlay's texture wraps, and the land mask the
-    // arrows are culled against. Both are built once with the live overlay and reused by every
-    // frame, so a frame costs a repaint rather than a rebuild.
-    let waveCanvasCtx = null;
-    let waveImageData = null;
+    // The land mask the arrows are culled against, built once with the live overlay.
     let waveLand = null;
-    // The two live readings, decoded and kept, so switching layers is a repaint rather than a
-    // refetch. Each is `{ values, dirs, toTravel, colorFn }` -- everything that differs between
-    // them, in one place, so nothing downstream has to branch on which layer is showing.
+    // The two live readings, decoded and kept, so switching layers is a uniform change rather
+    // than a refetch. Each is `{ values, raw, dirs, step, texture }`; the texture is built the
+    // first time the layer is drawn.
     let liveLayers = {};
+    // The animated week, on the GPU: `{ layer, list, step, count, texture }`. See setWeek.
+    let week = null;
+    // One colour table per layer, built from the legend's ramp the first time it is needed.
+    const luts = {};
     // Exactly what is on the sphere right now: the live grid, or a frame of the animated week.
     // Tap-to-read samples this rather than the live grid, because during the animation those
     // are different fields and reading the wrong one would answer a question nobody asked --
@@ -744,8 +744,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Each layer's ramp and which way its direction field means. Read through drawFor() so the
     // two paint paths cannot disagree about which layer is showing.
     const LAYER_DRAW = {
-      swell: { colorFn: waveColor, toTravel: swellTravelBearing },
-      wind: { colorFn: windColor, toTravel: windTravelBearing },
+      swell: { colorFn: waveColor, max: WAVE_SCALE_MAX, toTravel: swellTravelBearing },
+      wind: { colorFn: windColor, max: WIND_SCALE_MAX, toTravel: windTravelBearing },
     };
     function drawFor(name) {
       return LAYER_DRAW[name] || LAYER_DRAW.swell;
@@ -763,62 +763,35 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let arrowPoints = null;
     let arrowScaleAt = 0;
 
-    // Painting and wrapping are separate because the animation repaints the same canvas 28
-    // times. Allocating a texture per frame would hand the GPU 28 uploads and the collector 28
-    // canvases for a picture that is the same size every time.
-    // `coarsen` samples every nth texel and fills the n-by-n block with the result.
-    //
-    // The static overlay is painted once and can afford every texel. An animation frame cannot:
-    // 259,200 texels was a quarter-second freeze on every step, and the source it is drawn from
-    // is 186 cells. Sampling at half resolution asks 64,800 questions of 186 numbers instead of
-    // 259,200, and the answer still passes through a mipmapped linear filter on its way to a
-    // sphere, so the difference on screen is far smaller than the difference in cost.
-    function paintWaveCanvas(ctx, heights, step, coarsen, colorFn) {
-      // One buffer for the life of the overlay. createImageData allocates a megabyte, and doing
-      // that 28 times hands the collector a megabyte of garbage per animation.
-      if (!waveImageData || waveImageData.width !== WAVE_TEX_W) {
-        waveImageData = ctx.createImageData(WAVE_TEX_W, WAVE_TEX_H);
-      }
-      const px = waveImageData.data;
-      // One sampler for the whole texture rather than rebuilding the grid's row table inside
-      // every texel below. See lib/wavegrid.js's makeGridSampler.
-      const sampler = makeGridSampler(step);
-      const n = Math.max(1, coarsen | 0);
-      for (let y = 0; y < WAVE_TEX_H; y += n) {
-        // Texel centres, and latitude runs north-to-south down an equirectangular image.
-        const lat = 90 - ((y + 0.5) / WAVE_TEX_H) * 180;
-        const yMax = Math.min(WAVE_TEX_H, y + n);
-        for (let x = 0; x < WAVE_TEX_W; x += n) {
-          const lon = -180 + ((x + 0.5) / WAVE_TEX_W) * 360;
-          const c = colorFn(sampler.height(heights, lat, lon));
-          const xMax = Math.min(WAVE_TEX_W, x + n);
-          for (let yy = y; yy < yMax; yy++) {
-            let o = (yy * WAVE_TEX_W + x) * 4;
-            for (let xx = x; xx < xMax; xx++, o += 4) {
-              if (!c) { px[o + 3] = 0; continue; } // nothing to say here: draw nothing
-              px[o] = c[0]; px[o + 1] = c[1]; px[o + 2] = c[2]; px[o + 3] = 255;
-            }
-          }
-        }
-      }
-      ctx.putImageData(waveImageData, 0, 0);
-    }
-
-    function buildWaveTexture(heights, step, colorFn) {
-      const cv = document.createElement('canvas');
-      cv.width = WAVE_TEX_W;
-      cv.height = WAVE_TEX_H;
-      const ctx = cv.getContext('2d');
-      paintWaveCanvas(ctx, heights, step, 1, colorFn);
-      waveCanvasCtx = ctx;
-      const tex = new THREE.CanvasTexture(cv);
-      if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
+    // A field as a texture of numbers -- value times coverage, and coverage -- resampled onto a
+    // regular grid once (see regularizeField). The GPU filters it and colours it per pixel.
+    function fieldTexture(data, width, height) {
+      const tex = new THREE.DataTexture(data, width, height, THREE.RGFormat, THREE.HalfFloatType);
       tex.wrapS = THREE.RepeatWrapping; // the map joins itself at the antimeridian
-      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
-      tex.minFilter = THREE.LinearMipmapLinearFilter;
+      tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.magFilter = THREE.LinearFilter;
-      tex.generateMipmaps = true;
+      tex.minFilter = THREE.LinearFilter;
+      tex.generateMipmaps = false;
+      tex.needsUpdate = true;
       return tex;
+    }
+    function buildLiveTexture(values, step) {
+      const { premul, cover } = regularizeField(values, samplerFor(step), LIVE_TEX_W, LIVE_TEX_H);
+      return fieldTexture(packHalfRG(premul, cover), LIVE_TEX_W, LIVE_TEX_H);
+    }
+    // The layer's colour table: sRGB bytes straight from the legend's ramp, with no colour space
+    // attached, so they reach the screen untouched.
+    function lutFor(name) {
+      if (!luts[name]) {
+        const draw = drawFor(name);
+        const tex = new THREE.DataTexture(buildLut(draw.colorFn, draw.max), LUT_SIZE, 1, THREE.RGBAFormat);
+        tex.magFilter = THREE.LinearFilter;
+        tex.minFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        tex.needsUpdate = true;
+        luts[name] = tex;
+      }
+      return luts[name];
     }
 
     // How much of each texel is land, as one byte a texel.
@@ -848,7 +821,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       cv.width = cv.height = 1;
 
       const tex = new THREE.DataTexture(mask, width, height, THREE.RedFormat);
-      tex.flipY = true; // match the canvas textures: image row 0 is the north pole
+      tex.flipY = true; // drawn on a canvas, north at row 0; flipped so v runs south to north like the sphere's
       tex.wrapS = THREE.RepeatWrapping;
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
@@ -858,28 +831,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // which is both exact and free, where a point-in-polygon test against four thousand rings
       // would be neither.
       return { texture: tex, mask, width, height };
-    }
-
-    // The chart's alpha, cut by the mask in the fragment shader instead of in the canvas.
-    //
-    // `fwidth` is how far the coverage value moves between neighbouring *screen* pixels, so the
-    // falloff is one pixel wide whether a texel covers ten kilometres or a tenth of the screen.
-    // That is the whole difference between an edge that stays as crisp as the coastline drawn
-    // over it and one that dissolves as you zoom in.
-    function cutToCoastline(material, maskTexture) {
-      material.onBeforeCompile = (shader) => {
-        shader.uniforms.landMask = { value: maskTexture };
-        shader.fragmentShader = 'uniform sampler2D landMask;\n' + shader.fragmentShader.replace(
-          '#include <alphamap_fragment>',
-          [
-            '#include <alphamap_fragment>',
-            'float landCoverage = texture2D( landMask, vMapUv ).r - 0.5;',
-            'float landEdge = max( fwidth( landCoverage ), 1e-5 );',
-            'diffuseColor.a *= 1.0 - smoothstep( -landEdge, landEdge, landCoverage );',
-          ].join('\n'),
-        );
-      };
-      material.customProgramCacheKey = () => 'wave-overlay-land-mask';
     }
 
     // A flat arrow in its own XY plane, pointing along +Y: a shaft and a head, six triangles.
@@ -912,11 +863,22 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // arrow on a map reads. Passed in rather than assumed because the swell layer and the wind
     // layer each have their own, and using one for the other draws every arrow backwards
     // without erroring.
+    // The lattice the arrows sit on, already culled to the sea. It is the same points every
+    // time -- only the bearings change -- so it is built once per land mask rather than on
+    // every frame of the week, where it was 2 ms and 12,000 throwaway objects a time.
+    let seaLattice = null;
+    let seaLatticeLand;
+    function seaPoints(land) {
+      if (!seaLattice || seaLatticeLand !== land) {
+        seaLattice = fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
+        seaLatticeLand = land;
+      }
+      return seaLattice;
+    }
     function buildArrowField(directions, land, step, toTravel = swellTravelBearing) {
       const points = [];
-      const sampler = makeGridSampler(step);
-      for (const p of fibonacciSphere(ARROW_FIELD)) {
-        if (land && !isWater(land.mask, land.width, land.height, p.lat, p.lon)) continue;
+      const sampler = samplerFor(step);
+      for (const p of seaPoints(land)) {
         const from = sampler.direction(directions, p.lat, p.lon);
         const bearing = toTravel(from);
         if (bearing == null) continue;
@@ -1003,38 +965,58 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
           // grid is still 10 because it is still one API call per cell. Assuming either would
           // paint one layer's numbers on the other's geography.
           const swellStep = gridStepOf(grid);
-          waveTexture = buildWaveTexture(waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw, swellStep, drawFor('swell').colorFn);
-          const material = new THREE.MeshBasicMaterial({
-            // 0.62 was costing about a third of every ramp's separation. The overlay is
-            // composited over the ocean sphere, so a translucent one is a blend toward that
-            // mid-blue -- and the darker half of a ramp, which is where most of the world's
-            // sea state actually sits, gets pulled hardest. Raising it to 0.85 lifted the
-            // worst adjacent pair from 11.8 to 16.2 on the swell layer and 6.0 to 8.3 on the
-            // wind, for nothing but a number. Still short of opaque so the globe's own shading
-            // reads through and it still looks like a sphere rather than a flat map.
-            map: waveTexture, transparent: true, opacity: 0.85, depthWrite: false,
+          const swellValues = waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw;
+          const buildStart = perf ? performance.now() : 0;
+          const swellTexture = buildLiveTexture(swellValues, swellStep);
+          if (perf) perf.paintMs = performance.now() - buildStart;
+          // Numbers in, colours out, per screen pixel: see lib/overlaygpu.js for the shader.
+          overlayMat = new THREE.ShaderMaterial({
+            uniforms: {
+              uLive: { value: swellTexture },
+              uWeek: { value: null },
+              uLut: { value: lutFor('swell') },
+              uLutMax: { value: drawFor('swell').max },
+              uLandMask: { value: waveMaskTexture },
+              uHasMask: { value: waveMaskTexture ? 1 : 0 },
+              uWeekOn: { value: 0 },
+              uLayer0: { value: 0 },
+              uLayer1: { value: 0 },
+              uMix: { value: 0 },
+              // 0.62 was costing about a third of every ramp's separation. The overlay is
+              // composited over the ocean sphere, so a translucent one is a blend toward that
+              // mid-blue -- and the darker half of a ramp, which is where most of the world's
+              // sea state actually sits, gets pulled hardest. Raising it to 0.85 lifted the
+              // worst adjacent pair from 11.8 to 16.2 on the swell layer and 6.0 to 8.3 on the
+              // wind, for nothing but a number. Still short of opaque so the globe's own shading
+              // reads through and it still looks like a sphere rather than a flat map.
+              uOpacity: { value: 0.85 },
+            },
+            vertexShader: OVERLAY_VERTEX,
+            fragmentShader: OVERLAY_FRAGMENT,
+            transparent: true,
+            depthWrite: false,
           });
-          if (waveMaskTexture) cutToCoastline(material, waveMaskTexture);
           waveMesh = new THREE.Mesh(
             // Must match the ocean sphere's tessellation, not the old 128x96. A coarser
             // overlay sags further at each quad's centre than its own 3e-4 offset clears
             // (0.999865 against the ocean's vertices at 1.0), so the globe pokes through it in
             // a regular diamond stipple that reads as a rendering artifact — because it is one.
             new THREE.SphereGeometry(WAVE_SHELL, 256, 192),
-            material,
+            overlayMat,
           );
           globeGroup.add(waveMesh);
+          shownKey = 'live:swell';
 
           // Directions are optional: a grid cached before the Worker started fetching them has
           // heights and nothing else, and the colours are worth drawing on their own.
           const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
-          // Kept so switching back from the wind is a repaint rather than another fetch.
+          // Kept so switching back from the wind is a uniform change rather than another fetch.
           // `values` is what gets painted, with gaps filled so the overlay has no holes behind
           // the coastline mask. `raw` is what gets *read*: the gap fill invents a plausible
           // height for a land cell from its sea neighbours, which is exactly right for a
           // picture and exactly wrong for a number. Tapping Nevada must say "no reading", not
           // borrow the Pacific's swell.
-          liveLayers.swell = { values: waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw, raw, dirs: directions, step: swellStep };
+          liveLayers.swell = { values: swellValues, raw, dirs: directions, step: swellStep, texture: swellTexture };
           // The first swell draw does not go through applyLiveLayer -- it builds the texture and
           // the mesh from scratch -- so `painted` has to be set here too. Without this,
           // tap-to-read stayed silent until the layer had been switched at least once, which is
@@ -1080,31 +1062,32 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         .catch(() => setWaveMeta({ ok: false }));
     }
 
-    // Repaint the overlay from whichever live layer is selected.
+    // Show whichever live layer is selected.
     //
-    // The mesh, the texture, the coastline mask and the arrow field are all built once and
-    // reused: a layer is the same picture drawn from different numbers with a different ramp,
-    // so switching costs a repaint and an arrow re-orientation rather than a rebuild. Returns
+    // The mesh, the coastline mask and the arrow field are built once and reused, and each
+    // layer's numbers go to the GPU once: a layer is the same picture drawn from different
+    // numbers through a different colour table, so switching is a few uniform writes and an
+    // arrow re-orientation rather than a repaint. Returns
     // whether it could draw, so a caller that asked for a layer with no data can say so
     // instead of leaving the previous layer up under the new label -- which would be the worst
     // outcome available: the wind map, captioned as swell.
     function applyLiveLayer(name) {
       const set = liveLayers[name];
       const draw = LAYER_DRAW[name] && drawFor(name);
-      if (!set || !draw || !waveCanvasCtx || !waveTexture) return false;
-      const paintStart = perf ? performance.now() : 0;
+      if (!set || !draw || !overlayMat) return false;
       const step = set.step || GRID_LAT_STEP;
-      paintWaveCanvas(waveCanvasCtx, set.values, step, 1, draw.colorFn);
-      painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
-      // The week's frames switch mipmaps off (see applyWaveFrame). The live map is the picture
-      // that sits still and is looked at up close, which is exactly what they are for, so it
-      // gets them back -- without this, the edge of the globe shimmered for the rest of the
-      // session once the week had been played.
-      if (!waveTexture.generateMipmaps) {
-        waveTexture.generateMipmaps = true;
-        waveTexture.minFilter = THREE.LinearMipmapLinearFilter;
+      if (!set.texture) {
+        const buildStart = perf ? performance.now() : 0;
+        set.texture = buildLiveTexture(set.values, step);
+        if (perf) perf.paintMs = performance.now() - buildStart;
       }
-      waveTexture.needsUpdate = true;
+      const u = overlayMat.uniforms;
+      u.uLive.value = set.texture;
+      u.uLut.value = lutFor(name);
+      u.uLutMax.value = draw.max;
+      u.uWeekOn.value = 0;
+      shownKey = 'live:' + name;
+      painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
       if (set.dirs && arrowMesh) {
         // No count check. The two layers genuinely disagree about where an arrow can be drawn
         // -- a direction field has nothing to say where opposing swells or a col in the wind
@@ -1113,21 +1096,113 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         arrowPoints = buildArrowField(set.dirs, waveLand, step, draw.toTravel);
         arrowScaleAt = 0; // force the next layout pass to re-orient every instance
       }
-      // The repaint only; the upload it triggers lands in the next frame's JS time.
-      if (perf) perf.paintMs = performance.now() - paintStart;
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
       return true;
     }
     applyLayerRef.current = applyLiveLayer;
 
-    // The live map for the layer on screen, unless it is already what is painted.
-    function showLiveLayer() {
-      const name = layerRef.current;
-      if (painted && painted.frame == null && painted.layer === name) return true;
-      return applyLiveLayer(name);
+    // The animated week, uploaded to the GPU once: every forecast step resampled onto the same
+    // regular grid and stacked as the layers of one texture array. A frame of the animation is
+    // then two layers blended by a uniform -- no repaint, no upload, no garbage.
+    function setWeek(next) {
+      if (week) { week.texture.dispose(); week = null; }
+      shownKey = null;
+      if (next && Array.isArray(next.list) && next.list.length && Number.isFinite(next.latStep)) {
+        const buildStart = perf ? performance.now() : 0;
+        const step = next.latStep;
+        const { width, height } = weekTextureSize(step);
+        const count = next.list.length;
+        const texels = width * height;
+        const data = new Uint16Array(texels * 2 * count);
+        const sampler = samplerFor(step);
+        for (let k = 0; k < count; k++) {
+          const heights = next.list[k].heights;
+          // Gaps filled exactly as the live field's are, and only when the coastline mask is
+          // there to stop the fill at the shore.
+          const values = waveMaskTexture ? fillGridGaps(heights, 2, step) : heights;
+          const { premul, cover } = regularizeField(values, sampler, width, height);
+          packHalfRG(premul, cover, data.subarray(k * texels * 2, (k + 1) * texels * 2));
+        }
+        const tex = new THREE.DataArrayTexture(data, width, height, count);
+        tex.format = THREE.RGFormat;
+        tex.type = THREE.HalfFloatType;
+        tex.wrapS = THREE.RepeatWrapping;
+        tex.wrapT = THREE.ClampToEdgeWrapping;
+        tex.magFilter = THREE.LinearFilter;
+        tex.minFilter = THREE.LinearFilter;
+        tex.generateMipmaps = false;
+        tex.needsUpdate = true;
+        week = { layer: next.layer || 'swell', list: next.list, step, count, texture: tex };
+        if (perf) perf.paintMs = performance.now() - buildStart;
+      }
+      state.dataDirty = true;
     }
-    showLiveRef.current = showLiveLayer;
+    setWeekRef.current = setWeek;
+
+    // Which moment of the forecast the overlay shows, decided on every frame the loop runs.
+    //
+    // While the week plays, the playhead moves on by the time this frame took, so it keeps
+    // real-time pace at 30, 60 or 120 Hz, and the shader blends the two steps either side of
+    // it. React hears only when the nearest step changes, for the scrubber and the label.
+    // Returns whether the picture changed or is moving, so the loop keeps drawing.
+    //
+    // The arrows are still built on the CPU, so while the week plays they follow a few times a
+    // second rather than on every frame; paused, they follow at once.
+    const ARROW_REFRESH_MS = 150;
+    let shownKey = null;
+    let lastFrameIdx = 0;
+    let lastArrowsAt = -Infinity;
+    function updateOverlayTime(dt, now) {
+      if (!overlayMat || !wavesOnRef.current) return false;
+      const tl = timelineRef.current;
+      let advancing = false;
+      if (week && tl.playing) {
+        const next = advanceTimeline(tl.pos, week.count - 1, dt, { speed: tl.speed, stepMs: STEP_MS, loop: tl.loop });
+        tl.pos = next.pos;
+        if (next.ended) { tl.playing = false; setPlaying(false); }
+        advancing = true;
+      }
+      const slot = week ? weekSlot(tl.pos, week.count, tl.playing) : null;
+      const key = slot ? 'week:' + slot.i0 + ':' + slot.i1 + ':' + slot.t + ':' + tl.playing : 'live:' + layerRef.current;
+      if (key === shownKey) return advancing;
+      if (!slot) {
+        // Back to the live field, and its arrows.
+        applyLiveLayer(layerRef.current);
+      } else {
+        shownKey = key;
+        const u = overlayMat.uniforms;
+        u.uWeek.value = week.texture;
+        u.uWeekOn.value = 1;
+        u.uLayer0.value = slot.i0;
+        u.uLayer1.value = slot.i1;
+        u.uMix.value = slot.t;
+        u.uLut.value = lutFor(week.layer);
+        u.uLutMax.value = drawFor(week.layer).max;
+        if (arrowMesh && (!advancing || now - lastArrowsAt >= ARROW_REFRESH_MS)) {
+          const frame = weekFrameAt(week.list, tl.pos, true);
+          if (frame && frame.dirs) {
+            arrowPoints = buildArrowField(frame.dirs, waveLand, week.step, drawFor(week.layer).toTravel);
+            arrowScaleAt = 0;
+            lastArrowsAt = now;
+          }
+        }
+      }
+      const idx = slot ? Math.min(week.count - 1, Math.round(tl.pos)) : 0;
+      if (idx !== lastFrameIdx) { lastFrameIdx = idx; setFrameIdx(idx); }
+      return true;
+    }
+
+    // Exactly what is on the sphere right now, for tap-to-read: the frame of the week on screen
+    // (blended, if it is between two), or the live field.
+    function shownField() {
+      const tl = timelineRef.current;
+      if (week) {
+        const frame = weekFrameAt(week.list, tl.pos, tl.playing);
+        if (frame) return { read: frame.heights, dirs: frame.dirs, step: week.step, layer: week.layer, frame: frame.t || null };
+      }
+      return painted;
+    }
 
     // Fetch the wind grid, once, the first time the layer is asked for.
     //
@@ -1172,46 +1247,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         .catch(() => { windRequested = false; setWindState('unavailable'); setWindMeta({ ok: false }); });
     }
     loadWindRef.current = ensureWindLayer;
-
-    // Draw one frame of the animated week.
-    //
-    // Repaints the overlay's existing canvas and rebuilds the arrow field, rather than building
-    // a texture and a mesh per frame. `step` is the frame grid's, which is coarser than the
-    // live overlay's -- passing the wrong one does not throw, it paints one ocean's swell onto
-    // another, which is why it travels with the data rather than being assumed here.
-    function applyWaveFrame(frame, step, name = 'swell') {
-      const draw = drawFor(name);
-      if (!frame || !waveCanvasCtx || !waveTexture) return;
-      const paintStart = perf ? performance.now() : 0;
-      const heights = waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights;
-      paintWaveCanvas(waveCanvasCtx, heights, step, ANIM_COARSEN, draw.colorFn);
-      painted = { read: frame.heights, dirs: frame.dirs, step, layer: name, frame: frame.t || null };
-      // A mipmap chain is worth building for a picture that is drawn thousands of times and
-      // uploaded once. An animation frame is the other way round, and rebuilding the chain on
-      // every one of them is the single most expensive thing about a frame change -- measured
-      // at an order of magnitude more than all the JavaScript that produced the picture.
-      if (waveTexture.generateMipmaps) {
-        waveTexture.generateMipmaps = false;
-        waveTexture.minFilter = THREE.LinearFilter;
-      }
-      waveTexture.needsUpdate = true;
-
-      // Arrows are rebuilt in place when the count is unchanged, which it is for every frame
-      // after the first: the field is a fixed set of points on a sphere, and only the bearings
-      // move. A frame whose directions are missing leaves the last ones alone rather than
-      // clearing the sky.
-      if (frame.dirs && arrowMesh) {
-        // Also unguarded by count, for the same reason: two frames six hours apart cancel in
-        // different places, and freezing the arrows on whichever frame matched the buffer size
-        // is an animation that stops telling the truth halfway through.
-        arrowPoints = buildArrowField(frame.dirs, waveLand, step, draw.toTravel);
-        arrowScaleAt = 0;
-      }
-      if (perf) perf.paintMs = performance.now() - paintStart;
-      state.dataDirty = true;
-      if (markDirtyRef.current) markDirtyRef.current();
-    }
-    applyFrameRef.current = applyWaveFrame;
 
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
@@ -1505,10 +1540,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // anyone can see it. A number survives all of that, and survives colour-blindness and the
     // shifting surround that makes matching a patch against a legend unreliable anyway.
     //
-    // It reads `painted`, so during the animated week it answers for the frame on screen.
+    // It reads what is on the sphere (shownField), so during the animated week it answers for
+    // the moment on screen, blended between steps if that is what is showing.
     const readScratch = new THREE.Vector3();
     function readOceanAt(ndcPoint) {
-      if (!wavesOnRef.current || !painted || !oceanMesh) { setReading(null); return; }
+      const shown = shownField();
+      if (!wavesOnRef.current || !shown || !oceanMesh) { setReading(null); return; }
       raycaster.setFromCamera(ndcPoint, camera);
       const hit = raycaster.intersectObject(oceanMesh)[0];
       if (!hit) { setReading(null); return; }
@@ -1516,21 +1553,21 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // the coordinates mean anything.
       const here = vector3ToLatLon(globeGroup.worldToLocal(readScratch.copy(hit.point)));
       if (!here) { setReading(null); return; }
-      const sampler = samplerFor(painted.step);
-      const value = sampler.height(painted.read, here.lat, here.lon);
+      const sampler = samplerFor(shown.step);
+      const value = sampler.height(shown.read, here.lat, here.lon);
       // No reading is a real answer and the honest one: land, ice, or a cell the upstream model
       // has nothing for. Inventing a zero here would paint every continent as flat calm.
       if (value == null) {
-        setReading({ lat: here.lat, lon: here.lon, layer: painted.layer, value: null });
+        setReading({ lat: here.lat, lon: here.lon, layer: shown.layer, value: null });
         return;
       }
       setReading({
         lat: here.lat,
         lon: here.lon,
-        layer: painted.layer,
+        layer: shown.layer,
         value,
-        fromDeg: painted.dirs ? sampler.direction(painted.dirs, here.lat, here.lon) : null,
-        frame: painted.frame,
+        fromDeg: shown.dirs ? sampler.direction(shown.dirs, here.lat, here.lon) : null,
+        frame: shown.frame,
       });
     }
 
@@ -1906,8 +1943,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let lastDrawnAt = null;  // the previous *drawn* frame's timestamp, for the perf display
     function animate(ts) {
       const now = typeof ts === 'number' ? ts : performance.now();
-      const dt = frameDelta(now, lastTick);
+      const playDt = frameDelta(now, lastTick, PLAYBACK_MAX_FRAME_MS);
+      const dt = Math.min(playDt, MAX_FRAME_MS);
       lastTick = now;
+      const overlayMoving = updateOverlayTime(playDt, now);
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
       if (coasting) {
         state.targetRotY += state.velY * dt;
@@ -1922,7 +1961,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dRotX = state.targetRotX - state.rotX;
       const dRotY = state.targetRotY - state.rotY;
       const dDist = state.targetDistance - state.distance;
-      const moving = coasting || state.dragging
+      const moving = overlayMoving || coasting || state.dragging
         || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
 
       // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
@@ -2021,8 +2060,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (coastlineMesh) coastlineMesh.geometry.dispose();
       coastlineMat.dispose();
       if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
+      for (const name of Object.keys(liveLayers)) if (liveLayers[name].texture) liveLayers[name].texture.dispose();
+      for (const name of Object.keys(luts)) luts[name].dispose();
+      if (week) week.texture.dispose();
+      setWeekRef.current = null;
       if (arrowMesh) { arrowMesh.geometry.dispose(); arrowMesh.material.dispose(); arrowMesh.dispose(); }
-      if (waveTexture) waveTexture.dispose();
       if (waveMaskTexture) waveMaskTexture.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
@@ -2098,8 +2140,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             })}
           </div>
         )}
-        {/* The animated week. Only offered once the live overlay is actually drawn: it repaints
-            that overlay's own texture, so there is nothing for it to animate until then. */}
+        {/* The animated week. Only offered once the live overlay is actually drawn: it plays on
+            that overlay's own sphere, so there is nothing for it to animate until then. */}
         {wavesOn && waveMeta && waveMeta.ok && (layer === 'swell' || (windMeta && windMeta.ok)) && (
           <div style={{ marginBottom: 10 }}>
             {framesState === 'ready' && frames ? (
@@ -2110,7 +2152,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                     onClick={() => {
                       // Replay from the start when the week has already run to its end,
                       // rather than pressing play on a frame that cannot advance.
-                      if (pos >= frames.list.length - 1) setPos(0);
+                      if (timelineRef.current.pos >= frames.list.length - 1) seek(0);
                       setPlaying((v) => !v);
                     }}
                     aria-label={playing ? 'Pause the forecast' : 'Play the forecast'}
@@ -2125,7 +2167,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                   <input
                     type="range" min={0} max={frames.list.length - 1} step={1} value={frameIdx}
                     aria-label="Forecast hour"
-                    onChange={(e) => { setPlaying(false); setPos(Number(e.target.value)); }}
+                    onChange={(e) => { setPlaying(false); seek(Number(e.target.value)); }}
                     style={{ flex: 1, minWidth: 0, accentColor: COLORS.tealBright, minHeight: 44 }}
                   />
                   <button
