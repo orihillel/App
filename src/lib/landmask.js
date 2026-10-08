@@ -61,7 +61,7 @@ export function topologyToPolygons(topology, objectName = 'land') {
         }
         if (pts.length >= 4) built.push(closeAcrossTheAntimeridian(pts));
       }
-      if (built.length) polygons.push(built);
+      if (built.length) polygons.push(alignHoles(built));
     }
   }
   return polygons;
@@ -96,6 +96,32 @@ function closeAcrossTheAntimeridian(points) {
     out.push([pole, out[out.length - 1][1]], [pole, out[0][1]]);
   }
   return out;
+}
+
+// Holes, moved by whole turns of longitude to sit inside the ring they are holes in.
+//
+// Each ring is unwrapped on its own, from its own first point, so an exterior walked from the
+// far side of the antimeridian can come out a whole turn away from the holes inside it:
+// Afro-Eurasia's coastline unwraps to between -377 and -180 degrees, and the Caspian, a hole in
+// it, to between 47 and 55. Drawn a map-width apart, the hole cut nothing out of its continent
+// and was filled as land on its own, so the mask the phone drew had the Caspian as land.
+// Shifting each hole to the middle of its exterior's span puts it back where it belongs.
+function alignHoles(rings) {
+  if (rings.length < 2) return rings;
+  const middle = (ring) => {
+    let min = Infinity;
+    let max = -Infinity;
+    for (const [, lon] of ring) {
+      if (lon < min) min = lon;
+      if (lon > max) max = lon;
+    }
+    return (min + max) / 2;
+  };
+  const centre = middle(rings[0]);
+  return rings.map((ring, i) => {
+    const turns = i === 0 ? 0 : Math.round((centre - middle(ring)) / 360);
+    return turns ? ring.map(([lat, lon]) => [lat, lon + turns * 360]) : ring;
+  });
 }
 
 // Polygons in degrees -> polygons in canvas pixels, thinned to what the canvas can resolve.
@@ -197,4 +223,150 @@ export function fillLandRings(ctx, pixelPolygons, width) {
     }
     if (any) ctx.fill();
   }
+}
+
+// The same fill, without a canvas: the exact fraction of each pixel the rings cover.
+//
+// For scripts/build-landmask.mjs, which builds the mask once and ships it, so that a phone does
+// not fetch 3MB of coastline and fill it into a 34MB canvas the first time it shows the swell.
+// Node has no canvas, and a pixel-exact answer is better than a canvas's anyway.
+//
+// It is the signed-area method font rasterizers use: every edge adds, to the cells along its
+// path, how much of each cell lies to its right, and a running sum along each row then says how
+// much of each pixel is inside -- the winding number, weighted by area. Exterior rings and
+// holes are wound oppositely (see orientForNonZeroFill), so a hole subtracts what its outline
+// added, and polygons that share an edge leave no seam along it: the two passes cancel exactly.
+//
+// Drawn three times, a map-width apart, exactly as fillLandRings does, so rings unwrapped past
+// the edge come back on the other side. Returns one byte a pixel, north at row 0, 255 = land.
+export function rasterizeCoverage(pixelPolygons, width, height) {
+  // Two spare cells a row: an edge at the right-hand border spills its share past the last
+  // pixel, where the row's sum no longer reaches it.
+  const stride = width + 2;
+  const acc = new Float32Array(stride * height);
+  for (const shift of [-width, 0, width]) {
+    for (const rings of pixelPolygons) {
+      if (rings[0].maxX + shift < 0 || rings[0].minX + shift > width) continue;
+      for (const { pts } of rings) {
+        for (let i = 0; i < pts.length; i += 2) {
+          const j = (i + 2) % pts.length; // the last point closes back to the first
+          clippedEdge(acc, stride, width, height, pts[i] + shift, pts[i + 1], pts[j] + shift, pts[j + 1]);
+        }
+      }
+    }
+  }
+  const out = new Uint8Array(width * height);
+  for (let y = 0; y < height; y++) {
+    let sum = 0;
+    for (let x = 0, a = y * stride, o = y * width; x < width; x++) {
+      sum += acc[a + x];
+      const c = Math.abs(sum);
+      out[o + x] = c >= 1 ? 255 : Math.round(c * 255);
+    }
+  }
+  return out;
+}
+
+// An edge, cut where it crosses the left or right border. The part outside is moved onto the
+// border, where it still adds its winding to every pixel to its right -- which is exactly what
+// the part that ran off the left would have done -- and the part off the right adds nothing.
+function clippedEdge(acc, stride, width, height, x0, y0, x1, y1) {
+  const cuts = [0];
+  for (const border of [0, width]) {
+    const t = (border - x0) / (x1 - x0);
+    if (t > 0 && t < 1) cuts.push(t);
+  }
+  cuts.push(1);
+  if (cuts.length === 4 && cuts[1] > cuts[2]) [cuts[1], cuts[2]] = [cuts[2], cuts[1]];
+  for (let k = 0; k + 1 < cuts.length; k++) {
+    const ta = cuts[k];
+    const tb = cuts[k + 1];
+    const xa = Math.min(width, Math.max(0, x0 + (x1 - x0) * ta));
+    const xb = Math.min(width, Math.max(0, x0 + (x1 - x0) * tb));
+    edge(acc, stride, height, xa, y0 + (y1 - y0) * ta, xb, y0 + (y1 - y0) * tb);
+  }
+}
+
+// One edge's contribution, row by row: for each row it passes through, the signed height of
+// the part in that row, shared among the cells it crosses by how much of each lies to its
+// right. (After font-rs's accumulation rasterizer, by Raph Levien.)
+function edge(acc, stride, height, x0, y0, x1, y1) {
+  if (y0 === y1) return; // a horizontal edge encloses nothing
+  let dir = 1;
+  if (y0 > y1) {
+    dir = -1;
+    [x0, y0, x1, y1] = [x1, y1, x0, y0];
+  }
+  const dxdy = (x1 - x0) / (y1 - y0);
+  let x = x0;
+  let yStart = Math.floor(y0);
+  if (y0 < 0) { x -= y0 * dxdy; yStart = 0; }
+  const yEnd = Math.min(height, Math.ceil(y1));
+  for (let y = yStart; y < yEnd; y++) {
+    const row = y * stride;
+    const dy = Math.min(y + 1, y1) - Math.max(y, y0);
+    const xNext = x + dxdy * dy;
+    const d = dy * dir;
+    const left = x < xNext ? x : xNext;
+    const right = x < xNext ? xNext : x;
+    const leftCell = Math.floor(left);
+    const rightCell = Math.ceil(right);
+    if (rightCell <= leftCell + 1) {
+      // Within one cell: what lies right of the edge's midpoint is this cell's, the rest the next's.
+      const mid = 0.5 * (x + xNext) - leftCell;
+      acc[row + leftCell] += d - d * mid;
+      acc[row + leftCell + 1] += d * mid;
+    } else {
+      // Across several: a triangle in the first and last cells, a trapezium in each between.
+      const s = 1 / (right - left);
+      const leftFrac = left - leftCell;
+      const a0 = 0.5 * s * (1 - leftFrac) * (1 - leftFrac);
+      const rightFrac = right - rightCell + 1;
+      const am = 0.5 * s * rightFrac * rightFrac;
+      acc[row + leftCell] += d * a0;
+      if (rightCell === leftCell + 2) {
+        acc[row + leftCell + 1] += d * (1 - a0 - am);
+      } else {
+        const a1 = s * (1.5 - leftFrac);
+        acc[row + leftCell + 1] += d * (a1 - a0);
+        for (let xi = leftCell + 2; xi < rightCell - 1; xi++) acc[row + xi] += d * s;
+        const a2 = a1 + (rightCell - leftCell - 3) * s;
+        acc[row + rightCell - 1] += d * (1 - a2 - am);
+      }
+      acc[row + rightCell] += d * am;
+    }
+    x = xNext;
+  }
+}
+
+// The shipped mask (see scripts/build-landmask.mjs): one byte a texel as above, deflated.
+//
+// The name carries a version for the reason the coastline's does: public files are not
+// content-hashed, and the service worker serves this one cache-first, so new contents need a
+// new name or every cached copy keeps the old ones.
+export const LAND_MASK = { file: 'landmask-4096x2048-v1.bin', width: 4096, height: 2048 };
+
+// Fetches and inflates the shipped mask: `{ mask, width, height }`, or null where it cannot be
+// had -- no DecompressionStream in this browser, or a response that is not the file expected.
+//
+// Read straight into one array of the final size, rather than collected and joined, so the
+// 8MB result costs 8MB rather than twice that at its peak.
+export async function fetchLandMask(url, { width, height } = LAND_MASK, fetchImpl = globalThis.fetch) {
+  if (typeof DecompressionStream === 'undefined' || typeof fetchImpl !== 'function') return null;
+  const res = await fetchImpl(url);
+  if (!res || !res.ok || !res.body) return null;
+  const mask = new Uint8Array(width * height);
+  const reader = res.body.pipeThrough(new DecompressionStream('deflate')).getReader();
+  let at = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (at + value.length > mask.length) {
+      reader.cancel();
+      return null; // longer than a mask of this size: some other file
+    }
+    mask.set(value, at);
+    at += value.length;
+  }
+  return at === mask.length ? { mask, width, height } : null;
 }

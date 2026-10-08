@@ -10,16 +10,19 @@ import {
   base64ToBytes, decodeHeights, decodeSpeeds, decodeDirections, fillGridGaps, makeGridSampler,
   GRID_LAT_STEP, gridStepOf,
 } from '../lib/wavegrid.js';
-import { fibonacciSphere, arrowCountForDistance, orientationAt } from '../lib/swellarrows.js';
-import { fillLandRings, polygonsToPixelRings, topologyToPolygons } from '../lib/landmask.js';
-import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, swellTravelBearing, WAVE_SCALE_MAX } from '../lib/wavescale.js';
-import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, windTravelBearing, WIND_SCALE_MAX } from '../lib/windscale.js';
+import { fibonacciSphere, arrowCountForDistance } from '../lib/swellarrows.js';
+import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
+import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
+import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
 import { fetchWaveGrid, fetchWaveFrames, fetchWindGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { frameLabel, frameBuildLabel, weekFrameAt, advanceTimeline, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
-import { regularizeField, packHalfRG, weekTextureSize, buildLut, LUT_SIZE, weekSlot, OVERLAY_VERTEX, OVERLAY_FRAGMENT } from '../lib/overlaygpu.js';
+import {
+  fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
+  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT,
+} from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
 import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
@@ -693,8 +696,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     //
     // Three separate concerns, and they want three different resolutions:
     //
-    //   - the swell field is resampled to a 360x180 texture of numbers, which the GPU filters
-    //     and colours per screen pixel (see lib/overlaygpu.js);
+    //   - the swell field is resampled to a small texture of numbers whose rows sit on the
+    //     grid's own rows, which the GPU filters and colours per screen pixel (see
+    //     lib/overlaygpu.js);
     //   - where land *is* comes from the coastline, at 4096x2048 — about 10km a texel;
     //   - how hard the boundary between them looks is not a resolution at all. The mask holds
     //     the *fraction* of each texel that is land, and the shader thresholds it at a half
@@ -703,25 +707,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     //     first way this was written — makes the edge exactly as soft as a texel is wide, which
     //     at the closest zoom is a couple of hundred device pixels of blur.
     const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
-    // The live field's texture, holding numbers rather than colours: 1 degree a texel, half the
-    // 2-degree grid's spacing, so the GPU's bilinear filter follows the grid's own equal-area
-    // rows closely. The CPU painter coloured 720x360; a quarter of the texels draws the same
-    // picture -- measured within 1 dE of it -- for a quarter of the one-off resampling cost.
-    const LIVE_TEX_W = 360;
-    const LIVE_TEX_H = 180;
-    const LAND_MASK_W = 4096;
-    const LAND_MASK_H = 2048;
     let waveMesh = null;
     let overlayMat = null;
     let waveMaskTexture = null;
     let waveRequested = false;
-    // The land mask the arrows are culled against, built once with the live overlay.
-    let waveLand = null;
     // The two live readings, decoded and kept, so switching layers is a uniform change rather
-    // than a refetch. Each is `{ values, raw, dirs, step, texture }`; the texture is built the
-    // first time the layer is drawn.
+    // than a refetch. Each is `{ values, raw, dirs, step }`, plus its textures once it has been
+    // drawn (see buildLiveTextures).
     let liveLayers = {};
-    // The animated week, on the GPU: `{ layer, list, step, count, texture }`. See setWeek.
+    // The animated week, on the GPU: `{ layer, list, step, count, texture, dirTexture }`. See
+    // setWeek.
     let week = null;
     // One colour table per layer, built from the legend's ramp the first time it is needed.
     const luts = {};
@@ -737,19 +732,35 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (!samplers.has(step)) samplers.set(step, makeGridSampler(step));
       return samplers.get(step);
     }
+    // The texture layout for each grid step, for the same reason: it is a table the size of the
+    // texture, and the week resamples 28 frames onto one.
+    const layouts = new Map();
+    function layoutFor(step) {
+      if (!layouts.has(step)) layouts.set(step, fieldLayout(step));
+      return layouts.get(step);
+    }
     let windRequested = false;
-    // How each layer is drawn: its ramp, and which way its direction field means. One table,
-    // read by both the live overlay and the animated week, so a layer cannot be painted with
-    // one layer's colours and the other's arrows.
-    // Each layer's ramp and which way its direction field means. Read through drawFor() so the
-    // two paint paths cannot disagree about which layer is showing.
+    // Each layer's ramp, and the value at its top. Read through drawFor() so the live overlay
+    // and the animated week cannot disagree about which layer is showing.
     const LAYER_DRAW = {
-      swell: { colorFn: waveColor, max: WAVE_SCALE_MAX, toTravel: swellTravelBearing },
-      wind: { colorFn: windColor, max: WIND_SCALE_MAX, toTravel: windTravelBearing },
+      swell: { colorFn: waveColor, max: WAVE_SCALE_MAX },
+      wind: { colorFn: windColor, max: WIND_SCALE_MAX },
     };
     function drawFor(name) {
       return LAYER_DRAW[name] || LAYER_DRAW.swell;
     }
+
+    // What the overlay and the arrows both read: which moment of the forecast is on screen, and
+    // where each texture's rows sit. The same uniform objects in both materials, so the arrows
+    // cannot show a different moment from the colour under them.
+    const fieldUniforms = {
+      uWeekOn: { value: 0 },
+      uLayer0: { value: 0 },
+      uLayer1: { value: 0 },
+      uMix: { value: 0 },
+      uLiveV: { value: new THREE.Vector2(1, 0) },
+      uWeekV: { value: new THREE.Vector2(1, 0) },
+    };
 
     // The arrows over the colour: which way each patch of swell is travelling.
     //
@@ -757,16 +768,31 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // geometry stays sharp at every zoom, where a painted arrow would be a smear a few texels
     // across. How many are drawn depends on the camera distance (see lib/swellarrows.js), so
     // the on-screen density holds roughly steady instead of thinning to nothing as you close in.
+    // Each is turned to the field's direction by its vertex shader (see lib/overlaygpu.js).
     const ARROW_SHELL = R * 1.0009; // above the overlay and the coastline, so it is never buried
     const ARROW_FIELD = 6000;      // the cap; how many of them are drawn is a function of zoom
     let arrowMesh = null;
-    let arrowPoints = null;
-    let arrowScaleAt = 0;
+    // Whether the field on screen has directions at all. A grid cached before the Worker fetched
+    // them has none, and its arrows are hidden rather than left pointing the previous layer's way.
+    let dirsShown = false;
+    const arrowMat = new THREE.ShaderMaterial({
+      uniforms: {
+        ...fieldUniforms,
+        uDirLive: { value: null },
+        uDirWeek: { value: null },
+        uShell: { value: ARROW_SHELL },
+        uScale: { value: 0 },
+      },
+      vertexShader: ARROW_VERTEX,
+      fragmentShader: ARROW_FRAGMENT,
+      transparent: true,
+      depthWrite: false,
+      side: THREE.DoubleSide,
+    });
 
-    // A field as a texture of numbers -- value times coverage, and coverage -- resampled onto a
-    // regular grid once (see regularizeField). The GPU filters it and colours it per pixel.
-    function fieldTexture(data, width, height) {
-      const tex = new THREE.DataTexture(data, width, height, THREE.RGFormat, THREE.HalfFloatType);
+    // Numbers resampled onto a layout (see lib/overlaygpu.js), as a texture the GPU filters:
+    // two channels for a field's values, four for its directions.
+    function setFieldSampling(tex) {
       tex.wrapS = THREE.RepeatWrapping; // the map joins itself at the antimeridian
       tex.wrapT = THREE.ClampToEdgeWrapping;
       tex.magFilter = THREE.LinearFilter;
@@ -775,9 +801,29 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       tex.needsUpdate = true;
       return tex;
     }
-    function buildLiveTexture(values, step) {
-      const { premul, cover } = regularizeField(values, samplerFor(step), LIVE_TEX_W, LIVE_TEX_H);
-      return fieldTexture(packHalfRG(premul, cover), LIVE_TEX_W, LIVE_TEX_H);
+    function fieldTexture(data, layout, format) {
+      return setFieldSampling(new THREE.DataTexture(data, layout.width, layout.height, format, THREE.HalfFloatType));
+    }
+    // The week's: one forecast step per layer of a texture array.
+    function fieldArrayTexture(data, layout, depth, format) {
+      const tex = new THREE.DataArrayTexture(data, layout.width, layout.height, depth);
+      tex.format = format;
+      tex.type = THREE.HalfFloatType;
+      return setFieldSampling(tex);
+    }
+    // A live layer's textures, built the first time the layer is drawn.
+    function buildLiveTextures(set, step) {
+      const layout = layoutFor(step);
+      const { premul, cover } = regularizeField(set.values, layout);
+      set.texture = fieldTexture(packHalfRG(premul, cover), layout, THREE.RGFormat);
+      set.dirTexture = set.dirs
+        ? fieldTexture(packHalf(regularizeDirections(set.dirs, layout)), layout, THREE.RGBAFormat)
+        : null;
+      set.v = layoutV(layout);
+    }
+    // Whether a direction field has anything in it at all.
+    function hasReadings(dirs) {
+      return Array.isArray(dirs) && dirs.some((d) => d != null);
     }
     // The layer's colour table: sRGB bytes straight from the legend's ramp, with no colour space
     // attached, so they reach the screen untouched.
@@ -794,13 +840,45 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return luts[name];
     }
 
-    // How much of each texel is land, as one byte a texel.
+    // Where land is, as coverage: `{ mask, width, height }`, the fraction of each texel that is
+    // land in one byte, north at row 0. The overlay is cut to the coastline with it, and the
+    // arrows are kept to the sea with it.
     //
-    // A single channel rather than a canvas texture: at this size the difference is 8MB against
-    // 34MB of texture memory, on a device that is usually a phone. The canvas is read back in
-    // bands for the same reason — one getImageData over eight million pixels would ask for
+    // Shipped prebuilt (see scripts/build-landmask.mjs). Building it here meant the first "show
+    // swell" fetched the whole 3MB vector coastline and filled four thousand rings into a 34MB
+    // canvas before anything appeared -- about a second of main-thread work on a desktop when
+    // measured, so more on a phone. The prebuilt file is about a quarter of that download, and
+    // the work is a decompression of a few tens of milliseconds.
+    //
+    // Drawn here from the coastline only when the file cannot be had -- a browser without
+    // DecompressionStream (Safari before 16.4), or the file missing -- since the mask is the
+    // same either way and a slower one is better than none.
+    function loadLandMask() {
+      const base = ((import.meta.env && import.meta.env.BASE_URL) || '/').replace(/\/$/, '');
+      return fetchLandMask(base + '/' + LAND_MASK.file)
+        .catch(() => null)
+        .then((prebuilt) => prebuilt || loadCoastlineTopology().then(drawLandMask));
+    }
+
+    // The fallback: the coastline's land polygons filled into a canvas.
+    function drawLandMask(topo) {
+      const polygons = topo ? topologyToPolygons(topo) : [];
+      if (!polygons.length) return null;
+      try {
+        return drawLandMaskAt(polygons, LAND_MASK.width, LAND_MASK.height);
+      } catch {
+        // A device that cannot spare 34MB of canvas for a moment. Half the resolution is a
+        // quarter of the memory and still a coastline.
+        try {
+          return drawLandMaskAt(polygons, LAND_MASK.width / 2, LAND_MASK.height / 2);
+        } catch {
+          return null; // no mask; the grid's own coarse edge is used instead
+        }
+      }
+    }
+    // The canvas is read back in bands: one getImageData over eight million pixels would ask for
     // another 34MB in one go, at the moment the page can least afford it.
-    function buildLandMaskTexture(polygons, width, height) {
+    function drawLandMaskAt(polygons, width, height) {
       const cv = document.createElement('canvas');
       cv.width = width;
       cv.height = height;
@@ -819,29 +897,42 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
       // Let the canvas go before the texture is uploaded rather than after.
       cv.width = cv.height = 1;
+      return { mask, width, height };
+    }
 
+    // The mask as a texture: a single channel, which at this size is 8MB of texture memory
+    // against a canvas texture's 34MB, on a device that is usually a phone. The coverage array
+    // is kept as well: the arrows ask it whether a point is at sea, which is both exact and
+    // free, where a point-in-polygon test against four thousand rings would be neither.
+    function landMaskTexture({ mask, width, height }) {
       const tex = new THREE.DataTexture(mask, width, height, THREE.RedFormat);
-      tex.flipY = true; // drawn on a canvas, north at row 0; flipped so v runs south to north like the sphere's
+      tex.flipY = true; // north at row 0; flipped so v runs south to north like the sphere's
       tex.wrapS = THREE.RepeatWrapping;
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
       tex.needsUpdate = true;
-      // The coverage array comes back too: the arrow field asks it whether a point is at sea,
-      // which is both exact and free, where a point-in-polygon test against four thousand rings
-      // would be neither.
-      return { texture: tex, mask, width, height };
+      return tex;
     }
 
-    // A flat arrow in its own XY plane, pointing along +Y: a shaft and a head, six triangles.
-    function arrowGeometry() {
-      const geo = new THREE.BufferGeometry();
+    // A flat arrow in its own XY plane, pointing along +Y: a shaft and a head, three triangles.
+    // One instance per point, each carrying only where it stands. Which way it points, and
+    // whether it is drawn at all, its vertex shader reads from the field.
+    function arrowGeometry(points) {
+      const geo = new THREE.InstancedBufferGeometry();
       const v = new Float32Array([
         -0.13, -0.85, 0, 0.13, -0.85, 0, 0.13, 0.12, 0, -0.13, 0.12, 0, // shaft
         -0.46, 0.05, 0, 0.46, 0.05, 0, 0, 0.9, 0,                        // head
       ]);
       geo.setAttribute('position', new THREE.BufferAttribute(v, 3));
       geo.setIndex([0, 1, 2, 0, 2, 3, 4, 5, 6]);
+      const latLon = new Float32Array(points.length * 2);
+      points.forEach((p, i) => {
+        latLon[i * 2] = p.lat;
+        latLon[i * 2 + 1] = p.lon;
+      });
+      geo.setAttribute('aLatLon', new THREE.InstancedBufferAttribute(latLon, 2));
+      geo.instanceCount = points.length;
       return geo;
     }
 
@@ -853,59 +944,17 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return mask[y * width + x] < 128;
     }
 
-    // The arrow field, built once: every point that is at sea and has a direction to show.
+    // The points the arrows stand on: the lattice from lib/swellarrows.js, culled to the sea.
     //
-    // Order is preserved from lib/swellarrows.js, whose sequence is arranged so that any prefix
-    // still covers the whole globe — that is what lets the draw count follow the zoom without
-    // rebuilding anything.
-    // `toTravel` turns the bearing the source reports -- which every marine and weather feed
-    // gives as where the thing comes *from* -- into the direction it is going, which is how an
-    // arrow on a map reads. Passed in rather than assumed because the swell layer and the wind
-    // layer each have their own, and using one for the other draws every arrow backwards
-    // without erroring.
-    // The lattice the arrows sit on, already culled to the sea. It is the same points every
-    // time -- only the bearings change -- so it is built once per land mask rather than on
-    // every frame of the week, where it was 2 ms and 12,000 throwaway objects a time.
-    let seaLattice = null;
-    let seaLatticeLand;
-    function seaPoints(land) {
-      if (!seaLattice || seaLatticeLand !== land) {
-        seaLattice = fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
-        seaLatticeLand = land;
-      }
-      return seaLattice;
-    }
-    function buildArrowField(directions, land, step, toTravel = swellTravelBearing) {
-      const points = [];
-      const sampler = samplerFor(step);
-      for (const p of seaPoints(land)) {
-        const from = sampler.direction(directions, p.lat, p.lon);
-        const bearing = toTravel(from);
-        if (bearing == null) continue;
-        points.push({ ...p, bearing });
-      }
-      return points;
-    }
-
-    // One instance matrix per arrow. Rebuilt only when the size changes, not every frame.
-    function layOutArrows(scale) {
-      const m = new THREE.Matrix4();
-      const x = new THREE.Vector3();
-      const y = new THREE.Vector3();
-      const z = new THREE.Vector3();
-      const pos = new THREE.Vector3();
-      for (let i = 0; i < arrowPoints.length; i++) {
-        const p = arrowPoints[i];
-        const { normal, forward, side } = orientationAt(p.lat, p.lon, p.bearing);
-        x.set(side[0], side[1], side[2]).multiplyScalar(scale);
-        y.set(forward[0], forward[1], forward[2]).multiplyScalar(scale);
-        z.set(normal[0], normal[1], normal[2]);
-        m.makeBasis(x, y, z);
-        pos.set(normal[0], normal[1], normal[2]).multiplyScalar(ARROW_SHELL);
-        m.setPosition(pos);
-        arrowMesh.setMatrixAt(i, m);
-      }
-      arrowMesh.instanceMatrix.needsUpdate = true;
+    // Built once, with the land mask. Every layer and every frame of the week uses the same
+    // points -- only the directions differ, and those are the shader's business -- so nothing
+    // here is rebuilt when a layer is switched or the week plays. The lattice's order is kept,
+    // because its sequence is arranged so that any prefix still covers the whole globe: that is
+    // what lets the draw count follow the zoom without rebuilding anything. A point with no
+    // direction to show at the moment on screen is drawn at zero size, so one prefix serves
+    // every field.
+    function seaLattice(land) {
+      return fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
     }
 
     // Arrows hold a roughly constant size on screen, so they stay legible zoomed out and do not
@@ -917,71 +966,62 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     function updateArrows() {
       if (!arrowMesh) return;
-      arrowMesh.visible = wavesOnRef.current;
+      arrowMesh.visible = wavesOnRef.current && dirsShown;
       if (!arrowMesh.visible) return;
       // The camera's own half-FOV, so the count follows what is actually on screen rather than
       // a hard-coded guess at it.
-      arrowMesh.count = Math.min(arrowPoints.length, arrowCountForDistance(state.distance, {
+      const geo = arrowMesh.geometry;
+      geo.instanceCount = Math.min(geo.getAttribute('aLatLon').count, arrowCountForDistance(state.distance, {
         halfFovRad: (camera.fov * Math.PI) / 360,
       }));
-      const scale = arrowScaleForDistance(state.distance);
-      // Only re-laid-out when the size has moved enough to see, rather than on every frame of
-      // an easing zoom: this is three thousand matrix builds.
-      if (Math.abs(scale - arrowScaleAt) > arrowScaleAt * 0.04) {
-        arrowScaleAt = scale;
-        layOutArrows(scale);
-      }
+      // Every frame, smoothly. It used to be thousands of instance matrices re-laid-out
+      // whenever the size had drifted by 4%, so a zoom resized the arrows in 4% jumps.
+      arrowMat.uniforms.uScale.value = arrowScaleForDistance(state.distance);
     }
 
     function ensureWaveOverlay() {
       if (waveRequested || !wavesOnRef.current) return;
       waveRequested = true;
-      Promise.all([fetchWaveGrid(), loadCoastlineTopology()])
-        .then(([grid, topo]) => {
+      Promise.all([fetchWaveGrid(), loadLandMask()])
+        .then(([grid, land]) => {
           if (cancelled) return;
           if (!grid || !grid.data) { setWaveMeta({ ok: false, build: grid && grid.build }); return; }
-          const polygons = topo ? topologyToPolygons(topo) : [];
-          let land = null;
-          if (polygons.length) {
-            try {
-              land = buildLandMaskTexture(polygons, LAND_MASK_W, LAND_MASK_H);
-            } catch {
-              // A device that cannot spare 34MB of canvas for a moment. Half the resolution is
-              // a quarter of the memory and still a coastline.
-              try {
-                land = buildLandMaskTexture(polygons, LAND_MASK_W / 2, LAND_MASK_H / 2);
-              } catch { /* no mask; the grid's own coarse edge is used below */ }
-            }
-          }
-          waveMaskTexture = land ? land.texture : null;
-          waveLand = land;
+          waveMaskTexture = land ? landMaskTexture(land) : null;
           const raw = decodeHeights(base64ToBytes(grid.data));
-          // Gaps are only filled when there is a mask to stop the fill at the shore. Without
-          // one, "no reading" is the only thing marking out land at all, and filling it would
-          // paint swell across every continent.
           // The grid says how coarse it is. It used to be assumed from a shared constant, which
           // was fine only while every layer was built at the same step -- the swell grid is 2
           // degrees now because the Worker samples it from a published file, while the wind
           // grid is still 10 because it is still one API call per cell. Assuming either would
           // paint one layer's numbers on the other's geography.
           const swellStep = gridStepOf(grid);
-          const swellValues = waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw;
-          const buildStart = perf ? performance.now() : 0;
-          const swellTexture = buildLiveTexture(swellValues, swellStep);
-          if (perf) perf.paintMs = performance.now() - buildStart;
+          // Directions are optional: a grid cached before the Worker started fetching them has
+          // heights and nothing else, and the colours are worth drawing on their own.
+          const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
+          // Kept so switching back from the wind is a uniform change rather than another fetch.
+          // `values` is what gets painted, with gaps filled so the overlay has no holes behind
+          // the coastline mask -- and only when there is a mask to stop the fill at the shore.
+          // Without one, "no reading" is the only thing marking out land at all, and filling it
+          // would paint swell across every continent. `raw` is what gets *read*: the gap fill
+          // invents a plausible height for a land cell from its sea neighbours, which is
+          // exactly right for a picture and exactly wrong for a number. Tapping Nevada must say
+          // "no reading", not borrow the Pacific's swell.
+          liveLayers.swell = {
+            values: waveMaskTexture ? fillGridGaps(raw, 2, swellStep) : raw,
+            raw,
+            dirs: directions,
+            step: swellStep,
+          };
           // Numbers in, colours out, per screen pixel: see lib/overlaygpu.js for the shader.
+          // The layer's own textures and colour table are filled in by applyLiveLayer below.
           overlayMat = new THREE.ShaderMaterial({
             uniforms: {
-              uLive: { value: swellTexture },
+              ...fieldUniforms,
+              uLive: { value: null },
               uWeek: { value: null },
-              uLut: { value: lutFor('swell') },
-              uLutMax: { value: drawFor('swell').max },
+              uLut: { value: null },
+              uLutMax: { value: 1 },
               uLandMask: { value: waveMaskTexture },
               uHasMask: { value: waveMaskTexture ? 1 : 0 },
-              uWeekOn: { value: 0 },
-              uLayer0: { value: 0 },
-              uLayer1: { value: 0 },
-              uMix: { value: 0 },
               // 0.62 was costing about a third of every ramp's separation. The overlay is
               // composited over the ocean sphere, so a translucent one is a blend toward that
               // mid-blue -- and the darker half of a ramp, which is where most of the world's
@@ -1005,72 +1045,43 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             overlayMat,
           );
           globeGroup.add(waveMesh);
-          shownKey = 'live:swell';
 
-          // Directions are optional: a grid cached before the Worker started fetching them has
-          // heights and nothing else, and the colours are worth drawing on their own.
-          const directions = grid.dirs ? decodeDirections(base64ToBytes(grid.dirs)) : null;
-          // Kept so switching back from the wind is a uniform change rather than another fetch.
-          // `values` is what gets painted, with gaps filled so the overlay has no holes behind
-          // the coastline mask. `raw` is what gets *read*: the gap fill invents a plausible
-          // height for a land cell from its sea neighbours, which is exactly right for a
-          // picture and exactly wrong for a number. Tapping Nevada must say "no reading", not
-          // borrow the Pacific's swell.
-          liveLayers.swell = { values: swellValues, raw, dirs: directions, step: swellStep, texture: swellTexture };
-          // The first swell draw does not go through applyLiveLayer -- it builds the texture and
-          // the mesh from scratch -- so `painted` has to be set here too. Without this,
-          // tap-to-read stayed silent until the layer had been switched at least once, which is
-          // the one path nobody takes.
-          painted = { read: raw, dirs: directions, step: swellStep, layer: 'swell', frame: null };
-          arrowPoints = directions ? buildArrowField(directions, land, swellStep) : [];
-          if (arrowPoints.length) {
-            arrowMesh = new THREE.InstancedMesh(
-              arrowGeometry(),
-              // Light, not dark. The colour ramp starts at a very dark navy — flat water is
-              // (0,28,73) — and a dark arrow is invisible on exactly the calm ocean that
-              // covers most of the map. A pale arrow reads against everything up to the top of
-              // the scale, where the ramp turns pale itself and 10m+ seas are vanishingly rare.
-              new THREE.MeshBasicMaterial({
-                color: 0xf4f7f6, transparent: true, opacity: 0.72, depthWrite: false,
-                side: THREE.DoubleSide,
-              }),
-              // Allocated at the cap, not at this field's size. The instance count actually
-              // drawn is set per frame from the zoom (see updateArrows), and sizing the buffer
-              // to whichever field happened to be built first meant a later one that produced
-              // a different number of points could not be shown at all -- which is how a layer
-              // switch used to leave the previous layer's arrows on screen under the new
-              // layer's legend. 6,000 matrices is 384KB; the bug it removes is a wind map
-              // captioned as swell.
-              ARROW_FIELD,
-            );
+          const lattice = seaLattice(land);
+          if (lattice.length) {
+            arrowMesh = new THREE.Mesh(arrowGeometry(lattice), arrowMat);
             arrowMesh.renderOrder = 2; // over the overlay and the coastline, never under them
+            // The geometry is one small arrow at the centre of the globe; only the shader knows
+            // where its copies end up, so bounds-based culling would hide all of them.
             arrowMesh.frustumCulled = false;
-            arrowScaleAt = 0;
             globeGroup.add(arrowMesh);
           }
 
+          // The first draw takes the same path as every layer switch after it, so the colours,
+          // the arrows and what tap-to-read reads are set up in one place. (It used to be built
+          // separately here, and once forgot to tell tap-to-read, which then stayed silent
+          // until the layer had been switched at least once.)
+          applyLiveLayer('swell');
+
           setWaveMeta({
             ok: true, generatedAt: grid.generatedAt, stale: grid.stale, coarse: !waveMaskTexture,
-            arrows: !!(arrowPoints && arrowPoints.length),
+            arrows: !!arrowMesh && hasReadings(directions),
             // Two different reasons for a chart with no arrows on it, and they look identical:
             // the grid was cached before directions were fetched at all, or it carries them and
             // none survived. Saying which one turns a guess into a glance.
             noDirections: !grid.dirs,
           });
-          state.dataDirty = true;
         })
         .catch(() => setWaveMeta({ ok: false }));
     }
 
     // Show whichever live layer is selected.
     //
-    // The mesh, the coastline mask and the arrow field are built once and reused, and each
+    // The mesh, the coastline mask and the arrows' lattice are built once and reused, and each
     // layer's numbers go to the GPU once: a layer is the same picture drawn from different
-    // numbers through a different colour table, so switching is a few uniform writes and an
-    // arrow re-orientation rather than a repaint. Returns
-    // whether it could draw, so a caller that asked for a layer with no data can say so
-    // instead of leaving the previous layer up under the new label -- which would be the worst
-    // outcome available: the wind map, captioned as swell.
+    // numbers through a different colour table, so switching is a few uniform writes rather
+    // than a repaint. Returns whether it could draw, so a caller that asked for a layer with no
+    // data can say so instead of leaving the previous layer up under the new label -- which
+    // would be the worst outcome available: the wind map, captioned as swell.
     function applyLiveLayer(name) {
       const set = liveLayers[name];
       const draw = LAYER_DRAW[name] && drawFor(name);
@@ -1078,24 +1089,21 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const step = set.step || GRID_LAT_STEP;
       if (!set.texture) {
         const buildStart = perf ? performance.now() : 0;
-        set.texture = buildLiveTexture(set.values, step);
+        buildLiveTextures(set, step);
         if (perf) perf.paintMs = performance.now() - buildStart;
       }
       const u = overlayMat.uniforms;
       u.uLive.value = set.texture;
       u.uLut.value = lutFor(name);
       u.uLutMax.value = draw.max;
-      u.uWeekOn.value = 0;
+      fieldUniforms.uWeekOn.value = 0;
+      fieldUniforms.uLiveV.value.fromArray(set.v);
+      // The arrows read the same uniforms; only their directions are the layer's own. A layer
+      // with none shows no arrows, rather than the last layer's left pointing on under its name.
+      arrowMat.uniforms.uDirLive.value = set.dirTexture;
+      dirsShown = !!set.dirTexture;
       shownKey = 'live:' + name;
       painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
-      if (set.dirs && arrowMesh) {
-        // No count check. The two layers genuinely disagree about where an arrow can be drawn
-        // -- a direction field has nothing to say where opposing swells or a col in the wind
-        // cancel out, and they cancel in different places -- so requiring the same number of
-        // points meant the arrows silently stayed on the layer being switched away from.
-        arrowPoints = buildArrowField(set.dirs, waveLand, step, draw.toTravel);
-        arrowScaleAt = 0; // force the next layout pass to re-orient every instance
-      }
       state.dataDirty = true;
       if (markDirtyRef.current) markDirtyRef.current();
       return true;
@@ -1103,37 +1111,48 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     applyLayerRef.current = applyLiveLayer;
 
     // The animated week, uploaded to the GPU once: every forecast step resampled onto the same
-    // regular grid and stacked as the layers of one texture array. A frame of the animation is
-    // then two layers blended by a uniform -- no repaint, no upload, no garbage.
+    // regular grid and stacked as the layers of one texture array, its directions likewise. A
+    // frame of the animation is then two layers blended by a uniform -- no repaint, no upload,
+    // no garbage -- and the arrows turn through the same blend.
     function setWeek(next) {
-      if (week) { week.texture.dispose(); week = null; }
+      if (week) {
+        week.texture.dispose();
+        if (week.dirTexture) week.dirTexture.dispose();
+        week = null;
+      }
       shownKey = null;
       if (next && Array.isArray(next.list) && next.list.length && Number.isFinite(next.latStep)) {
         const buildStart = perf ? performance.now() : 0;
         const step = next.latStep;
-        const { width, height } = weekTextureSize(step);
+        const layout = layoutFor(step);
         const count = next.list.length;
-        const texels = width * height;
-        const data = new Uint16Array(texels * 2 * count);
-        const sampler = samplerFor(step);
+        const texels = layout.width * layout.height;
+        const values = new Uint16Array(texels * 2 * count);
+        // A week built before the Worker fetched directions has none, and draws no arrows.
+        const dirs = next.list.some((f) => f.dirs) ? new Uint16Array(texels * 4 * count) : null;
+        // One scratch field and one scratch set of vectors, refilled for each step.
+        const field = { premul: new Float32Array(texels), cover: new Float32Array(texels) };
+        const vectors = new Float32Array(texels * 4);
         for (let k = 0; k < count; k++) {
-          const heights = next.list[k].heights;
+          const frame = next.list[k];
           // Gaps filled exactly as the live field's are, and only when the coastline mask is
           // there to stop the fill at the shore.
-          const values = waveMaskTexture ? fillGridGaps(heights, 2, step) : heights;
-          const { premul, cover } = regularizeField(values, sampler, width, height);
-          packHalfRG(premul, cover, data.subarray(k * texels * 2, (k + 1) * texels * 2));
+          regularizeField(waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights, layout, field);
+          packHalfRG(field.premul, field.cover, values.subarray(k * texels * 2, (k + 1) * texels * 2));
+          if (dirs) {
+            regularizeDirections(frame.dirs, layout, vectors);
+            packHalf(vectors, dirs.subarray(k * texels * 4, (k + 1) * texels * 4));
+          }
         }
-        const tex = new THREE.DataArrayTexture(data, width, height, count);
-        tex.format = THREE.RGFormat;
-        tex.type = THREE.HalfFloatType;
-        tex.wrapS = THREE.RepeatWrapping;
-        tex.wrapT = THREE.ClampToEdgeWrapping;
-        tex.magFilter = THREE.LinearFilter;
-        tex.minFilter = THREE.LinearFilter;
-        tex.generateMipmaps = false;
-        tex.needsUpdate = true;
-        week = { layer: next.layer || 'swell', list: next.list, step, count, texture: tex };
+        week = {
+          layer: next.layer || 'swell',
+          list: next.list,
+          step,
+          count,
+          v: layoutV(layout),
+          texture: fieldArrayTexture(values, layout, count, THREE.RGFormat),
+          dirTexture: dirs ? fieldArrayTexture(dirs, layout, count, THREE.RGBAFormat) : null,
+        };
         if (perf) perf.paintMs = performance.now() - buildStart;
       }
       state.dataDirty = true;
@@ -1145,15 +1164,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // While the week plays, the playhead moves on by the time this frame took, so it keeps
     // real-time pace at 30, 60 or 120 Hz, and the shader blends the two steps either side of
     // it. React hears only when the nearest step changes, for the scrubber and the label.
-    // Returns whether the picture changed or is moving, so the loop keeps drawing.
-    //
-    // The arrows are still built on the CPU, so while the week plays they follow a few times a
-    // second rather than on every frame; paused, they follow at once.
-    const ARROW_REFRESH_MS = 150;
+    // Returns whether the picture changed or is moving, so the loop keeps drawing. The arrows
+    // read the same uniforms, so they move with the colours on every frame.
     let shownKey = null;
     let lastFrameIdx = 0;
-    let lastArrowsAt = -Infinity;
-    function updateOverlayTime(dt, now) {
+    function updateOverlayTime(dt) {
       if (!overlayMat || !wavesOnRef.current) return false;
       const tl = timelineRef.current;
       let advancing = false;
@@ -1173,20 +1188,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         shownKey = key;
         const u = overlayMat.uniforms;
         u.uWeek.value = week.texture;
-        u.uWeekOn.value = 1;
-        u.uLayer0.value = slot.i0;
-        u.uLayer1.value = slot.i1;
-        u.uMix.value = slot.t;
         u.uLut.value = lutFor(week.layer);
         u.uLutMax.value = drawFor(week.layer).max;
-        if (arrowMesh && (!advancing || now - lastArrowsAt >= ARROW_REFRESH_MS)) {
-          const frame = weekFrameAt(week.list, tl.pos, true);
-          if (frame && frame.dirs) {
-            arrowPoints = buildArrowField(frame.dirs, waveLand, week.step, drawFor(week.layer).toTravel);
-            arrowScaleAt = 0;
-            lastArrowsAt = now;
-          }
-        }
+        fieldUniforms.uWeekOn.value = 1;
+        fieldUniforms.uLayer0.value = slot.i0;
+        fieldUniforms.uLayer1.value = slot.i1;
+        fieldUniforms.uMix.value = slot.t;
+        fieldUniforms.uWeekV.value.fromArray(week.v);
+        arrowMat.uniforms.uDirWeek.value = week.dirTexture;
+        dirsShown = !!week.dirTexture;
       }
       const idx = slot ? Math.min(week.count - 1, Math.round(tl.pos)) : 0;
       if (idx !== lastFrameIdx) { lastFrameIdx = idx; setFrameIdx(idx); }
@@ -1946,7 +1956,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const playDt = frameDelta(now, lastTick, PLAYBACK_MAX_FRAME_MS);
       const dt = Math.min(playDt, MAX_FRAME_MS);
       lastTick = now;
-      const overlayMoving = updateOverlayTime(playDt, now);
+      const overlayMoving = updateOverlayTime(playDt);
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
       if (coasting) {
         state.targetRotY += state.velY * dt;
@@ -2060,11 +2070,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (coastlineMesh) coastlineMesh.geometry.dispose();
       coastlineMat.dispose();
       if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
-      for (const name of Object.keys(liveLayers)) if (liveLayers[name].texture) liveLayers[name].texture.dispose();
+      for (const set of Object.values(liveLayers)) {
+        if (set.texture) set.texture.dispose();
+        if (set.dirTexture) set.dirTexture.dispose();
+      }
       for (const name of Object.keys(luts)) luts[name].dispose();
-      if (week) week.texture.dispose();
+      if (week) {
+        week.texture.dispose();
+        if (week.dirTexture) week.dirTexture.dispose();
+      }
       setWeekRef.current = null;
-      if (arrowMesh) { arrowMesh.geometry.dispose(); arrowMesh.material.dispose(); arrowMesh.dispose(); }
+      if (arrowMesh) arrowMesh.geometry.dispose();
+      arrowMat.dispose();
       if (waveMaskTexture) waveMaskTexture.dispose();
       renderer.dispose();
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);

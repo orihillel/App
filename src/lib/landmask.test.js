@@ -1,5 +1,9 @@
 import { describe, it, expect } from 'vitest';
-import { topologyToPolygons, polygonsToPixelRings, fillLandRings } from './landmask.js';
+import { deflateSync } from 'node:zlib';
+import { readFileSync } from 'node:fs';
+import {
+  topologyToPolygons, polygonsToPixelRings, fillLandRings, rasterizeCoverage, fetchLandMask, LAND_MASK,
+} from './landmask.js';
 
 // An identity transform, so an arc's integer coordinates are read straight off as degrees:
 // decodeArc yields [lat, lon] from [x, y], so [3, 7] is longitude 3, latitude 7.
@@ -61,6 +65,27 @@ describe('topologyToPolygons', () => {
     const lons = polygon[0].map(([, lon]) => lon);
     expect(lons.slice(0, 3)).toEqual([175, 179, 181]);
     for (let i = 1; i < lons.length; i++) expect(Math.abs(lons[i] - lons[i - 1])).toBeLessThan(180);
+  });
+
+  it('keeps a hole inside its continent when the continent unwraps past the antimeridian', () => {
+    // An exterior that starts on the far side of 180 unwraps to below -180; a hole inside it,
+    // unwrapped on its own, stays between -180 and 180 -- a whole map-width from the land it
+    // is a hole in, where it cuts nothing and is filled as land itself. Afro-Eurasia and the
+    // Caspian are exactly this.
+    const arc = (pts) => pts.map((p, i) => (i === 0 ? p : [p[0] - pts[i - 1][0], p[1] - pts[i - 1][1]]));
+    // [lon, lat]: from 170W westward across the antimeridian to 60E and back.
+    const continent = arc([[-170, 0], [170, 0], [100, 0], [60, 0], [60, 20], [100, 20], [170, 20], [-170, 20], [-170, 0]]);
+    const lake = arc([[80, 5], [90, 5], [90, 10], [80, 10], [80, 5]]);
+    const [polygon] = topologyToPolygons(topo([continent, lake], [{ type: 'Polygon', arcs: [[0], [1]] }]));
+    const lons = (ring) => ring.map(([, lon]) => lon);
+    expect(Math.min(...lons(polygon[0]))).toBe(-300);
+    expect(Math.min(...lons(polygon[1]))).toBe(80 - 360);
+    expect(Math.max(...lons(polygon[1]))).toBe(90 - 360);
+    // And so the lake is a lake: the rasterized mask is sea there and land around it.
+    const width = 360;
+    const mask = rasterizeCoverage(polygonsToPixelRings([polygon], width, 180), width, 180);
+    expect(mask[(90 - 7) * width + (85 + 180)]).toBe(0);
+    expect(mask[(90 - 15) * width + (85 + 180)]).toBe(255);
   });
 
   it('closes a ring that sweeps the whole world over the pole, not across the map', () => {
@@ -207,5 +232,142 @@ describe('fillLandRings', () => {
     const ctx = fakeCtx();
     fillLandRings(ctx, [], 360);
     expect(ctx.calls.filter((c) => c[0] === 'fill')).toHaveLength(0);
+  });
+});
+
+// A ring in pixels, the shape polygonsToPixelRings hands over: flat [x, y, ...] and its reach.
+function pixelRing(points) {
+  const xs = points.map(([x]) => x);
+  return { pts: points.flat(), minX: Math.min(...xs), maxX: Math.max(...xs) };
+}
+const box = (x0, y0, x1, y1) => pixelRing([[x0, y0], [x1, y0], [x1, y1], [x0, y1]]);
+const boxBackwards = (x0, y0, x1, y1) => pixelRing([[x0, y0], [x0, y1], [x1, y1], [x1, y0]]);
+function at(mask, width, x, y) {
+  return mask[y * width + x];
+}
+
+describe('rasterizeCoverage', () => {
+  it('fills whole pixels solid and leaves the sea empty', () => {
+    const mask = rasterizeCoverage([[box(1, 1, 3, 3)]], 5, 5);
+    expect(at(mask, 5, 1, 1)).toBe(255);
+    expect(at(mask, 5, 2, 2)).toBe(255);
+    expect(at(mask, 5, 0, 0)).toBe(0);
+    expect(at(mask, 5, 3, 2)).toBe(0);
+    expect(at(mask, 5, 4, 4)).toBe(0);
+  });
+
+  it('gives a pixel the shore crosses the share of it that is land', () => {
+    // Half a pixel in from each side: corners are a quarter land, edges half.
+    const mask = rasterizeCoverage([[box(0.5, 0.5, 2.5, 2.5)]], 4, 4);
+    expect(at(mask, 4, 0, 0)).toBe(64);
+    expect(at(mask, 4, 1, 0)).toBe(128);
+    expect(at(mask, 4, 1, 1)).toBe(255);
+    expect(at(mask, 4, 2, 2)).toBe(64);
+  });
+
+  it('measures a slanting shore by area', () => {
+    // x + y = 4: the pixels it runs corner to corner through are exactly half land.
+    const mask = rasterizeCoverage([[pixelRing([[0, 0], [4, 0], [0, 4]])]], 4, 4);
+    expect(at(mask, 4, 0, 0)).toBe(255);
+    expect(at(mask, 4, 3, 0)).toBe(128);
+    expect(at(mask, 4, 1, 2)).toBe(128);
+    expect(at(mask, 4, 3, 3)).toBe(0);
+  });
+
+  it('leaves a hole empty', () => {
+    const mask = rasterizeCoverage([[box(0, 0, 6, 6), boxBackwards(2, 2, 4, 4)]], 6, 6);
+    expect(at(mask, 6, 1, 1)).toBe(255);
+    expect(at(mask, 6, 2, 2)).toBe(0);
+    expect(at(mask, 6, 3, 3)).toBe(0);
+    expect(at(mask, 6, 4, 4)).toBe(255);
+  });
+
+  it('leaves no seam where two pieces of land meet inside a pixel', () => {
+    // Two polygons sharing an edge halfway across column 2. Filled one after the other, each
+    // half-covers it and the result is three quarters land -- a faint line of sea down the
+    // join. Summed as one fill, the shared edge cancels.
+    const mask = rasterizeCoverage([[box(0, 0, 2.5, 4)], [box(2.5, 0, 4, 4)]], 4, 4);
+    for (let y = 0; y < 4; y++) expect(at(mask, 4, 2, y)).toBe(255);
+  });
+
+  it('does not overflow where land is covered twice', () => {
+    const mask = rasterizeCoverage([[box(0, 0, 2, 2)], [box(0, 0, 2, 2)]], 3, 3);
+    expect(at(mask, 3, 0, 0)).toBe(255);
+    expect(at(mask, 3, 2, 2)).toBe(0);
+  });
+
+  it('brings land that runs off one edge back on the other', () => {
+    // Columns 6 to 10 of an 8-wide map: 6 and 7 here, and 0 and 1 on the far side.
+    const mask = rasterizeCoverage([[box(6, 0, 10, 2)]], 8, 2);
+    expect([0, 1, 2, 3, 4, 5, 6, 7].map((x) => at(mask, 8, x, 0))).toEqual([255, 255, 0, 0, 0, 0, 255, 255]);
+    const left = rasterizeCoverage([[box(-2, 0, 2, 2)]], 8, 2);
+    expect([0, 1, 2, 3, 4, 5, 6, 7].map((x) => at(left, 8, x, 1))).toEqual([255, 255, 0, 0, 0, 0, 255, 255]);
+  });
+
+  it('cuts a slanting edge at the border without losing its share', () => {
+    // A triangle whose sloping side crosses the right-hand border: the part past it wraps.
+    const mask = rasterizeCoverage([[pixelRing([[6, 0], [10, 0], [6, 4]])]], 8, 4);
+    const wrapped = rasterizeCoverage([[pixelRing([[-2, 0], [2, 0], [-2, 4]])]], 8, 4);
+    expect(Array.from(mask)).toEqual(Array.from(wrapped));
+    expect(at(mask, 8, 6, 0)).toBe(255);
+    expect(at(mask, 8, 0, 0)).toBe(255); // x 8..9 of the first triangle, wrapped round
+    expect(at(mask, 8, 1, 0)).toBe(128); // the slope crosses this pixel corner to corner
+  });
+});
+
+// A fetch that answers with these bytes.
+const serve = (bytes, init) => async () => new Response(bytes, init);
+
+describe('fetchLandMask', () => {
+  const mask = Uint8Array.from({ length: 8 * 4 }, (_, i) => (i * 37) % 256);
+
+  it('inflates the shipped file into one byte a texel', async () => {
+    const got = await fetchLandMask('x', { width: 8, height: 4 }, serve(deflateSync(mask)));
+    expect(got.width).toBe(8);
+    expect(got.height).toBe(4);
+    expect(Array.from(got.mask)).toEqual(Array.from(mask));
+  });
+
+  it('refuses a file of the wrong size rather than reading it as a map', async () => {
+    expect(await fetchLandMask('x', { width: 8, height: 2 }, serve(deflateSync(mask)))).toBeNull();
+    expect(await fetchLandMask('x', { width: 8, height: 8 }, serve(deflateSync(mask)))).toBeNull();
+  });
+
+  it('gives up on a failed response', async () => {
+    expect(await fetchLandMask('x', { width: 8, height: 4 }, serve('', { status: 404 }))).toBeNull();
+  });
+
+  it('throws on bytes that are not deflated, so the caller can fall back', async () => {
+    await expect(fetchLandMask('x', { width: 8, height: 4 }, serve(mask))).rejects.toThrow();
+  });
+});
+
+describe('the shipped land mask', () => {
+  // Built by scripts/build-landmask.mjs from the shipped coastline. If either changes without
+  // the other, the overlay's edge and the coastline drawn on it stop agreeing -- quietly, a
+  // few kilometres at a time. This rebuilds it and compares.
+  const read = (name) => readFileSync(new URL('../../public/' + name, import.meta.url));
+
+  it('is what the build script makes from the shipped coastline', async () => {
+    const shipped = await fetchLandMask('x', LAND_MASK, serve(read(LAND_MASK.file)));
+    const { width, height } = LAND_MASK;
+    const fresh = rasterizeCoverage(
+      polygonsToPixelRings(topologyToPolygons(JSON.parse(read('coastline-10m-v2.json'))), width, height),
+      width, height,
+    );
+    expect(shipped.mask.length).toBe(fresh.length);
+    let differing = 0;
+    for (let i = 0; i < fresh.length; i++) if (shipped.mask[i] !== fresh[i]) differing++;
+    expect(differing).toBe(0);
+  }, 30000);
+
+  it('has land and sea where they are', async () => {
+    const shipped = await fetchLandMask('x', LAND_MASK, serve(read(LAND_MASK.file)));
+    const { width, height } = LAND_MASK;
+    const land = (lat, lon) => shipped.mask[Math.floor(((90 - lat) / 180) * height) * width + Math.floor(((lon + 180) / 360) * width)];
+    expect(land(23, 12)).toBe(255);    // the Sahara
+    expect(land(-80, 0)).toBe(255);    // Antarctica
+    expect(land(0, -140)).toBe(0);     // the middle of the Pacific
+    expect(land(-40, 60)).toBe(0);     // the Southern Indian Ocean
   });
 });
