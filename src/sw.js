@@ -29,7 +29,11 @@ const RUNTIME_CACHEABLE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'm
 // The land mask the overlay is cut with (see scripts/build-landmask.mjs) is kept the same way,
 // for the same reasons: 218KB that only globe users need, versioned by name, and without it
 // the overlay has to be cut from the coastline above at far greater cost.
-const IMMUTABLE_ASSET = /\/(coastline-[\w-]+\.json|landmask-[\w-]+\.bin)$/;
+//
+// So is the globe's base map (scripts/build-basemap.mjs), and the transcoder that unpacks it
+// for the GPU. The transcoder's name carries a content hash from the build, which makes it
+// just as safe to keep: a new three.js brings a new name.
+const IMMUTABLE_ASSET = /\/(coastline-[\w-]+\.json|landmask-[\w-]+\.bin|basemap-[\w-]+\.ktx2|assets\/basis_transcoder-[\w-]+\.(?:js|wasm))$/;
 
 // NASA's Blue Marble imagery, on the same cache-first terms and for the same reason.
 //

@@ -12,6 +12,7 @@ import {
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance } from '../lib/swellarrows.js';
 import { MARKER_RADIUS, MARKER_VERTEX, MARKER_FRAGMENT, surfaceFacing, markerShown, markerSizeFactor } from '../lib/markerdots.js';
+import { BASEMAP } from '../lib/basemap.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
 import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
@@ -591,6 +592,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // circumference at the closest zoom -- and ~8800 device px once the pixel ratio above is
     // taken into account. That under-sampling is exactly what makes coastlines look soft when
     // you zoom in; 5400x2700 is 2.6x the linear detail, i.e. ~7x the pixels.
+    //
+    // All of that is now the fallback. See loadBasemap below for what comes first.
     const SATELLITE_BASE_URL = 'https://eoimages.gsfc.nasa.gov/images/imagerecords/57000/57752/land_shallow_topo_2048.jpg';
     const SATELLITE_UPGRADE_URLS = [
       'https://eoimages.gsfc.nasa.gov/images/imagerecords/73000/73909/world.topo.bathy.200412.3x5400x2700.jpg',
@@ -604,7 +607,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
-      tex.generateMipmaps = true;
+      // A compressed texture brings its own mipmaps, and the GPU cannot generate them for one.
+      if (!tex.isCompressedTexture) tex.generateMipmaps = true;
       // Whatever the sphere was showing is now covered for good and can be released -- the
       // drawn map on the first swap, the smaller image on an upgrade.
       const previous = satelliteTexture || mapTexture;
@@ -629,18 +633,61 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       );
     }
 
-    textureLoader.load(
-      SATELLITE_BASE_URL,
-      (tex) => {
-        if (cancelled) { tex.dispose(); return; }
-        applySatellite(tex);
-        loadUpgrade(0);
-      },
-      undefined,
-      // Offline, blocked, or moved: keep the drawn map, which is already on screen. Still worth
-      // trying the larger images -- only this one URL might be the broken thing.
-      () => loadUpgrade(0),
-    );
+    function loadNasaImagery() {
+      if (cancelled) return;
+      textureLoader.load(
+        SATELLITE_BASE_URL,
+        (tex) => {
+          if (cancelled) { tex.dispose(); return; }
+          applySatellite(tex);
+          loadUpgrade(0);
+        },
+        undefined,
+        // Offline, blocked, or moved: keep the drawn map, which is already on screen. Still worth
+        // trying the larger images -- only this one URL might be the broken thing.
+        () => loadUpgrade(0),
+      );
+    }
+
+    // The base map as it is meant to arrive: the same Blue Marble imagery, prebuilt as a
+    // GPU-compressed texture and shipped with the app (see scripts/build-basemap.mjs).
+    //
+    // The 5400x2700 JPEG above was the heaviest single thing the globe did. A JPEG has to be
+    // decompressed to raw pixels before a GPU can use it, so that one image was ~78MB of
+    // texture memory with its mipmaps -- on a phone -- and handing it over was measured at
+    // 250ms of main-thread time in a single call, freezing whatever was on screen. This file
+    // stays compressed on the GPU: it is transcoded off the main thread, in a worker, into
+    // whichever compressed format this GPU reads, and uploaded with its mipmaps already built.
+    // It is 4096x2048, about three quarters of the JPEG's detail across; up close, the shape
+    // of the shore comes from the vector coastline drawn over it.
+    //
+    // NASA's own JPEGs remain the fallback, for a browser where this cannot load or transcode.
+    let basemapLoader = null;
+    function releaseBasemapLoader() {
+      if (basemapLoader) { basemapLoader.dispose(); basemapLoader = null; }
+    }
+    function loadBasemap() {
+      // Loaded on demand: the loader and its transcoder are only wanted once, after first paint.
+      import('three/examples/jsm/loaders/KTX2Loader.js')
+        .then(({ KTX2Loader }) => {
+          if (cancelled) return;
+          basemapLoader = new KTX2Loader().detectSupport(renderer);
+          const base = ((import.meta.env && import.meta.env.BASE_URL) || '/').replace(/\/$/, '');
+          basemapLoader.load(
+            base + '/' + BASEMAP.file,
+            (tex) => {
+              // The workers hold a transcoder each; one image is all they were for.
+              releaseBasemapLoader();
+              if (cancelled) { tex.dispose(); return; }
+              applySatellite(tex);
+            },
+            undefined,
+            () => { releaseBasemapLoader(); loadNasaImagery(); },
+          );
+        })
+        .catch(() => { releaseBasemapLoader(); loadNasaImagery(); });
+    }
+    loadBasemap();
     // 64x48 was chosen back when the globe was never larger than the viewport, where it is
     // indeed indistinguishable from a finer mesh. That stopped being true once the zoom range
     // opened up: at the closest zoom the sphere is ~939px across in a 362px viewport, so a
@@ -2106,6 +2153,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (mapTexture) mapTexture.dispose();
       oceanMat.dispose(); oceanMesh.geometry.dispose();
       if (satelliteTexture) satelliteTexture.dispose();
+      releaseBasemapLoader();
       markerGeo.dispose(); markerMat.dispose();
       // ~10MB of line vertices: the one buffer here big enough that leaking it across a few
       // open/close cycles of the globe would actually be felt on a phone.
