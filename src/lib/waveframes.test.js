@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { frameLabel, frameBuildLabel, lerpFrames, PLAYBACK_SPEEDS, nextSpeed, speedLabel, advancePos, stepFrame, isTimelineKey } from './waveframes.js';
+import { frameLabel, frameBuildLabel, lerpFrames, weekFrameAt, PLAYBACK_SPEEDS, nextSpeed, speedLabel, advancePos, stepFrame, isTimelineKey } from './waveframes.js';
 
 describe('frameLabel', () => {
   it('reads a UTC frame in the viewer\'s own clock', () => {
@@ -173,5 +173,38 @@ describe('isTimelineKey', () => {
     expect(isTimelineKey(key('ArrowRight', { target: { tagName: 'SELECT' } }))).toBe(false);
     expect(isTimelineKey(key('ArrowRight', { target: { tagName: 'DIV', isContentEditable: true } }))).toBe(false);
     expect(isTimelineKey(key('ArrowRight', { metaKey: true }))).toBe(false);
+  });
+});
+
+describe('weekFrameAt', () => {
+  const list = [
+    { t: 'a', heights: [0, 0] },
+    { t: 'b', heights: [2, 4] },
+    { t: 'c', heights: [4, 8] },
+  ];
+
+  it('shows the live map at now when nothing is playing', () => {
+    // The first frame is the same moment on a coarser grid; it must not replace the live map.
+    expect(weekFrameAt(list, 0, false)).toBeNull();
+  });
+
+  it('draws the first frame like any other while playing', () => {
+    expect(weekFrameAt(list, 0, true)).toBe(list[0]);
+  });
+
+  it('draws a frame exactly on it and a blend between two', () => {
+    expect(weekFrameAt(list, 1, false)).toBe(list[1]);
+    const mid = weekFrameAt(list, 1.5, true);
+    expect(mid.heights).toEqual([3, 6]);
+  });
+
+  it('holds the last frame at the end of the week', () => {
+    expect(weekFrameAt(list, 2, false)).toBe(list[2]);
+    expect(weekFrameAt(list, 5, false)).toBe(list[2]);
+  });
+
+  it('has nothing to draw without frames', () => {
+    expect(weekFrameAt([], 1, true)).toBeNull();
+    expect(weekFrameAt(null, 1, true)).toBeNull();
   });
 });

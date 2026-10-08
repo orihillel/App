@@ -18,7 +18,7 @@ import { fetchWaveGrid, fetchWaveFrames, fetchWindGrid } from '../lib/buoy.js';
 import { pickHourAt } from '../lib/daylight.js';
 import { cellSizeForDistance, clusterPoints } from '../lib/markercluster.js';
 import { placeLabels, labelRank } from '../lib/labelplacement.js';
-import { frameLabel, frameBuildLabel, lerpFrames, advancePos, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
+import { frameLabel, frameBuildLabel, weekFrameAt, advancePos, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long each frame of the animated week is held on screen.
@@ -149,6 +149,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   const [framesState, setFramesState] = useState('idle'); // idle | loading | ready | unavailable
   const [framesBuild, setFramesBuild] = useState(null);
   const applyFrameRef = useRef(null);
+  // Puts the live map back after the week has been on screen. See weekFrameAt in
+  // lib/waveframes.js for when that is.
+  const showLiveRef = useRef(null);
   // The three.js scene is built once in a mount effect, so React state cannot reach it. Same
   // Read through a ref for the same reason dataRef exists: the render loop is set up once, and
   // closing over the prop would pin whichever version of it existed at mount.
@@ -178,12 +181,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     if (!wavesOn) { setPlaying(false); setPos(0); }
   }, [wavesOn]);
 
-  // Turning the overlay off returns to the swell. The layer is a reading of the live map, and
-  // coming back to "Show live swell" on the wind would contradict the button that opened it.
-  useEffect(() => {
-    if (!wavesOn) setLayer('swell');
-  }, [wavesOn]);
-
   // Pick a layer, fetching it first if this is the first time it has been asked for.
   //
   // The week's animation belongs to the swell alone -- a wind week is another 5,000 units a day
@@ -206,6 +203,19 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     if (next === 'wind' && loadWindRef.current) loadWindRef.current();
     if (applyLayerRef.current) applyLayerRef.current(next);
   }, []);
+
+  // Turning the overlay off returns to the swell. The layer is a reading of the live map, and
+  // coming back to "Show live swell" on the wind would contradict the button that opened it.
+  //
+  // Through selectLayer, not setLayer alone. Setting the state moved the pressed button to
+  // Swell and left the wind painted on the sphere: the picture only changes when the layer is
+  // applied, and nothing applied it. The result was wind colours under the Swell button.
+  //
+  // Below selectLayer rather than beside the other overlay effects: a dependency array is read
+  // during render, and naming a const above its declaration is a ReferenceError, not a warning.
+  useEffect(() => {
+    if (!wavesOn && layerRef.current !== 'swell') selectLayer('swell');
+  }, [wavesOn, selectLayer]);
 
   // Fetch and decode the week, once, the first time the animation is asked for.
   //
@@ -289,13 +299,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // off, which redraws frame zero rather than leaving the last frame of the week on screen.
   useEffect(() => {
     if (framesState !== 'ready' || !frames || !applyFrameRef.current) return;
-    const last = frames.list.length - 1;
-    const i = Math.min(last, Math.floor(pos));
-    const t = pos - i;
-    // Exactly on a frame, draw it; between two, draw the blend. See lib/waveframes.js.
-    const frame = t > 0 && i < last ? lerpFrames(frames.list[i], frames.list[i + 1], t) : frames.list[i];
+    const frame = weekFrameAt(frames.list, pos, playing);
+    if (!frame) { if (showLiveRef.current) showLiveRef.current(); return; }
     applyFrameRef.current(frame, frames.latStep, frames.layer || 'swell');
-  }, [frames, pos, framesState]);
+  }, [frames, pos, framesState, playing]);
 
   // What the last tap on the ocean read. Held as state rather than drawn into the scene so it
   // is selectable text at a real font size -- the entire point of it is to be legible when the
@@ -1054,6 +1061,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const step = set.step || GRID_LAT_STEP;
       paintWaveCanvas(waveCanvasCtx, set.values, step, 1, draw.colorFn);
       painted = { read: set.raw || set.values, dirs: set.dirs, step, layer: name, frame: null };
+      // The week's frames switch mipmaps off (see applyWaveFrame). The live map is the picture
+      // that sits still and is looked at up close, which is exactly what they are for, so it
+      // gets them back -- without this, the edge of the globe shimmered for the rest of the
+      // session once the week had been played.
+      if (!waveTexture.generateMipmaps) {
+        waveTexture.generateMipmaps = true;
+        waveTexture.minFilter = THREE.LinearMipmapLinearFilter;
+      }
       waveTexture.needsUpdate = true;
       if (set.dirs && arrowMesh) {
         // No count check. The two layers genuinely disagree about where an arrow can be drawn
@@ -1068,6 +1083,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return true;
     }
     applyLayerRef.current = applyLiveLayer;
+
+    // The live map for the layer on screen, unless it is already what is painted.
+    function showLiveLayer() {
+      const name = layerRef.current;
+      if (painted && painted.frame == null && painted.layer === name) return true;
+      return applyLiveLayer(name);
+    }
+    showLiveRef.current = showLiveLayer;
 
     // Fetch the wind grid, once, the first time the layer is asked for.
     //
