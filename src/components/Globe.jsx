@@ -464,6 +464,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // Mid-ocean, from the middle stop of the gradient below, so the swap changes detail
       // rather than colour.
       color: 0x175a82, shininess: 14, specular: 0x1a3a4a,
+      // The shading across a dark ocean is a long, slow gradient, which eight bits a channel
+      // draw as visible bands. Dithering breaks them up for the cost of one noise lookup.
+      dithering: true,
     });
     let mapTexture = null;
 
@@ -545,6 +548,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         mctx.beginPath(); mctx.moveTo(x, 0); mctx.lineTo(x, mapH); mctx.stroke();
       }
       const tex = new THREE.CanvasTexture(mapCanvas);
+      // The colours above are sRGB, as every canvas colour is. Without saying so, the shader read
+      // them as linear and the map came out washed out -- pale mint land on a grey-blue sea, and
+      // a visible jump in colour from the ocean placeholder it replaces, which is set from the
+      // same hex value and was converted correctly.
+      tex.colorSpace = THREE.SRGBColorSpace;
       // A flat texture wrapped on a sphere gets viewed at steep angles near the edges of what's
       // visible, which is exactly the case anisotropic filtering is for — without it, those
       // regions look noticeably blurrier/blockier than the center, which reads as "pixelated".
@@ -1281,11 +1289,21 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         .catch(() => {});
     }
 
-    scene.add(new THREE.AmbientLight(0xbcd4e0, 0.55));
-    const dirLight = new THREE.DirectionalLight(0xfff2d8, 0.95);
+    // The lights, at the strength they were tuned for.
+    //
+    // These levels were picked by eye in the original mockup, which ran on three.js r128. Lights
+    // there carried a hidden factor of pi that cancelled the 1/pi in the material's diffuse term,
+    // so an intensity of 1 lit a surface at its own colour. three.js dropped that factor in r155
+    // (lights are in physical units now), and on r185 the same numbers lit the globe at a third
+    // of the strength they were chosen for: the satellite image came out at about two thirds of
+    // its own brightness where the sun is highest, and a third of it on the far side. Scaling by
+    // pi gives back the lighting that was designed.
+    const TUNED_UNDER_R128 = Math.PI;
+    scene.add(new THREE.AmbientLight(0xbcd4e0, 0.55 * TUNED_UNDER_R128));
+    const dirLight = new THREE.DirectionalLight(0xfff2d8, 0.95 * TUNED_UNDER_R128);
     dirLight.position.set(3, 2, 4);
     scene.add(dirLight);
-    const fillLight = new THREE.DirectionalLight(0x4fccb8, 0.18);
+    const fillLight = new THREE.DirectionalLight(0x4fccb8, 0.18 * TUNED_UNDER_R128);
     fillLight.position.set(-3, -1, -2);
     scene.add(fillLight);
 
@@ -1329,6 +1347,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     glowGrad.addColorStop(1, 'rgba(79,204,184,0)');
     gctx.fillStyle = glowGrad;
     gctx.fillRect(0, 0, 256, 256);
+    // Deliberately left without a colour space, unlike the map's. These stops were chosen by eye
+    // on builds that read them as linear, which is the pale teal on screen; marking them sRGB
+    // would turn the glow a darker, stronger teal that nobody picked.
     const glowTexture = new THREE.CanvasTexture(glowCanvas);
     const glowMat = new THREE.SpriteMaterial({ map: glowTexture, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
     const glowSprite = new THREE.Sprite(glowMat);
