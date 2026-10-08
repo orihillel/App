@@ -104,7 +104,9 @@ export function arrowCountForDistance(distance, {
 //
 // Returns three unit vectors in the same coordinate frame as geo3d's latLonToVector3: the
 // outward `normal`, the `forward` direction the arrow points along the surface, and the `side`
-// that completes a right-handed basis. The globe feeds these straight into an instance matrix.
+// that completes a right-handed basis. The globe's arrows are turned on the GPU, by a vertex
+// shader that builds this same frame line for line (ARROW_VERTEX in lib/overlaygpu.js); this
+// is the reference it follows, and the one the tests check.
 //
 // `north` and `east` are the derivatives of that position function with respect to latitude and
 // longitude — worth stating, because guessing their signs from the shape of the formula is how

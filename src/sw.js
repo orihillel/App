@@ -25,7 +25,11 @@ const RUNTIME_CACHEABLE_HOSTS = ['fonts.googleapis.com', 'fonts.gstatic.com', 'm
 // Cache-first, not network-first, and only safe because the filename carries its version: the
 // -v2 suffix exists precisely because an earlier build changed this file's contents at a stable
 // URL and every cached copy silently kept serving the old shape. New contents mean a new name.
-const IMMUTABLE_ASSET = /\/coastline-[\w-]+\.json$/;
+//
+// The land mask the overlay is cut with (see scripts/build-landmask.mjs) is kept the same way,
+// for the same reasons: 218KB that only globe users need, versioned by name, and without it
+// the overlay has to be cut from the coastline above at far greater cost.
+const IMMUTABLE_ASSET = /\/(coastline-[\w-]+\.json|landmask-[\w-]+\.bin)$/;
 
 // NASA's Blue Marble imagery, on the same cache-first terms and for the same reason.
 //

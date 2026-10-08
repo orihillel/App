@@ -49,7 +49,8 @@ export default defineConfig({
         // Left out of the precache, but not left uncached: src/sw.js keeps it cache-first at
         // runtime, so it is paid for once by the people who actually open the globe and is
         // then instant, and available offline, for them.
-        globIgnores: ['**/coastline-10m-v2.json'],
+        // The land mask (see scripts/build-landmask.mjs) is left out for the same reason.
+        globIgnores: ['**/coastline-10m-v2.json', '**/landmask-*.bin'],
       },
       includeAssets: ['icons/favicon-32.png'],
       manifest: {

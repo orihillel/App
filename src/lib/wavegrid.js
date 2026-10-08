@@ -170,6 +170,13 @@ export function sampleGrid(heights, lat, lon, step = GRID_LAT_STEP) {
   return v === undefined ? null : v;
 }
 
+// How much a direction's neighbouring readings must agree before their mean is drawn as an arrow:
+// the length of their averaged unit vectors, as a share of their total weight. Two swells from
+// opposite sides average to nearly nothing, and an arrow along that residue would point
+// wherever rounding sent it. Shared with the arrow shader (see lib/overlaygpu.js), which makes
+// the same test on the GPU and must not drift from this one.
+export const MIN_DIRECTION_AGREEMENT = 0.15;
+
 // Bilinear sample, skipping cells with no data.
 //
 // Nearest-neighbour on a 5-degree grid renders as visible blocks the size of Portugal, so the
@@ -270,7 +277,7 @@ export function makeGridSampler(step = GRID_LAT_STEP) {
         }
       }
       if (weight <= 0) return null;
-      if (Math.sqrt(x * x + y * y) < weight * 0.15) return null;
+      if (Math.sqrt(x * x + y * y) < weight * MIN_DIRECTION_AGREEMENT) return null;
       return (((Math.atan2(x, y) * 180) / Math.PI) + 360) % 360;
     },
   };
@@ -461,6 +468,6 @@ export function sampleDirectionSmooth(directions, lat, lon, step = GRID_LAT_STEP
   if (weight <= 0) return null;
   // Opposing directions that cancel leave no meaningful mean; better to draw nothing than an
   // arrow pointing at the numerical residue of two contradictory swells.
-  if (Math.sqrt(x * x + y * y) < weight * 0.15) return null;
+  if (Math.sqrt(x * x + y * y) < weight * MIN_DIRECTION_AGREEMENT) return null;
   return (((Math.atan2(x, y) * 180) / Math.PI) + 360) % 360;
 }
