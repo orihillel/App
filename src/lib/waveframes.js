@@ -104,11 +104,9 @@ function lerpAngles(a, b, t) {
 
 // The animated week's playback: how fast it runs, whether it starts over, and the arrow keys.
 //
-// Speed changes how far each tick moves rather than how often it ticks. The tick is already as
-// fast as a phone can repaint the overlay (see FRAME_MS in Globe.jsx); ticking twice as often
-// for 2x would build a backlog instead of going faster. Moving twice as far per tick costs
-// nothing extra, and half as far for 0.5x simply lands between frames, which the animation
-// already draws by blending the two either side (lerpFrames above).
+// Playback runs on the render loop's clock (see advanceTimeline below), so speed is simply how
+// many forecast steps go by per real second; between steps the overlay blends the two either
+// side on the GPU, every frame, whatever the screen's rate.
 export const PLAYBACK_SPEEDS = [0.5, 1, 2];
 
 export function nextSpeed(speed) {
@@ -120,15 +118,21 @@ export function speedLabel(speed) {
   return (speed === 0.5 ? '½' : String(speed)) + '×';
 }
 
-// One tick forward from `pos`, on a week whose last frame is `last`. Without loop it stops on
-// the last frame (the caller then stops playing). With loop the tick after the last frame goes
-// back to now, so the week is seen to end before it starts again rather than skipping its last
-// picture. Off by default: a swell jumping back to Monday is easy to misread as a glitch, so it
-// is something to ask for, not the default.
-export function advancePos(pos, last, { speed = 1, subSteps = 6, loop = false } = {}) {
-  if (!(last > 0)) return 0;
-  if (loop && pos >= last) return 0;
-  return Math.min(last, pos + speed / subSteps);
+// How far the week moves in `dtMs` of real time: `stepMs` per forecast step at 1x, scaled by
+// `speed`. Without loop it stops on the last frame and says so, so the caller can stop playing.
+// With loop it holds the last frame for half a step and then starts over, so the week is seen
+// to end before it begins again rather than skipping its last picture. Off by default: a swell
+// jumping back to Monday is easy to misread as a glitch, so it is something to ask for.
+//
+// It used to advance a fixed amount per timer tick, which made the week play slower whenever
+// ticks ran late -- on a busy phone, exactly when it was already struggling. Measured in time,
+// a late frame shows the right moment instead of a stale one.
+export const LOOP_HOLD_STEPS = 0.5;
+export function advanceTimeline(pos, last, dtMs, { speed = 1, stepMs = 450, loop = false } = {}) {
+  if (!(last > 0)) return { pos: 0, ended: true };
+  const next = (pos || 0) + (Math.max(0, dtMs || 0) * speed) / stepMs;
+  if (loop) return next >= last + LOOP_HOLD_STEPS ? { pos: 0, ended: false } : { pos: next, ended: false };
+  return next >= last ? { pos: last, ended: true } : { pos: next, ended: false };
 }
 
 // One arrow-key press: the next or previous whole frame from wherever the animation is, so a
