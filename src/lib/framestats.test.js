@@ -91,6 +91,11 @@ describe('perfLines', () => {
     expect(lines).toContain('px ratio 2 · 780×1500');
   });
 
+  it('shows when the pixel ratio has been stepped down', () => {
+    expect(perfLines(null, { idle: true, pixelRatio: 1.5, pixelRatioMax: 2, width: 585, height: 1125 })).toContain('px ratio 1.5 of 2 · 585×1125');
+    expect(perfLines(null, { idle: true, pixelRatio: 2, pixelRatioMax: 2, width: 780, height: 1500 })).toContain('px ratio 2 · 780×1500');
+  });
+
   it('reports rate, frame times and JS time while drawing', () => {
     const s = createFrameStats(60);
     for (let i = 0; i < 60; i++) recordFrame(s, 1000 / 60, 3.2);

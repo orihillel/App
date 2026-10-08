@@ -26,6 +26,7 @@ import {
   OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT,
 } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
+import { createQualityGovernor, governorTick } from '../lib/quality.js';
 import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
@@ -407,6 +408,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // Capped at 2x (see above). This was raised to 3x once because coastlines looked soft
     // zoomed in on a 3x phone; that was with MSAA off. With it on, 2x keeps the edges clean.
     renderer.setPixelRatio(pixelRatio);
+    // And lowered from there, a step at a time, on a device that cannot keep up -- raised again
+    // once it can. See lib/quality.js; applied from the frame loop below.
+    let currentPixelRatio = pixelRatio;
+    const quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
+    function applyPixelRatio(ratio) {
+      currentPixelRatio = ratio;
+      renderer.setPixelRatio(ratio);
+      renderer.setSize(width, height);
+      state.dataDirty = true; // the canvas was cleared by the resize: draw it again
+    }
     container.appendChild(renderer.domElement);
     setGlobeError(false);
 
@@ -434,7 +445,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
           idle: !drawnSince,
           calls: info.calls, triangles: info.triangles, lines: info.lines,
-          pixelRatio, width: renderer.domElement.width, height: renderer.domElement.height,
+          pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
+          width: renderer.domElement.width, height: renderer.domElement.height,
           paintMs: perf.paintMs,
         }).join('\n');
       };
@@ -2040,10 +2052,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const SETTLED = 0.00005; // gap below which easing has visually arrived
     let lastTick = null;     // the previous animation frame's timestamp, drawn or not
     let lastDrawnAt = null;  // the previous *drawn* frame's timestamp, for the perf display
+    let drewLastTick = false; // whether the previous tick drew, for the quality governor
     function animate(ts) {
       const now = typeof ts === 'number' ? ts : performance.now();
       const playDt = frameDelta(now, lastTick, PLAYBACK_MAX_FRAME_MS);
       const dt = Math.min(playDt, MAX_FRAME_MS);
+      const tickMs = lastTick == null ? 0 : now - lastTick;
       lastTick = now;
       const overlayMoving = updateOverlayTime(playDt);
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
@@ -2068,6 +2082,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // this, which on a phone is battery burned for no visible result.
       if (!moving && !state.dataDirty) {
         lastDrawnAt = null; // the next drawn frame follows a pause, not a frame
+        // A tick that does nothing arrives once a refresh: how the governor learns the screen.
+        governorTick(quality, { intervalMs: tickMs, drew: false, prevDrew: drewLastTick });
+        drewLastTick = false;
         state.raf = requestAnimationFrame(animate);
         return;
       }
@@ -2106,6 +2123,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         perf.drawn++;
       }
       lastDrawnAt = now;
+      const nextRatio = governorTick(quality, { intervalMs: tickMs, drew: true, prevDrew: drewLastTick });
+      drewLastTick = true;
+      if (nextRatio != null) applyPixelRatio(nextRatio);
       state.raf = requestAnimationFrame(animate);
     }
     animate();
