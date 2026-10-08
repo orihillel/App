@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
-  atmosphereIntensity, srgbToLinear, starFade, ATMOSPHERE_FRAGMENT, ATMOSPHERE_OPACITY, ATMOSPHERE_RADIUS,
-  ATMOSPHERE_EDGE_COS, STARS_FULL_DISTANCE, STARS_GONE_DISTANCE,
+  atmosphereIntensity, atmosphereDaylight, srgbToLinear, starFade, ATMOSPHERE_FRAGMENT, ATMOSPHERE_OPACITY,
+  ATMOSPHERE_RADIUS, ATMOSPHERE_EDGE_COS, ATMOSPHERE_NIGHT, STARS_FULL_DISTANCE, STARS_GONE_DISTANCE,
 } from './atmosphere.js';
 
 describe('atmosphereIntensity', () => {
@@ -24,6 +24,28 @@ describe('atmosphereIntensity', () => {
     // The grazing line passes one radius from the centre: asin(1 / R) to the shell's normal.
     expect(ATMOSPHERE_EDGE_COS).toBeCloseTo(Math.cos(Math.asin(1 / ATMOSPHERE_RADIUS)), 12);
     expect(ATMOSPHERE_FRAGMENT).toContain('cosine / ' + ATMOSPHERE_EDGE_COS);
+  });
+});
+
+describe('atmosphereDaylight', () => {
+  it('keeps the whole rim by day and a trace of it by night', () => {
+    expect(atmosphereDaylight(1)).toBe(1);
+    expect(atmosphereDaylight(0.2)).toBe(1);
+    expect(atmosphereDaylight(-1)).toBe(ATMOSPHERE_NIGHT);
+    expect(ATMOSPHERE_NIGHT).toBeGreaterThan(0);
+  });
+
+  it('stays lit a little past the ground\'s sunset, since the air is higher', () => {
+    expect(atmosphereDaylight(0)).toBeGreaterThan(0.5);
+    let last = 0;
+    for (let s = -0.4; s <= 0.3; s += 0.02) {
+      expect(atmosphereDaylight(s)).toBeGreaterThanOrEqual(last);
+      last = atmosphereDaylight(s);
+    }
+  });
+
+  it('is what the shader does', () => {
+    expect(ATMOSPHERE_FRAGMENT).toContain('mix( ' + ATMOSPHERE_NIGHT + ', 1.0, smoothstep( -0.3, 0.2, sunUp ) )');
   });
 });
 

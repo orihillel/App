@@ -15,6 +15,7 @@ import { MARKER_RADIUS, MARKER_VERTEX, MARKER_FRAGMENT, surfaceFacing, markerSho
 import { BASEMAP, BASEMAP_MUTE_MS, muteBasemap } from '../lib/basemap.js';
 import { ATMOSPHERE_RADIUS, ATMOSPHERE_VERTEX, ATMOSPHERE_FRAGMENT, starFade } from '../lib/atmosphere.js';
 import { planFlight } from '../lib/flight.js';
+import { sunDirection, frameTimeMs, shadeNight } from '../lib/terminator.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
 import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
@@ -500,7 +501,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       uMuteMask: { value: null },
       uMuteHasMask: { value: 0 },
     };
-    oceanMat.onBeforeCompile = (shader) => { muteBasemap(shader, muteUniforms); };
+    // And shaded by night where the sun has set, at the moment on screen: see lib/terminator.js.
+    const sunUniforms = { uSunDir: { value: new THREE.Vector3(0, 0, 1) } };
+    oceanMat.onBeforeCompile = (shader) => {
+      muteBasemap(shader, muteUniforms);
+      shadeNight(shader, sunUniforms);
+    };
     let mapTexture = null;
 
     // Whenever a texture goes on, the tint has to come off with it.
@@ -1662,10 +1668,44 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       state.dataDirty = true; // keep drawing until the fade is done
     }
 
+    // The moment the globe is showing, for its day and night: the forecast step on screen while
+    // the week is shown -- blended between two steps exactly as the overlay is, so the night sweeps
+    // round smoothly as it plays -- and otherwise now.
+    function shownTime() {
+      const u = fieldUniforms;
+      if (wavesOnRef.current && week && u.uWeekOn.value > 0.5) {
+        const a = week.list[u.uLayer0.value];
+        const b = week.list[u.uLayer1.value];
+        const ta = frameTimeMs(a && a.t);
+        const tb = frameTimeMs(b && b.t);
+        if (ta != null && tb != null) return { ms: ta + (tb - ta) * u.uMix.value, live: false };
+      }
+      return { ms: Date.now(), live: true };
+    }
+    // When the night last drawn was for, and whether that was now. The live map's night creeps on
+    // a quarter of a degree a minute, which an idle globe -- one that draws nothing until it is
+    // touched -- would otherwise never show: it is redrawn every couple of minutes to keep up.
+    const SUN_REDRAW_MS = 120000;
+    let sunShownAt = 0;
+    let sunLive = true;
+    const sunWorld = new THREE.Vector3();
+    function updateSun() {
+      const shown = shownTime();
+      const d = sunDirection(shown.ms);
+      sunUniforms.uSunDir.value.set(d[0], d[1], d[2]);
+      // The shell is in world space, and the globe is turned.
+      sunWorld.set(d[0], d[1], d[2]).applyQuaternion(globeGroup.quaternion);
+      atmosphereMat.uniforms.uSunDir.value.copy(sunWorld);
+      sunShownAt = shown.ms;
+      sunLive = shown.live;
+    }
+
     // The atmosphere: a shell a little larger than the globe, drawn from the inside so only the
     // ring outside the globe's edge shows. See lib/atmosphere.js.
     const atmosphereGeo = new THREE.SphereGeometry(R * ATMOSPHERE_RADIUS, 96, 64);
     const atmosphereMat = new THREE.ShaderMaterial({
+      // Where the sun is, in world space: the shell does not turn with the globe.
+      uniforms: { uSunDir: { value: new THREE.Vector3(0, 0, 1) } },
       vertexShader: ATMOSPHERE_VERTEX,
       fragmentShader: ATMOSPHERE_FRAGMENT,
       side: THREE.BackSide,
@@ -2397,7 +2437,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (colorsChanged || textChanged) state.dataDirty = true; // something to show: draw once
     }
     updateClusters(); // builds the first set of markers, and colours them
-    const dataTimer = setInterval(refreshMarkerData, 1000);
+    const dataTimer = setInterval(() => {
+      refreshMarkerData();
+      if (sunLive && Date.now() - sunShownAt > SUN_REDRAW_MS) state.dataDirty = true;
+    }, 1000);
 
     // Smoothing. Input writes to the *target* rotation/distance; each frame eases the rendered
     // values toward it. That's what makes this feel smooth rather than stepwise: a wheel notch
@@ -2483,6 +2526,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       starMat.opacity = STAR_OPACITY * starsShown;
       stars.visible = starsShown > 0;
       updateMute(dt);
+      updateSun();
       if (coastlineMesh) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
         coastlineMat.opacity = o;
