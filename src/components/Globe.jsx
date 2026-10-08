@@ -11,6 +11,7 @@ import {
   GRID_LAT_STEP, gridStepOf,
 } from '../lib/wavegrid.js';
 import { fibonacciSphere, arrowCountForDistance } from '../lib/swellarrows.js';
+import { MARKER_RADIUS, MARKER_VERTEX, MARKER_FRAGMENT, surfaceFacing, markerShown, markerSizeFactor } from '../lib/markerdots.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
 import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
@@ -339,11 +340,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // lat/lon on the surface, that gap was a median 55px and up to 100px at the closest zoom.
     // Centring on the surface makes it identically zero at every angle and every zoom.
     //
-    // The dot is then half-buried, which costs nothing visually: the marker sphere's centre
-    // lies on the globe's surface, so the two spheres intersect in a circle of exactly the
-    // marker's radius, and with a flat (unlit) material the visible hemisphere renders as the
-    // same disc as the whole sphere did. It also fixes the limb: dots near the horizon used to
-    // float clear of the globe's silhouette, and now they're correctly cut off by it.
+    // Each dot is a flat disc facing the camera, centred on that point (see lib/markerdots.js),
+    // and it fades out over a band just inside the horizon rather than floating clear of the
+    // globe's silhouette or being sliced by it.
     const MARKER_SHELL = R;
     // How close the camera may get, in Earth radii from the centre. 1.08 showed a 426km-wide
     // view; 1.015 shows 79km, which is what it takes to separate spots on a busy coast -- two
@@ -1356,11 +1355,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     glowSprite.scale.set(2.7, 2.7, 1);
     scene.add(glowSprite);
 
-    // One InstancedMesh for every spot marker instead of one Mesh each. With 150+ spots that's
+    // Every spot marker in one instanced draw instead of one mesh each. With 150+ spots that's
     // the difference between 150+ draw calls per frame and exactly one — the single biggest
     // reason the globe got progressively less smooth as the spot catalog grew from 44 to 153.
-    // Per-marker color still works (setColorAt writes into a per-instance color attribute),
-    // and Raycaster handles InstancedMesh natively, reporting which instance was hit.
+    // Each instance is a flat dot, two triangles, turned to face the camera and faded toward
+    // the horizon by its shader (see lib/markerdots.js).
     // Markers pile up on the coastlines that carry the most spots. Zoomed out, California,
     // Central America and southwest France are each an indistinct blob of overlapping dots,
     // and a tap gets whichever one the raycaster happened to hit first -- so spots within a
@@ -1388,16 +1387,37 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return el;
     });
 
-    const markerGeo = new THREE.SphereGeometry(0.026, 12, 12);
-    const markerMat = new THREE.MeshBasicMaterial();
-    // Allocated for every spot and then drawn with `count` set to however many markers the
-    // current zoom actually produces -- an InstancedMesh cannot be resized, but it can be
-    // told to draw fewer than it holds.
-    const markerMesh = new THREE.InstancedMesh(markerGeo, markerMat, Math.max(allSpots.length, 1));
-    const instanceDummy = new THREE.Object3D();
-    // Positions never change (the globe group is what rotates) but the scale does, per zoom
-    // level — see updateMarkerScale below — so the matrix buffer is rewritten occasionally.
-    markerMesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    // One quad, two units across, instanced once per marker. Allocated for every spot and then
+    // drawn with `instanceCount` set to however many markers the current zoom produces.
+    const markerSlots = Math.max(allSpots.length, 1);
+    const markerGeo = new THREE.InstancedBufferGeometry();
+    markerGeo.setAttribute('position', new THREE.Float32BufferAttribute([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0], 3));
+    markerGeo.setIndex([0, 1, 2, 0, 2, 3]);
+    // Where each marker is, its colour and its size. The positions are fixed for a zoom level --
+    // the globe group is what rotates -- and the size at a given zoom is one uniform, so only
+    // the colours change between rebuilds.
+    const markerCenters = new THREE.InstancedBufferAttribute(new Float32Array(markerSlots * 3), 3);
+    const markerColors = new THREE.InstancedBufferAttribute(new Float32Array(markerSlots * 3), 3);
+    const markerSizes = new THREE.InstancedBufferAttribute(new Float32Array(markerSlots), 1);
+    markerColors.setUsage(THREE.DynamicDrawUsage);
+    markerGeo.setAttribute('aCenter', markerCenters);
+    markerGeo.setAttribute('aColor', markerColors);
+    markerGeo.setAttribute('aSize', markerSizes);
+    markerGeo.instanceCount = 0;
+    const markerMat = new THREE.ShaderMaterial({
+      uniforms: { uRadius: { value: MARKER_RADIUS } },
+      vertexShader: MARKER_VERTEX,
+      fragmentShader: MARKER_FRAGMENT,
+      transparent: true,
+      depthTest: false,
+      depthWrite: false,
+    });
+    const markerMesh = new THREE.Mesh(markerGeo, markerMat);
+    // Over the overlay, the coastline and the arrows (renderOrder 0-2): the thing you tap goes
+    // on top. Nothing hides a dot but the globe, and round the back the shader has faded it out.
+    markerMesh.renderOrder = 3;
+    // The geometry is one quad at the centre of the globe; the shader puts each copy in place.
+    markerMesh.frustumCulled = false;
 
     let markers = [];
     let clusterCellDeg = -1;
@@ -1432,32 +1452,27 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       minDistance: MIN_DISTANCE,
       closeShrink: 0.38,  // on-screen size at the closest zoom, as a fraction of the default
     };
-    let lastMarkerScale = -1;
-    function updateMarkerScale() {
-      const scale = markerScaleForDistance(state.distance, MARKER_SCALING);
-      // Rewriting 153 matrices is cheap but not free, and a sub-pixel change isn't visible.
-      // The threshold is relative, not absolute: zoomed right in the scale itself is ~0.005, so
-      // an absolute epsilon would swallow every remaining change and freeze the dots mid-shrink.
-      if (lastMarkerScale > 0 && Math.abs(scale - lastMarkerScale) <= scale * 0.01) return;
-      lastMarkerScale = scale;
-      for (let i = 0; i < markers.length; i++) {
-        instanceDummy.position.copy(markers[i].basePos);
-        // A cluster is drawn bigger than a lone spot, by log rather than by count, so sixty
-        // spots reads as more than two without becoming a dot the size of a country.
-        instanceDummy.scale.setScalar(scale * clusterScale(markers[i].count));
-        instanceDummy.updateMatrix();
-        markerMesh.setMatrixAt(i, instanceDummy.matrix);
-      }
-      markerMesh.instanceMatrix.needsUpdate = true;
+    // A lone spot's radius at this zoom. One uniform for every dot, set every frame: it used to
+    // be a matrix per marker, rewritten whenever the size had moved by more than 1%.
+    function markerRadius() {
+      return MARKER_RADIUS * markerScaleForDistance(state.distance, MARKER_SCALING);
     }
+    function updateMarkerScale() {
+      markerMat.uniforms.uRadius.value = markerRadius();
+    }
+    // A cluster is drawn bigger than a lone spot, by log rather than by count, so sixty spots
+    // reads as more than two without becoming a dot the size of a country.
     function clusterScale(count) {
       return count > 1 ? Math.min(2.1, 1 + Math.log10(count) * 0.85) : 1;
     }
     const instanceColor = new THREE.Color();
+    function setMarkerColor(i, css) {
+      instanceColor.set(css); // converted to linear, as three's own materials keep colours
+      markerColors.setXYZ(i, instanceColor.r, instanceColor.g, instanceColor.b);
+    }
     // Every slot starts grey, including the ones no current cluster uses, so a marker can
     // never appear carrying a colour left over from a different zoom level.
-    for (let i = 0; i < Math.max(allSpots.length, 1); i++) markerMesh.setColorAt(i, instanceColor.set('#33465C'));
-    if (markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
+    for (let i = 0; i < markerSlots; i++) setMarkerColor(i, '#33465C');
     globeGroup.add(markerMesh);
 
     // Re-form the clusters for the current zoom. Called from the frame loop, and cheap to call
@@ -1476,7 +1491,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const wanted = markers[i].count > 1 ? 'tl-label tl-count' : 'tl-label';
         if (markers[i].label.className !== wanted) markers[i].label.className = wanted;
       }
-      markerMesh.count = markers.length;
+      for (let i = 0; i < markers.length; i++) {
+        const p = markers[i].basePos;
+        markerCenters.setXYZ(i, p.x, p.y, p.z);
+        markerSizes.setX(i, clusterScale(markers[i].count));
+      }
+      markerCenters.needsUpdate = true;
+      markerSizes.needsUpdate = true;
+      markerGeo.instanceCount = markers.length;
       // Every pooled label is hidden here, not just the slots this zoom leaves unused.
       //
       // The elements are pooled and reused, but `markers` is rebuilt from scratch on each zoom
@@ -1489,8 +1511,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       for (let i = 0; i < labelPool.length; i++) {
         if (labelPool[i].style.display !== 'none') labelPool[i].style.display = 'none';
       }
-      lastMarkerScale = -1; // the matrices belong to the previous set; rewrite all of them
-      updateMarkerScale();
       refreshMarkerData();
       state.dataDirty = true;
     }
@@ -1508,11 +1528,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // and not too much time elapsed — the same drag gesture that rotates the globe also passes
     // through mousedown/mouseup, so a distance+time threshold is what actually distinguishes
     // "flicked past this marker while rotating" from "meant to tap it".
-    const camDir = new THREE.Vector3();
-    // Rotating a point never changes its length, so every marker's world position has the same
-    // constant length -- which means the "is this marker facing the camera" test can compare the
-    // raw dot product against a pre-scaled threshold instead of normalizing a vector per marker.
-    const FACING_THRESHOLD = 0.28 * MARKER_SHELL;
     // A ceiling as well as a collision test. Even perfectly tiled, forty names is not a map you
     // can read -- it is a wall of text with a globe behind it.
     const MAX_LABELS = 14;
@@ -1525,38 +1540,40 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // gentle enough that you can still tell where you were.
     const CLUSTER_ZOOM_STEP = 0.55;
     const pickScratch = new THREE.Vector3();
+    const pickView = new THREE.Vector3();
+    // Which dot a tap was meant for, worked out on screen rather than by casting a ray at the
+    // dots, which are drawn by their shader where no ray can find them.
+    //
+    // A tap inside a dot takes that dot. Failing that, the nearest one within a fingertip's
+    // radius: dots shrink on screen as you zoom in (see updateMarkerScale), and a ~5px dot at the
+    // closest zoom is far smaller than anyone can reliably tap, so the dot stays a small mark of
+    // a point while the thing you actually hit stays finger-sized. Dots fading out toward the
+    // horizon cannot be picked, by the same rule that takes their labels away.
     function pickSpotAt(clientX, clientY) {
       const rect = renderer.domElement.getBoundingClientRect();
       ndc.set(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
-      raycaster.setFromCamera(ndc, camera);
-      // Against an InstancedMesh a hit identifies itself by instanceId, which is the marker's
-      // index — no scanning a list of meshes to find which one was hit.
-      const hit = raycaster.intersectObject(markerMesh)[0];
-      if (hit && hit.instanceId != null) {
-        const marker = markers[hit.instanceId];
-        if (marker) chooseMarker(marker);
-        return;
-      }
-      // Nothing exactly under the finger. Dots shrink on screen as you zoom in (see
-      // updateMarkerScale), and a ~5px dot at the closest zoom is far smaller than anyone can
-      // reliably tap -- so shrinking the ray target along with the dot would trade one problem
-      // for another. Fall back to the nearest marker within a fingertip's radius: the dot stays
-      // a small visual mark of a point while the thing you actually hit stays finger-sized.
-      let bestMarker = null;
-      let bestDistance = TAP_TOLERANCE_PX;
       const px = clientX - rect.left;
       const py = clientY - rect.top;
-      camDir.copy(camera.position).normalize();
+      const cam = camera.position;
+      // CSS pixels per globe radius at a depth of one radius, to turn a dot's size into pixels.
+      const pxPerUnit = rect.height / 2 / Math.tan((camera.fov * Math.PI) / 360);
+      const radius = markerRadius();
+      let bestMarker = null;
+      let bestScore = Infinity;
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
         pickScratch.copy(m.basePos).applyEuler(globeGroup.rotation);
-        if (pickScratch.dot(camDir) <= FACING_THRESHOLD) continue; // round the back of the globe
+        const facing = surfaceFacing(pickScratch.x, pickScratch.y, pickScratch.z, cam.x, cam.y, cam.z);
+        if (!markerShown(facing)) continue; // faded out toward the horizon, or round the back
+        const depth = -pickView.copy(pickScratch).applyMatrix4(camera.matrixWorldInverse).z;
+        if (!(depth > 0)) continue; // behind the camera
         pickScratch.project(camera);
-        if (pickScratch.z >= 1) continue; // behind the camera
-        const dx = (pickScratch.x * 0.5 + 0.5) * rect.width - px;
-        const dy = (-pickScratch.y * 0.5 + 0.5) * rect.height - py;
-        const distance = Math.hypot(dx, dy);
-        if (distance < bestDistance) { bestDistance = distance; bestMarker = m; }
+        const distance = Math.hypot((pickScratch.x * 0.5 + 0.5) * rect.width - px, (-pickScratch.y * 0.5 + 0.5) * rect.height - py);
+        const dotPx = ((radius * clusterScale(m.count) * markerSizeFactor(facing)) / depth) * pxPerUnit;
+        if (distance > Math.max(TAP_TOLERANCE_PX, dotPx)) continue;
+        // Inside a dot beats beside one; between two, the edge the tap is further inside.
+        const score = distance - dotPx;
+        if (score < bestScore) { bestScore = score; bestMarker = m; }
       }
       if (bestMarker) { chooseMarker(bestMarker); return; }
       readOceanAt(ndc);
@@ -1752,12 +1769,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const labelCandidates = [];
     const labelShow = new Set();
     function updateLabels() {
-      camDir.copy(camera.position).normalize();
       labelCandidates.length = 0;
+      const cam = camera.position;
 
       for (let i = 0; i < markers.length; i++) {
         const m = markers[i];
-        let onScreen = m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation).dot(camDir) > FACING_THRESHOLD;
+        const p = m.worldPos.copy(m.basePos).applyEuler(globeGroup.rotation);
+        // Only where its dot is drawn: once the dot is at least half faded in (see
+        // lib/markerdots.js). The test used to be on the angle from the middle of the view
+        // alone, which from the default zoom put labels on spots just behind the horizon.
+        let onScreen = markerShown(surfaceFacing(p.x, p.y, p.z, cam.x, cam.y, cam.z));
         if (onScreen) {
           m.worldPos.project(camera); // in place, on the world position just computed above
           // Facing the camera is not the same as being on screen. Zoomed out they amount to the
@@ -1928,7 +1949,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         // drew a full frame once a second, forever.
         const color = bestScore == null ? '#33465C' : scoreToColor(bestScore);
         if (color !== m.color) {
-          markerMesh.setColorAt(i, instanceColor.set(color));
+          setMarkerColor(i, color);
           m.color = color;
           colorsChanged = true;
         }
@@ -1945,7 +1966,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         // New text can change a label's size, and so where labels fit: worth a redraw.
         if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; textChanged = true; }
       }
-      if (colorsChanged && markerMesh.instanceColor) markerMesh.instanceColor.needsUpdate = true;
+      if (colorsChanged) markerColors.needsUpdate = true;
       // What the legend reports. "124 of 403" is the difference between a colour scale that
       // describes the globe and one that describes a quarter of it while looking the same.
       if (spotsWithReading !== lastReadingCount) {
@@ -2085,7 +2106,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (mapTexture) mapTexture.dispose();
       oceanMat.dispose(); oceanMesh.geometry.dispose();
       if (satelliteTexture) satelliteTexture.dispose();
-      markerGeo.dispose(); markerMat.dispose(); markerMesh.dispose();
+      markerGeo.dispose(); markerMat.dispose();
       // ~10MB of line vertices: the one buffer here big enough that leaking it across a few
       // open/close cycles of the globe would actually be felt on a phone.
       if (coastlineMesh) coastlineMesh.geometry.dispose();
