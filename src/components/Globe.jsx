@@ -23,16 +23,16 @@ import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { frameLabel, frameBuildLabel, weekFrameAt, advanceTimeline, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
-  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT,
+  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
 } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
 import { createQualityGovernor, governorTick } from '../lib/quality.js';
 import {
   velocityComponents, regularizeVelocity, degreesPerSecondPerKph, particlePxPerKph, viewCapRadius, particleCount, stateTexel,
-  PARTICLE_STATE_SIZE, MAX_PARTICLES, PARTICLE_TRAIL_SECONDS, PARTICLE_IDLE_MS,
+  PARTICLE_STATE_SIZE, MAX_PARTICLES, PARTICLE_TRAIL_SECONDS,
   PARTICLE_UPDATE_VERTEX, PARTICLE_UPDATE_FRAGMENT, PARTICLE_DRAW_VERTEX, PARTICLE_DRAW_FRAGMENT,
 } from '../lib/windparticles.js';
-import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS } from '../lib/motion.js';
+import { frameDelta, easeAlpha, decayFactor, blendVelocity, MAX_FRAME_MS, AMBIENT_MOTION_MS } from '../lib/motion.js';
 import { ConditionScale } from './ConditionScale.jsx';
 
 // How long one six-hour step of the week takes to play at 1x: the whole week in about twelve
@@ -853,6 +853,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         uDirWeek: { value: null },
         uShell: { value: ARROW_SHELL },
         uScale: { value: 0 },
+        uTime: { value: 0 },
+        uMotion: { value: 0 },
       },
       vertexShader: ARROW_VERTEX,
       fragmentShader: ARROW_FRAGMENT,
@@ -1039,12 +1041,34 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return 0.016 * Math.max(distance - R, 0.02) / (3 - R);
     }
 
-    function updateArrows() {
+    // The arrows' glide (see ARROW_VERTEX in lib/overlaygpu.js): how far into it they are, in
+    // seconds, and how much of it is showing -- eased up to 1 while anyone is looking and back
+    // down to 0, the arrows at rest on their points, once the globe has been left alone.
+    const ARROW_SETTLE_MS = 700;
+    let arrowTime = 0;
+    let arrowMotion = 0;
+    // The wind's particles show its direction better than arrows can, and both at once is
+    // clutter: while they are drawn, the arrows step aside.
+    function arrowsShown() {
+      return !!arrowMesh && wavesOnRef.current && dirsShown && !particlesWanted();
+    }
+    // Whether the arrows are gliding or settling, which keeps the frame loop drawing.
+    function arrowsMoving() {
+      return !reducedMotion && arrowsShown() && (motionAllowed() || arrowMotion > 0);
+    }
+
+    function updateArrows(dtMs) {
       if (!arrowMesh) return;
-      // The wind's particles show its direction better than arrows can, and both at once is
-      // clutter: while they are drawn, the arrows step aside.
-      arrowMesh.visible = wavesOnRef.current && dirsShown && !particlesWanted();
-      if (!arrowMesh.visible) return;
+      arrowMesh.visible = arrowsShown();
+      if (!arrowMesh.visible) { arrowMotion = 0; return; }
+      const wanted = !reducedMotion && motionAllowed() ? 1 : 0;
+      const step = dtMs / ARROW_SETTLE_MS;
+      arrowMotion = wanted > arrowMotion ? Math.min(wanted, arrowMotion + step) : Math.max(wanted, arrowMotion - step);
+      // Wrapped at a whole number of glides, which the shader cannot tell from not wrapping, so
+      // the time never grows large enough to cost the shader its precision.
+      if (arrowMotion > 0) arrowTime = (arrowTime + dtMs / 1000) % (ARROW_DRIFT_SECONDS * 1000);
+      arrowMat.uniforms.uTime.value = arrowTime;
+      arrowMat.uniforms.uMotion.value = arrowMotion;
       // The camera's own half-FOV, so the count follows what is actually on screen rather than
       // a hard-coded guess at it.
       const geo = arrowMesh.geometry;
@@ -1357,10 +1381,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // How long the particles take to fade in when the wind is shown, in milliseconds.
     const PARTICLE_FADE_MS = 400;
     let particles = null;
-    // The last time anyone touched the globe. The particles run for PARTICLE_IDLE_MS after it,
-    // then hold still so a globe left open stops drawing.
+    // The last time anyone touched the globe. The particles, and the arrows' glide, run for
+    // AMBIENT_MOTION_MS after it (see lib/motion.js), then hold still so a globe left open stops
+    // drawing.
     let lastInputAt = performance.now();
     function noteInput() { lastInputAt = performance.now(); }
+    function motionAllowed() { return performance.now() - lastInputAt < AMBIENT_MOTION_MS; }
 
     // Whether the particles belong on screen: the overlay shows the live wind, and the wind came
     // with directions to make them from.
@@ -1370,7 +1396,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     // And whether they are moving, which keeps the frame loop drawing.
     function particlesRunning() {
-      return particlesWanted() && performance.now() - lastInputAt < PARTICLE_IDLE_MS;
+      return particlesWanted() && motionAllowed();
     }
 
     // Two state textures, read from one and written to the other in turn; the pass that moves
@@ -2278,6 +2304,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       lastTick = now;
       const overlayMoving = updateOverlayTime(playDt);
       const particlesMoving = particlesRunning();
+      const arrowsGliding = arrowsMoving();
       const coasting = !state.dragging && (Math.abs(state.velX) > MIN_VELOCITY || Math.abs(state.velY) > MIN_VELOCITY);
       if (coasting) {
         state.targetRotY += state.velY * dt;
@@ -2292,7 +2319,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dRotX = state.targetRotX - state.rotX;
       const dRotY = state.targetRotY - state.rotY;
       const dDist = state.targetDistance - state.distance;
-      const moving = overlayMoving || particlesMoving || coasting || state.dragging
+      const moving = overlayMoving || particlesMoving || arrowsGliding || coasting || state.dragging
         || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
 
       // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
@@ -2330,7 +2357,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       ensureWaveOverlay();
       if (waveMesh) waveMesh.visible = wavesOnRef.current;
       stepParticles(dt, particlesMoving);
-      updateArrows();
+      updateArrows(dt);
       if (coastlineMesh) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
         coastlineMat.opacity = o;

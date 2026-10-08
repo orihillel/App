@@ -63,11 +63,6 @@ export const PARTICLE_TAIL_PX = 0.5;
 // barely moves its particles, and a field of dots that do not go anywhere reads as noise rather
 // than as calm, so they fade toward nothing below this.
 export const PARTICLE_FULL_KPH = 10;
-// After this long with nobody touching the globe the particles stop where they are. Drawing them
-// means drawing every frame, which a still globe otherwise never does; a minute is long enough to
-// watch the wind and short enough not to run a phone's battery down on a screen left open. The
-// streaks stay, frozen, and the next touch sets them moving again.
-export const PARTICLE_IDLE_MS = 60000;
 
 // Light, like the arrows, and for the arrows' reason: the wind ramp starts at a deep purple, and
 // a pale streak reads over all of it. sRGB bytes, written as they are.

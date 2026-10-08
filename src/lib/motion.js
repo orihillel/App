@@ -43,3 +43,10 @@ export function blendVelocity(prev, sample, dtMs, keepPerFrame = 0.6) {
   const keep = decayFactor(keepPerFrame, dtMs);
   return prev * keep + sample * (1 - keep);
 }
+
+// How long the globe's ambient motion -- the wind's particles, the drifting arrows -- keeps going
+// after the last touch. Motion means drawing every frame, which a still globe otherwise never
+// does: a minute is long enough to watch the sea move, and short enough not to run a phone's
+// battery down on a screen left open. After it everything settles and holds still, and the next
+// touch sets it going again.
+export const AMBIENT_MOTION_MS = 60000;
