@@ -3,6 +3,7 @@ import { DataUtils } from 'three';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
   OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, arrowDrift, ARROW_DRIFT_TRAVEL, ARROW_DRIFT_SECONDS,
+  overlayLimbFade, OVERLAY_LIMB_FADE,
 } from './overlaygpu.js';
 import { makeGridSampler, gridCellCount, gridCells, gridRows, MIN_DIRECTION_AGREEMENT } from './wavegrid.js';
 import { waveColor, WAVE_SCALE_MAX, swellTravelBearing } from './wavescale.js';
@@ -268,6 +269,36 @@ describe('weekSlot', () => {
 describe('OVERLAY_FRAGMENT', () => {
   it('does not convert colour spaces or tone-map, so the legend bytes reach the screen as they are', () => {
     expect(OVERLAY_FRAGMENT).not.toMatch(/colorspace_fragment|tonemapping_fragment/);
+  });
+
+  it('thins toward the horizon as overlayLimbFade does', () => {
+    expect(OVERLAY_FRAGMENT).toContain('smoothstep( 0.0, ' + OVERLAY_LIMB_FADE + ', facing )');
+  });
+});
+
+describe('overlayLimbFade', () => {
+  it('is whole across the face of the globe and gone at the horizon', () => {
+    expect(overlayLimbFade(1)).toBe(1);
+    expect(overlayLimbFade(OVERLAY_LIMB_FADE)).toBe(1);
+    expect(overlayLimbFade(0)).toBe(0);
+    expect(overlayLimbFade(-0.2)).toBe(0);
+  });
+
+  it('only touches the outermost sliver of the disc at the default zoom', () => {
+    // From three radii out, where on the disc (as a share of its radius on screen) the overlay
+    // starts to thin: the point whose facing is OVERLAY_LIMB_FADE.
+    const d = 3;
+    const facingAt = (a) => {
+      const p = [Math.sin(a), 0, Math.cos(a)];
+      const t = [-p[0], 0, d - p[2]];
+      return (p[0] * t[0] + p[2] * t[2]) / Math.hypot(t[0], t[2]);
+    };
+    const screenR = (a) => Math.sin(a) / (d - Math.cos(a));
+    let a = 0;
+    while (facingAt(a) > OVERLAY_LIMB_FADE) a += 1e-4;
+    const horizon = Math.acos(1 / d);
+    // About the outer twentieth of the disc.
+    expect(screenR(a) / screenR(horizon)).toBeGreaterThan(0.94);
   });
 });
 

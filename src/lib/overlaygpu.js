@@ -207,11 +207,25 @@ export function weekSlot(pos, count, playing) {
 // go to the canvas untouched, which is what keeps the globe's colours identical to the legend's.
 export const OVERLAY_VERTEX = /* glsl */ `
 varying vec2 vUv;
+varying vec3 vWorld;
 void main() {
   vUv = uv;
-  gl_Position = projectionMatrix * modelViewMatrix * vec4( position, 1.0 );
+  vec4 world = modelMatrix * vec4( position, 1.0 );
+  vWorld = world.xyz;
+  gl_Position = projectionMatrix * viewMatrix * world;
 }
 `;
+
+// How the overlay thins toward the globe's edge: drawn whole wherever the surface faces the camera
+// more squarely than this (the cosine between its normal and the line to the camera), fading to
+// nothing at the horizon. At the default zoom that is the outermost few per cent of the disc,
+// where the colours are foreshortened past reading anyway; it lets the globe's edge be the
+// atmosphere's rather than a hard rim of colour.
+export const OVERLAY_LIMB_FADE = 0.3;
+export function overlayLimbFade(facing) {
+  const t = Math.min(1, Math.max(0, facing / OVERLAY_LIMB_FADE));
+  return t * t * (3 - 2 * t);
+}
 
 export const OVERLAY_FRAGMENT = /* glsl */ `
 uniform sampler2D uLive;        // the live field: R = value x coverage, G = coverage
@@ -228,6 +242,7 @@ uniform float uMix;             // ...and how far between them
 uniform float uOpacity;
 uniform float uHasMask;
 varying vec2 vUv;
+varying vec3 vWorld;
 
 void main() {
   vec2 f;
@@ -255,6 +270,11 @@ void main() {
     float landEdge = max( fwidth( landCoverage ), 1e-5 );
     alpha *= 1.0 - smoothstep( -landEdge, landEdge, landCoverage );
   }
+
+  // Thinning toward the horizon: overlayLimbFade in lib/overlaygpu.js. The globe is centred on
+  // the origin, so a point's own direction is its normal.
+  float facing = dot( normalize( vWorld ), normalize( cameraPosition - vWorld ) );
+  alpha *= smoothstep( 0.0, ${OVERLAY_LIMB_FADE}, facing );
   gl_FragColor = vec4( rgb, alpha * uOpacity );
 }
 `;
