@@ -18,11 +18,11 @@
 // fetches, with room to spare. The planned count is checked before the build starts rather
 // than discovered when the platform kills it half way.
 import {
-  gridCells, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
+  gridCells, gridCellCount, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
-import { fetchFrameFromOm, WAVE_MODEL, newRunProbe } from './omGrid.js';
+import { fetchFrameFromOm, fetchWindFrameFromOm, WAVE_MODEL, WIND_MODEL, newRunProbe } from './omGrid.js';
 
-export const FRAMES_KEY = 'waveframes:v2';
+export const FRAMES_KEY = 'waveframes:v3';
 export const FRAME_COUNT = 28;        // 7 days
 export const FRAME_STEP_H = 6;
 
@@ -31,7 +31,7 @@ export const FRAME_STEP_H = 6;
 // be worth spending that twice.
 export const FRAMES_REFRESH_MS = 24 * 60 * 60 * 1000;
 
-export const FRAMES_FAIL_KEY = 'waveframes:fail:v2';
+export const FRAMES_FAIL_KEY = 'waveframes:fail:v3';
 export const FRAMES_FAIL_COOLDOWN_MS = 60 * 60 * 1000;
 
 // Same reasoning as the live grid's gate: half a world of frames reads as "the rest of the
@@ -59,7 +59,7 @@ export const UNITS_PER_MINUTE = 600;
 // tick and spends 406 of the same allowance when it refreshes.
 export const UNITS_PER_PASS = 500;
 
-export const FRAMES_PARTIAL_KEY = 'waveframes:partial:v2';
+export const FRAMES_PARTIAL_KEY = 'waveframes:partial:v3';
 
 // Kept below Cloudflare's 50 so a build cannot be killed part-way by the platform.
 export const MAX_FETCHES = 45;
@@ -82,30 +82,37 @@ const FORECAST_URL = 'https://api.open-meteo.com/v1/forecast';
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 export const FRAME_GAP_MS = 120;
 
-// What a week is made of, as data rather than as a second copy of this file.
-//
-// The swell week and the wind week differ in four things -- which endpoint, which two
-// variables, how the values are packed into bytes, and which keys they live under -- and in
-// nothing else. Everything that was hard to get right here is the part they share: the pacing
-// across cron ticks, the accumulating partial, the timestep-overrun guard, the coverage gate.
-// A sibling module would have been a second copy of exactly that, and the next fix to the
-// pacing would have landed in one of them.
-//
-// The wind week runs a coarser grid than the swell week, and the arithmetic decides it rather
-// than taste, the same way FRAME_LAT_STEP was decided. A 28-frame week costs cells x 28: at
-// the swell week's 15 degrees that is 186 x 28 = 5,208, and two of those is 10,416 against a
-// daily allowance of about 10,000 -- the second week would not fit beside the first. At 20
-// degrees the grid is 105 cells and the wind week costs 2,940, which does. The overlay is
-// interpolated to a 720x360 texture before it is drawn, so the cost is detail in the field
-// rather than blocks on the screen.
-export const WIND_FRAME_LAT_STEP = 20;
-
 // The swell week's own step. It was 15 degrees when a frame cost one API unit per cell and a
 // 28-frame week had to fit a day's allowance; a frame is one file download now, so this is a
-// payload decision instead. 5 degrees is 1,612 cells -- 28 frames is about 120KB over the wire,
-// which a phone can afford -- and three times finer than what it replaces.
-export const WAVE_FRAME_LAT_STEP = 5;
+// payload decision instead.
+//
+// It was 5 degrees, and that lost more of the sea than it looked. Measured on two frames of one
+// run, two and five days out, read back at one-degree points the way the globe samples them and
+// compared with the file's own one-degree averages: a 5-degree frame was out by 0.77m at the
+// 95th percentile and by 1.0-1.3m where the sea was over four metres, and it took a metre or two
+// off the top of a storm (8.1m for a 10.2m peak, five days out). At 2.5 degrees those halve --
+// 0.38m, 0.5m, and 9.1m for the same peak -- against 0.30m, 0.38m and 9.4m for the 2-degree
+// live map. The cost is the download: 6,410 cells, so 28 frames are 469KB of JSON and 258KB
+// gzipped, against 119KB and 72KB at 5 degrees, for a week fetched only when play is pressed.
+export const WAVE_FRAME_LAT_STEP = 2.5;
 
+// The wind week's step: the swell week's. It was 20 degrees -- 105 cells, 1,100km and more
+// apart -- while its frames were point queries billed a unit a cell, because that was what
+// fitted beside the swell week in a day's allowance; at that spacing a front is two cells and
+// the flow has no shape to animate. Read from the published files instead (see
+// fetchWindFrameFromOm in src/omGrid.js), a frame costs the same whatever the grid, so it is
+// the swell week's. Measured the same way, on one frame two days out: out by 7.9km/h at the
+// 95th percentile and 12km/h where the wind was over 40, where 5 degrees was 13 and 22.
+export const WIND_FRAME_LAT_STEP = WAVE_FRAME_LAT_STEP;
+
+// What a week is made of, as data rather than as a second copy of this file.
+//
+// The swell week and the wind week differ in a handful of things -- which file and how a frame
+// is read from it, how many frames a pass can afford, how the values are packed into bytes, and
+// which keys they live under -- and in nothing else. Everything that was hard to get right here
+// is the part they share: the pacing across cron ticks, the accumulating partial, the coverage
+// gate. A sibling module would have been a second copy of exactly that, and the next fix to the
+// pacing would have landed in one of them.
 export const WAVE_SOURCE = {
   id: 'wave',
   url: MARINE_URL,
@@ -113,17 +120,24 @@ export const WAVE_SOURCE = {
   encodeValues: encodeHeights,
   latStep: WAVE_FRAME_LAT_STEP,
   // Sampled from Open-Meteo's published 0.25-degree files rather than queried point by point.
-  // See src/omGrid.js. The wind source below has no such file yet: the wave model's archive
-  // carries wave variables only, and the atmospheric files that do carry wind are twenty times
-  // the size and need more range requests per frame than a Worker invocation is allowed.
+  // See src/omGrid.js.
   omModel: WAVE_MODEL,
-  doneKey: 'waveframes:v2',
-  partialKey: 'waveframes:partial:v2',
-  failKey: 'waveframes:fail:v2',
+  fetchOm: fetchFrameFromOm,
+  // v3: the frames moved from 5 degrees to 2.5.
+  doneKey: FRAMES_KEY,
+  partialKey: FRAMES_PARTIAL_KEY,
+  failKey: FRAMES_FAIL_KEY,
   // The swell week is built unconditionally: it is the overlay's default layer, so someone is
   // always about to want it.
   wantedKey: null,
 };
+
+// Frames a pass for the wind week. Three frames are about ten requests -- three each, and the
+// odd 404 while the newest run is found -- beside the swell week's dozen-odd (see
+// OM_FRAMES_PER_PASS), which keeps the two together near half of the fifty a tick is allowed;
+// and half a second to a second of CPU, measured over a whole week's passes. A week then
+// assembles in ten ticks.
+export const WIND_OM_FRAMES_PER_PASS = 3;
 
 export const WIND_SOURCE = {
   id: 'wind',
@@ -131,12 +145,22 @@ export const WIND_SOURCE = {
   vars: ['wind_speed_10m', 'wind_direction_10m'],
   encodeValues: encodeSpeeds,
   latStep: WIND_FRAME_LAT_STEP,
-  doneKey: 'windframes:v1',
-  partialKey: 'windframes:partial:v1',
-  failKey: 'windframes:fail:v1',
+  // The GFS files the live wind grid is already read from, two fields at a time over range
+  // requests. A frame is three requests and up to half a second of decoding -- several times a
+  // swell frame -- so this week takes fewer frames a pass (see WIND_OM_FRAMES_PER_PASS).
+  omModel: WIND_MODEL,
+  fetchOm: fetchWindFrameFromOm,
+  framesPerPass: WIND_OM_FRAMES_PER_PASS,
+  // v2: the frames moved from the 20-degree point grid to the 2.5-degree file one. A stored
+  // frame of the wrong size is never reused anyway (see frameFits), but a new key is the
+  // plain statement that this is a different week.
+  doneKey: 'windframes:v2',
+  partialKey: 'windframes:partial:v2',
+  failKey: 'windframes:fail:v2',
   // Unlike the swell week, this one is only assembled once somebody has actually asked for the
-  // wind layer, and stops being rebuilt when nobody has asked for two days. 2,940 units a day
-  // is affordable for a week people watch and pure waste for one they do not.
+  // wind layer, and stops being rebuilt when nobody has asked for two days: 28 files of 4.7MB
+  // and five to fifteen seconds of decoding a day is affordable for a week people watch and
+  // pure waste for one they do not.
   wantedKey: 'windframes:wanted:v1',
 };
 
@@ -295,7 +319,7 @@ export async function advanceFrames(env, opts = {}) {
   const source = opts.source || WAVE_SOURCE;
   const cells = gridCells(source.latStep);
   const times = frameTimes(now, opts.frameCount || FRAME_COUNT);
-  const perPass = opts.framesPerPass
+  const perPass = opts.framesPerPass || source.framesPerPass
     || (source.omModel ? OM_FRAMES_PER_PASS : framesPerPass(cells.length, opts.unitsPerPass));
   // One per pass, so a run found missing for one frame is not re-asked for every later one.
   const probe = newRunProbe();
@@ -360,7 +384,7 @@ export async function advanceFrames(env, opts = {}) {
         // Injectable so the pacing and the shared probe can be tested without a WebAssembly
         // reader and a megabyte of real file bytes. The default is the only thing production
         // ever uses.
-        const fetchOm = opts.fetchFrameOm || fetchFrameFromOm;
+        const fetchOm = opts.fetchFrameOm || source.fetchOm || fetchFrameFromOm;
         frame = await fetchOm(t, source.latStep, { ...opts, model: source.omModel, now, probe });
       } catch (err) {
         lastError = String(err && err.message || err).slice(0, 200);
@@ -370,7 +394,8 @@ export async function advanceFrames(env, opts = {}) {
       if (!frame) break;
       have.set(t, {
         t,
-        data: bytesToBase64(source.encodeValues(frame.heights)),
+        // Heights for the swell, speeds for the wind.
+        data: bytesToBase64(source.encodeValues(frame.heights ?? frame.speeds)),
         dirs: bytesToBase64(encodeDirections(frame.directions)),
       });
       fetched++;
@@ -439,7 +464,8 @@ export async function advanceFrames(env, opts = {}) {
 
 export function framesAreUsable(entry, source = WAVE_SOURCE) {
   if (!entry || !Array.isArray(entry.frames) || entry.frames.length <= 1) return false;
-  const want = gridCells(source.latStep).length;
+  // Counted rather than built: this runs on every request for the week.
+  const want = gridCellCount(source.latStep);
   if (entry.cells !== want) return false;
   if (typeof entry.coverage !== 'number' || entry.coverage < FRAMES_MIN_COVERAGE) return false;
   if (entry.aborted) return false;

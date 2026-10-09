@@ -29,6 +29,56 @@ function json(body, env, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...corsHeaders(env) } });
 }
 
+// The globe's maps and weeks, cacheable by the browser.
+//
+// These went out with no caching headers at all, so every globe opened downloaded the live map
+// again -- and the week, at 120KB -- even seconds after the last open. They change on a schedule
+// measured in hours (the swell four times a day, the wind hourly, the week every six), so a
+// browser may reuse one for a few minutes without asking, and after that asks with the ETag and
+// gets a 304 with no body unless something actually changed.
+//
+// Only a payload with something in it. "Nothing to serve yet" and errors carry diagnostics for a
+// build that may finish a minute later; caching one would keep a viewer looking at "unavailable"
+// after it had stopped being true, so those are sent with no-store.
+export const MAP_MAX_AGE_S = 300;
+// A stale map is served while a rebuild is attempted, and is replaced as soon as one succeeds:
+// worth asking about again sooner.
+export const STALE_MAP_MAX_AGE_S = 60;
+
+// FNV-1a, 32 bits: a cheap, stable fingerprint of a payload, for its ETag.
+function fingerprint(text) {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < text.length; i++) {
+    h ^= text.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16).padStart(8, '0');
+}
+function etagMatches(header, etag) {
+  if (!header) return false;
+  if (header.trim() === '*') return true;
+  return header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
+}
+// `body` is what is sent; the ETag is taken over everything in it but `build`, the progress of
+// the next build, which changes by the minute while the map being served does not. A caller
+// that can name the content more cheaply than by its bytes passes that name as `version`.
+function cacheableJson(request, body, env, version = null) {
+  const { build, ...content } = body; // eslint-disable-line no-unused-vars
+  const etag = '"' + fingerprint(version ?? JSON.stringify(content)) + '"';
+  const headers = {
+    'Cache-Control': 'public, max-age=' + (body.stale ? STALE_MAP_MAX_AGE_S : MAP_MAX_AGE_S),
+    ETag: etag,
+    ...corsHeaders(env),
+  };
+  if (etagMatches(request.headers.get('If-None-Match'), etag)) return new Response(null, { status: 304, headers });
+  return new Response(JSON.stringify(body), { status: 200, headers: { 'Content-Type': 'application/json', ...headers } });
+}
+function uncacheableJson(body, env) {
+  const res = json(body, env);
+  res.headers.set('Cache-Control', 'no-store');
+  return res;
+}
+
 // Live buoy observations, proxied and cached.
 //
 // NDBC sends no CORS headers, so the browser cannot read this directly — and one fetch of the
@@ -221,8 +271,8 @@ async function handleConditions(request, env) {
 async function handleWaveGrid(request, env) {
   try {
     const { grid, build } = await loadGrid(env);
-    if (!grid) return json({ grid: null, build }, env);
-    return json({
+    if (!grid) return uncacheableJson({ grid: null, build }, env);
+    return cacheableJson(request, {
       generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data,
       // The directions the arrows are drawn from. They were fetched, encoded and stored, and
       // then dropped right here: this response is an explicit field list, and adding a field to
@@ -238,7 +288,7 @@ async function handleWaveGrid(request, env) {
       stale: !!grid.stale, coverage: grid.coverage ?? null, build,
     }, env);
   } catch (e) {
-    return json({ grid: null, build: { lastError: String((e && e.message) || e) } }, env);
+    return uncacheableJson({ grid: null, build: { lastError: String((e && e.message) || e) } }, env);
   }
 }
 
@@ -250,11 +300,11 @@ async function handleWaveGrid(request, env) {
 async function handleWindGrid(request, env) {
   try {
     const { grid, build } = await loadWindGrid(env);
-    if (!grid) return json({ grid: null, build }, env);
+    if (!grid) return uncacheableJson({ grid: null, build }, env);
     // Named individually, the way /wavegrid had to learn: adding a field to the grid does not
     // add it to the wire, and the last time that was missed the globe drew no arrows and it
     // looked like every other reason for no arrows.
-    return json({
+    return cacheableJson(request, {
       generatedAt: grid.generatedAt, cells: grid.cells, data: grid.data,
       dirs: grid.dirs ?? null,
       // See /wavegrid. This one matters more, not less: the wind grid is the layer whose step
@@ -264,7 +314,7 @@ async function handleWindGrid(request, env) {
       stale: !!grid.stale, coverage: grid.coverage ?? null, build,
     }, env);
   } catch (e) {
-    return json({ grid: null, build: { lastError: String((e && e.message) || e) } }, env);
+    return uncacheableJson({ grid: null, build: { lastError: String((e && e.message) || e) } }, env);
   }
 }
 
@@ -274,12 +324,17 @@ async function handleWindGrid(request, env) {
 async function handleWaveFrames(request, env, source = undefined) {
   try {
     // Asking for the wind week is what makes it worth assembling: the cron only advances a week
-    // somebody has opened in the last two days, because 2,940 units a day is affordable for a
-    // week people watch and pure waste for one they do not.
+    // somebody has opened in the last two days, because 28 files of 4.7MB a day is affordable
+    // for a week people watch and pure waste for one they do not.
     if (source && source.wantedKey) await markFramesWanted(env, source);
     const { frames, build } = await loadFrames(env, { source });
-    if (!frames) return json({ frames: null, build }, env);
-    return json({
+    if (!frames) return uncacheableJson({ frames: null, build }, env);
+    // The ETag from the build rather than from the bytes. A finished week is written once, at
+    // the moment it was finished, and never changed after; hashing it instead meant reading
+    // all of it -- half a megabyte at 2.5 degrees, 3ms of the request -- every time it was
+    // asked for.
+    const version = ['week', source ? source.id : 'wave', frames.generatedAt, frames.latStep, frames.stale ? 'stale' : 'fresh'].join(':');
+    return cacheableJson(request, {
       generatedAt: frames.generatedAt,
       cells: frames.cells,
       latStep: frames.latStep,
@@ -291,9 +346,9 @@ async function handleWaveFrames(request, env, source = undefined) {
       stale: !!frames.stale,
       coverage: frames.coverage ?? null,
       build,
-    }, env);
+    }, env, version);
   } catch (e) {
-    return json({ frames: null, build: { lastError: String((e && e.message) || e) } }, env);
+    return uncacheableJson({ frames: null, build: { lastError: String((e && e.message) || e) } }, env);
   }
 }
 
@@ -527,10 +582,9 @@ export default {
     // so the week assembles over a handful of ticks and no pass ever exceeds the limit. A pass
     // over a week that is already complete and fresh costs nothing.
     ctx.waitUntil(advanceFrames(env).catch(() => {}));
-    // The wind week, on the same pacing and the same reasoning, but only once somebody has
-    // opened it. Both weeks unconditionally would be 5,208 + 2,940 units a day against an
-    // allowance of about 10,000, and the wind one would be spent whether or not a single person
-    // ever pressed play on it.
+    // The wind week, on the same pacing, but only once somebody has opened it: its frames are
+    // read from the GFS files at three requests and up to half a second of decoding each, which
+    // is worth spending on a week people watch and not on one nobody has pressed play on.
     ctx.waitUntil(
       framesAreWanted(env, WIND_SOURCE)
         .then((wanted) => (wanted ? advanceFrames(env, { source: WIND_SOURCE }) : null))

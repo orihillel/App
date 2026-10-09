@@ -151,19 +151,50 @@ export function regularizeDirections(degrees, layout, out) {
 // 32-bit ones are not on iPhones -- and the fields must be filtered on the GPU or they show
 // their grid. Half precision carries a wave height to well under a centimetre and a bearing to
 // a tenth of a degree.
-const HALF_ONE = DataUtils.toHalfFloat(1);
-function toHalf(v) {
-  return v === 0 ? 0 : v === 1 ? HALF_ONE : DataUtils.toHalfFloat(v);
+//
+// Converted from each float's own bits, read in place: DataUtils.toHalfFloat's tables (van der
+// Zijp's), without its trip through a scratch array for every number. The week packs four
+// million of these at 2.5 degrees, and this takes well under half the time. The answers are
+// toHalfFloat's, except that zero is always +0; a float too big for a half goes through
+// toHalfFloat itself, which clamps.
+const HALF_BASE = new Uint16Array(512);
+const HALF_SHIFT = new Uint8Array(512);
+for (let i = 0; i < 256; i++) {
+  const e = i - 127;
+  let base = 0x7c00; // too big, infinity or NaN
+  let shift = e < 128 ? 24 : 13;
+  if (e < -27) { base = 0; shift = 24; } // too small: zero
+  else if (e < -14) { base = 0x0400 >> (-e - 14); shift = -e - 1; } // subnormal
+  else if (e <= 15) { base = (e + 15) << 10; shift = 13; }
+  HALF_BASE[i] = base;
+  HALF_BASE[i | 0x100] = base | 0x8000;
+  HALF_SHIFT[i] = shift;
+  HALF_SHIFT[i | 0x100] = shift;
+}
+const HALF_MAX_EXPONENT = 127 + 15;
+function halfFromBits(f, value) {
+  if ((f & 0x7fffffff) === 0) return 0;
+  const e = (f >>> 23) & 0x1ff;
+  if ((e & 0xff) > HALF_MAX_EXPONENT) return DataUtils.toHalfFloat(value);
+  return HALF_BASE[e] + ((f & 0x007fffff) >>> HALF_SHIFT[e]);
+}
+// A Float32Array and its bits, sharing one buffer; anything else is copied into one first.
+function withBits(src) {
+  const floats = src instanceof Float32Array ? src : Float32Array.from(src);
+  return { floats, bits: new Uint32Array(floats.buffer, floats.byteOffset, floats.length) };
 }
 export function packHalf(src, out = new Uint16Array(src.length)) {
-  for (let i = 0; i < src.length; i++) out[i] = toHalf(src[i]);
+  const { floats, bits } = withBits(src);
+  for (let i = 0; i < floats.length; i++) out[i] = halfFromBits(bits[i], floats[i]);
   return out;
 }
 // Value and coverage, interleaved two to a texel.
 export function packHalfRG(premul, cover, out = new Uint16Array(premul.length * 2)) {
-  for (let i = 0, o = 0; i < premul.length; i++, o += 2) {
-    out[o] = toHalf(premul[i]);
-    out[o + 1] = toHalf(cover[i]);
+  const p = withBits(premul);
+  const c = withBits(cover);
+  for (let i = 0, o = 0; i < p.floats.length; i++, o += 2) {
+    out[o] = halfFromBits(p.bits[i], p.floats[i]);
+    out[o + 1] = halfFromBits(c.bits[i], c.floats[i]);
   }
   return out;
 }
@@ -197,24 +228,51 @@ export function weekSlot(pos, count, playing) {
   return { i0, i1, t: i1 === i0 ? 0 : p - i0 };
 }
 
-// The overlay's shaders.
+// Cubic B-spline sampling, from four bilinear fetches.
 //
-// Written against three.js's GLSL ES 3.00 compatibility layer: `attribute`, `varying`,
-// `texture2D` and `gl_FragColor` are mapped for it, and `texture()` reads the week's texture
-// array.
+// A bilinear filter joins the texels with straight lines, so the field it draws has a corner at
+// every texel boundary. Through a colour ramp those corners show: contours run as polygons, and
+// a smooth swell lays out in diamonds. On the week's 5-degree grid that is one texel to about
+// fifty screen pixels at the closest zoom, far past the ten or twenty where the corners start to
+// show. A cubic B-spline is smooth across the boundaries -- the curve and its slope and its
+// curvature all continuous -- and Sigg and Hadwiger's trick (GPU Gems 2, chapter 20) gets one
+// from four bilinear fetches instead of sixteen point ones, by reading each pair of texels at
+// the place between them that weights them as the spline would.
 //
-// Deliberately no colorspace or tone-mapping chunks. The lookup table holds sRGB bytes and they
-// go to the canvas untouched, which is what keeps the globe's colours identical to the legend's.
-export const OVERLAY_VERTEX = /* glsl */ `
-varying vec2 vUv;
-varying vec3 vWorld;
-void main() {
-  vUv = uv;
-  vec4 world = modelMatrix * vec4( position, 1.0 );
-  vWorld = world.xyz;
-  gl_Position = projectionMatrix * viewMatrix * world;
+// Its weights are all positive, so a sample is always an average of the texels around it: no
+// overshoot, no ripple below zero beside a storm -- which an interpolating cubic would have --
+// and the premultiplied channels stay a null-aware mean, as the bilinear filter kept them. The
+// price is that it does not pass exactly through the texels: an isolated peak is drawn a little
+// lower than the number tap-to-read gives for it. On the stormy test field that difference is
+// measured in lib/overlaygpu.test.js.
+//
+// The weights of the four texels around a point `f` of the way between the middle two.
+export function bsplineWeights(f) {
+  const f2 = f * f;
+  const f3 = f2 * f;
+  return [(1 - 3 * f + 3 * f2 - f3) / 6, (3 * f3 - 6 * f2 + 4) / 6, (-3 * f3 + 3 * f2 + 3 * f + 1) / 6, f3 / 6];
 }
-`;
+// Where on one axis the two fetches go, and what each is weighted by: `t` is the coordinate in
+// [0, 1], `size` the texture's texels along that axis.
+export function bsplineAxis(t, size) {
+  const st = t * size - 0.5;
+  const i = Math.floor(st);
+  const [w0, w1, w2, w3] = bsplineWeights(st - i);
+  const g0 = w0 + w1;
+  const g1 = w2 + w3;
+  return { g0, g1, p0: (i - 0.5 + w1 / g0) / size, p1: (i + 1.5 + w3 / g1) / size };
+}
+// A B-spline sample at (u, v) of a texture `width` by `height` texels, given its bilinear
+// fetch: what the shader's fieldLive and fieldWeek do, for the tests.
+export function bsplineSample(bilinear, width, height, u, v) {
+  const x = bsplineAxis(u, width);
+  const y = bsplineAxis(v, height);
+  const t00 = bilinear(x.p0, y.p0);
+  const t10 = bilinear(x.p1, y.p0);
+  const t01 = bilinear(x.p0, y.p1);
+  const t11 = bilinear(x.p1, y.p1);
+  return t00.map((_, c) => y.g0 * (x.g0 * t00[c] + x.g1 * t10[c]) + y.g1 * (x.g0 * t01[c] + x.g1 * t11[c]));
+}
 
 // How the overlay thins toward the globe's edge: drawn whole wherever the surface faces the camera
 // more squarely than this (the cosine between its normal and the line to the camera), fading to
@@ -227,12 +285,44 @@ export function overlayLimbFade(facing) {
   return t * t * (3 - 2 * t);
 }
 
-export const OVERLAY_FRAGMENT = /* glsl */ `
+// The overlay, drawn by the globe's own material rather than by a second sphere laid over it.
+//
+// It used to be a sphere of its own just above the surface: another 98,000 triangles, and a
+// transparent layer over the whole globe that every covered pixel was shaded twice for. Now the
+// base map's shader (a MeshPhongMaterial, patched through onBeforeCompile like its muting and its
+// night side) paints it in the same pass, after the lighting and the night shading -- the overlay
+// is data, and is never lit or darkened -- on top of the finished base.
+//
+// The blend is done the way the transparent sphere's was: in sRGB, on the colour about to be
+// written, with the lookup table's bytes as they are. The finished light is converted to sRGB,
+// mixed with the ramp's colour, and converted back to linear only so the output conversion that
+// follows can take it to exactly those bytes again -- which is what keeps the globe's colours
+// identical to the legend's.
+//
+// `uniforms` holds the overlay's uniforms (see the globe); the same objects are shared, so
+// switching layers or moving through the week is a write to them, never a recompile. Returns
+// whether the shader could be patched; if three renames the chunks it hooks, the globe shows its
+// base map with no overlay rather than failing to draw.
+export function drawOverlay(shader, uniforms) {
+  const vertexHook = '#include <uv_vertex>';
+  const fragmentHook = '#include <opaque_fragment>';
+  if (!shader.vertexShader.includes(vertexHook) || !shader.fragmentShader.includes(fragmentHook)) return false;
+  Object.assign(shader.uniforms, uniforms);
+  shader.vertexShader = 'varying vec2 vOverlayUv;\n' + shader.vertexShader.replace(
+    vertexHook,
+    vertexHook + '\n\tvOverlayUv = uv;',
+  );
+  shader.fragmentShader = OVERLAY_PARS + shader.fragmentShader.replace(fragmentHook, OVERLAY_BLEND + fragmentHook);
+  return true;
+}
+
+export const OVERLAY_PARS = /* glsl */ `
+uniform float uOverlayOn;       // 1 while the overlay is shown and has a field to show
 uniform sampler2D uLive;        // the live field: R = value x coverage, G = coverage
 uniform sampler2DArray uWeek;   // the week, one forecast step per layer, same channels
-uniform vec2 uLiveV;            // where each texture's rows are: v = vUv.y * x + y (layoutV)
+uniform vec2 uLiveV;            // where each texture's rows are: v = sphere's v * x + y (layoutV)
 uniform vec2 uWeekV;
-uniform sampler2D uLut;         // ${LUT_SIZE}x1 colour ramp
+uniform sampler2D uLut;         // ${LUT_SIZE}x1 colour ramp, sRGB bytes
 uniform sampler2D uLandMask;    // R = fraction of the texel that is land
 uniform float uLutMax;          // the value at the top of the ramp
 uniform float uWeekOn;          // 0 draws the live field, 1 the week
@@ -241,43 +331,80 @@ uniform float uLayer1;
 uniform float uMix;             // ...and how far between them
 uniform float uOpacity;
 uniform float uHasMask;
-varying vec2 vUv;
-varying vec3 vWorld;
+varying vec2 vOverlayUv;
 
-void main() {
-  vec2 f;
-  if ( uWeekOn > 0.5 ) {
-    vec2 at = vec2( vUv.x, vUv.y * uWeekV.x + uWeekV.y );
-    f = mix( texture( uWeek, vec3( at, uLayer0 ) ).rg, texture( uWeek, vec3( at, uLayer1 ) ).rg, uMix );
-  } else {
-    f = texture2D( uLive, vec2( vUv.x, vUv.y * uLiveV.x + uLiveV.y ) ).rg;
-  }
-  float cover = f.g;
-  float value = cover > 1e-4 ? f.r / cover : 0.0;
-  float u = clamp( value / uLutMax, 0.0, 1.0 );
-  vec3 rgb = texture2D( uLut, vec2( u * ${(LUT_SIZE - 1) / LUT_SIZE} + ${0.5 / LUT_SIZE}, 0.5 ) ).rgb;
-
-  // Wherever any reading reaches, fully drawn; fading over about a screen pixel where the
-  // readings stop, rather than over a whole grid cell.
-  float edge = max( fwidth( cover ), 1e-4 );
-  float alpha = clamp( cover / edge, 0.0, 1.0 );
-
-  // Cut to the coastline. The mask holds the fraction of each texel that is land, thresholded
-  // at a half with a falloff one screen pixel wide, so the chart ends as crisply as the
-  // coastline drawn over it at every zoom.
-  if ( uHasMask > 0.5 ) {
-    float landCoverage = texture2D( uLandMask, vUv ).r - 0.5;
-    float landEdge = max( fwidth( landCoverage ), 1e-5 );
-    alpha *= 1.0 - smoothstep( -landEdge, landEdge, landCoverage );
-  }
-
-  // Thinning toward the horizon: overlayLimbFade in lib/overlaygpu.js. The globe is centred on
-  // the origin, so a point's own direction is its normal.
-  float facing = dot( normalize( vWorld ), normalize( cameraPosition - vWorld ) );
-  alpha *= smoothstep( 0.0, ${OVERLAY_LIMB_FADE}, facing );
-  gl_FragColor = vec4( rgb, alpha * uOpacity );
+// bsplineAxis in lib/overlaygpu.js.
+void bsplineAxis( float t, float size, out float g0, out float g1, out float p0, out float p1 ) {
+  float st = t * size - 0.5;
+  float i = floor( st );
+  float f = st - i;
+  float f2 = f * f;
+  float f3 = f2 * f;
+  float w0 = ( 1.0 - 3.0 * f + 3.0 * f2 - f3 ) / 6.0;
+  float w1 = ( 3.0 * f3 - 6.0 * f2 + 4.0 ) / 6.0;
+  float w2 = ( -3.0 * f3 + 3.0 * f2 + 3.0 * f + 1.0 ) / 6.0;
+  float w3 = f3 / 6.0;
+  g0 = w0 + w1;
+  g1 = w2 + w3;
+  p0 = ( i - 0.5 + w1 / g0 ) / size;
+  p1 = ( i + 1.5 + w3 / g1 ) / size;
+}
+// bsplineSample, on the live field and on one step of the week.
+vec2 fieldLive( vec2 uv ) {
+  vec2 size = vec2( textureSize( uLive, 0 ) );
+  float gx0, gx1, px0, px1, gy0, gy1, py0, py1;
+  bsplineAxis( uv.x, size.x, gx0, gx1, px0, px1 );
+  bsplineAxis( uv.y, size.y, gy0, gy1, py0, py1 );
+  return gy0 * ( gx0 * texture( uLive, vec2( px0, py0 ) ).rg + gx1 * texture( uLive, vec2( px1, py0 ) ).rg )
+    + gy1 * ( gx0 * texture( uLive, vec2( px0, py1 ) ).rg + gx1 * texture( uLive, vec2( px1, py1 ) ).rg );
+}
+vec2 fieldWeek( vec2 uv, float layer ) {
+  vec2 size = vec2( textureSize( uWeek, 0 ).xy );
+  float gx0, gx1, px0, px1, gy0, gy1, py0, py1;
+  bsplineAxis( uv.x, size.x, gx0, gx1, px0, px1 );
+  bsplineAxis( uv.y, size.y, gy0, gy1, py0, py1 );
+  return gy0 * ( gx0 * texture( uWeek, vec3( px0, py0, layer ) ).rg + gx1 * texture( uWeek, vec3( px1, py0, layer ) ).rg )
+    + gy1 * ( gx0 * texture( uWeek, vec3( px0, py1, layer ) ).rg + gx1 * texture( uWeek, vec3( px1, py1, layer ) ).rg );
 }
 `;
+
+export const OVERLAY_BLEND = /* glsl */ `if ( uOverlayOn > 0.5 ) {
+		vec2 f;
+		if ( uWeekOn > 0.5 ) {
+			vec2 at = vec2( vOverlayUv.x, vOverlayUv.y * uWeekV.x + uWeekV.y );
+			f = mix( fieldWeek( at, uLayer0 ), fieldWeek( at, uLayer1 ), uMix );
+		} else {
+			f = fieldLive( vec2( vOverlayUv.x, vOverlayUv.y * uLiveV.x + uLiveV.y ) );
+		}
+		float cover = f.g;
+		float value = cover > 1e-4 ? f.r / cover : 0.0;
+		float u = clamp( value / uLutMax, 0.0, 1.0 );
+		vec3 rgb = texture2D( uLut, vec2( u * ${(LUT_SIZE - 1) / LUT_SIZE} + ${0.5 / LUT_SIZE}, 0.5 ) ).rgb;
+
+		// Wherever any reading reaches, fully drawn; fading over about a screen pixel where the
+		// readings stop, rather than over a whole grid cell.
+		float edge = max( fwidth( cover ), 1e-4 );
+		float alpha = clamp( cover / edge, 0.0, 1.0 );
+
+		// Cut to the coastline. The mask holds the fraction of each texel that is land, thresholded
+		// at a half with a falloff one screen pixel wide, so the chart ends as crisply as the
+		// coastline drawn over it at every zoom.
+		if ( uHasMask > 0.5 ) {
+			float landCoverage = texture2D( uLandMask, vOverlayUv ).r - 0.5;
+			float landEdge = max( fwidth( landCoverage ), 1e-5 );
+			alpha *= 1.0 - smoothstep( -landEdge, landEdge, landCoverage );
+		}
+
+		// Thinning toward the horizon: overlayLimbFade in lib/overlaygpu.js. Both in view space
+		// here: the surface's normal, and vViewPosition from the surface to the camera.
+		float facing = dot( normal, normalize( vViewPosition ) );
+		alpha *= smoothstep( 0.0, ${OVERLAY_LIMB_FADE}, facing );
+
+		// Blended in sRGB, as the separate sphere was blended over the canvas's bytes.
+		vec3 under = sRGBTransferOETF( vec4( outgoingLight, 1.0 ) ).rgb;
+		outgoingLight = sRGBTransferEOTF( vec4( mix( under, rgb, alpha * uOpacity ), 1.0 ) ).rgb;
+	}
+	`;
 
 // The arrows: one flat arrow per point of a fixed lattice over the sea, each turned by its
 // vertex shader to the direction the field gives at that point at the moment shown.

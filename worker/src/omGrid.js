@@ -535,6 +535,49 @@ export function regridWind(uField, vField, step = GRID_LAT_STEP) {
   return { cells: cells.length, speeds, directions };
 }
 
+// One frame of the animated wind week, from the published file for that hour.
+//
+// The swell week's frames come from fetchFrameFromOm, which downloads the whole 1.4MB wave
+// file. The wind file is 24MB, so a frame is read the way buildWindGridFromOm reads the live
+// grid -- two fields over a few range requests -- and the runs are walked back the way
+// fetchFrameFromOm walks them, sharing its probe so a run found not to reach one hour is not
+// asked again for the next.
+//
+// Measured against the live bucket, in Node rather than the Worker runtime: three requests and
+// 4.7MB a frame, and a fifth to half a second of CPU once the reader is warm, most of it
+// decoding u and v. A swell frame is about a tenth of a second, which is why the wind week
+// takes fewer frames a pass (see waveFrames.js).
+export async function fetchWindFrameFromOm(isoHour, step, opts = {}) {
+  const validMs = parseFrameHour(isoHour);
+  if (validMs == null) return null;
+  const now = opts.now || Date.now();
+  const probe = opts.probe || null;
+  for (const key of candidateKeysFor(validMs, now, opts.model || WIND_MODEL)) {
+    const runDir = runDirOf(key);
+    if (probe && probe.exhausted.has(runDir)) continue;
+    let opened;
+    try {
+      opened = await (opts.openOm || openOmOverRange)(OM_BUCKET + '/' + key, opts);
+    } catch (err) {
+      // As in fetchFrameFromOm: only a 404 is evidence that the run has not got this far.
+      if (probe && err && err.status === 404) probe.exhausted.add(runDir);
+      continue;
+    }
+    const { fields, backend } = opened;
+    try {
+      const uf = fields[WIND_U_FIELD];
+      const vf = fields[WIND_V_FIELD];
+      if (!uf || !vf) continue;
+      const { speeds, directions } = regridWind(await readField(uf), await readField(vf), step);
+      return { speeds, directions, source: key };
+    } finally {
+      // Megabytes of windows, released now rather than when the pass ends.
+      await backend.close();
+    }
+  }
+  return null;
+}
+
 // Build a wind grid from the newest published file, or null if none is reachable.
 //
 // The same shape and the same promise as buildGridFromOm: null rather than a throw, so the

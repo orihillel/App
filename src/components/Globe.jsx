@@ -5,7 +5,7 @@ import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleTo, vector3ToLatLon } from '../lib/geo3d.js';
 import { scoreToColor, degToCompass } from '../lib/rating.js';
 import { formatReadingValue, formatReadingPlace, readingDescription } from '../lib/oceanreading.js';
-import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
+import { coastlineTilesInSteps, coastlineLevel, coastlineOpacity } from '../lib/coastline.js';
 import {
   base64ToBytes, decodeHeights, decodeSpeeds, decodeDirections, fillGridGaps, makeGridSampler,
   GRID_LAT_STEP, gridStepOf,
@@ -16,6 +16,7 @@ import { BASEMAP, BASEMAP_MUTE_MS, muteBasemap } from '../lib/basemap.js';
 import { ATMOSPHERE_RADIUS, ATMOSPHERE_VERTEX, ATMOSPHERE_FRAGMENT, starFade } from '../lib/atmosphere.js';
 import { planFlight } from '../lib/flight.js';
 import { sunDirection, frameTimeMs, shadeNight } from '../lib/terminator.js';
+import { createGesture, gestureDown, gestureMove, gestureUp, gestureCancel } from '../lib/gestures.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
 import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
@@ -26,7 +27,7 @@ import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { frameLabel, frameBuildLabel, weekFrameAt, advanceTimeline, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
-  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
+  drawOverlay, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
 } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
 import { createQualityGovernor, governorTick } from '../lib/quality.js';
@@ -128,6 +129,17 @@ function ScaleTicks({ ticks }) {
   );
 }
 
+// Kept for the life of the page, across every time the globe is opened.
+//
+// The land mask is 8MB of coverage decoded from a compressed file, and the points the arrows
+// stand on are six thousand points of a spiral, each tested against it; neither depends on
+// anything but the files, and both were rebuilt every time the globe opened. The GPU textures
+// cannot be kept the same way -- each open has its own WebGL context -- but the arrays they are
+// made from can. A failed load is not kept, so the next open tries again.
+let sharedLandMask = null; // Promise<{ mask, width, height } | null>
+const sharedLattices = new WeakMap(); // land mask -> its sea lattice
+let sharedLatticeNoMask = null;
+
 export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, title = 'All spots', hint, units = 'metric' }) {
   const containerRef = useRef(null);
   // The wave overlay is off by default. It is a second reading of the same globe -- where the
@@ -187,6 +199,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     setFrameIdx(Math.round(p));
     if (markDirtyRef.current) markDirtyRef.current();
   }, []);
+  // Where the slider is while a finger is on it, between forecast steps; null otherwise. The
+  // slider used to move a whole six-hour step at a time, so dragging it flicked from one picture
+  // to the next. Now the map blends between the steps either side of the thumb as it moves,
+  // exactly as it does while the week plays, and settles on the nearest step when let go, so
+  // the time under the slider is the time on the map.
+  const [scrub, setScrub] = useState(null);
+  const scrubRef = useRef(null);
+  const moveScrub = useCallback((at) => {
+    scrubRef.current = at;
+    setScrub(at);
+    seek(at);
+  }, [seek]);
+  const endScrub = useCallback(() => {
+    const at = scrubRef.current;
+    if (at == null) return;
+    scrubRef.current = null;
+    setScrub(null);
+    seek(Math.round(at));
+  }, [seek]);
   // Play, speed and repeat are React state, for the buttons; the loop reads them from the ref.
   useEffect(() => {
     const tl = timelineRef.current;
@@ -206,10 +237,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
   // Pick a layer, fetching it first if this is the first time it has been asked for.
   //
-  // The week's animation belongs to the swell alone -- a wind week is another 5,000 units a day
-  // against an allowance the swell week already half spends -- so leaving it playing under the
-  // wind would animate swell frames with a wind legend over them. It stops and rewinds instead,
-  // and the control disappears rather than sitting there doing nothing.
+  // Each layer has its own week, so leaving one playing across a switch would animate swell
+  // frames with a wind legend over them. It stops and rewinds instead, and the other layer's
+  // week is fetched when its play control is pressed.
   const selectLayer = useCallback((next) => {
     setLayer(next);
     // A reading is of one layer at one moment. Carrying it across a switch would leave a wave
@@ -311,9 +341,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   }, [timelineReady, frames, seek]);
 
   // The week goes to the GPU once, when it arrives, and is dropped when it goes (a layer switch
-  // drops it). Which moment of it is drawn is decided per frame by the render loop.
+  // drops it). Which moment of it is drawn is decided per frame by the render loop. Kept in a ref
+  // as well, so a globe rebuilt on a new GPU context (see the WebGL effect) can hand it over again.
+  const weekForGpuRef = useRef(null);
   useEffect(() => {
-    if (setWeekRef.current) setWeekRef.current(framesState === 'ready' ? frames : null);
+    weekForGpuRef.current = framesState === 'ready' ? frames : null;
+    if (setWeekRef.current) setWeekRef.current(weekForGpuRef.current);
   }, [frames, framesState]);
 
   // What the last tap on the ocean read. Held as state rather than drawn into the scene so it
@@ -321,6 +354,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // colours are not.
   const [reading, setReading] = useState(null);
   const [globeError, setGlobeError] = useState(false);
+  // Bumped to throw the whole WebGL scene away and build it again, on a new context. Only ever
+  // needed when the browser takes the GPU context and does not give it back (see the effect).
+  const [glEpoch, setGlEpoch] = useState(0);
+  // The size the canvas was last drawn at. The container takes its height from the canvas in it,
+  // so a rebuild -- which removes the old canvas before making the new one -- would otherwise
+  // measure a container collapsed to its minimum and build a smaller globe.
+  const glSizeRef = useRef(null);
+  // And where the camera was, so a rebuilt globe comes back looking at the same place.
+  const glViewRef = useRef(null);
   // How many spots currently have a live reading, so the legend can say what its colour scale
   // actually covers instead of implying it covers everything.
   const [liveCount, setLiveCount] = useState(null);
@@ -332,8 +374,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // throws, we've had no way to see that failure before now — it would just leave a blank
     // or broken canvas with nothing telling us why. This at least surfaces it.
     try {
-    const width = container.clientWidth || 340;
-    const height = container.clientHeight || 420;
+    // The size it is drawn at, in CSS pixels. Not fixed: see resizeTo below.
+    let width = container.clientWidth || (glSizeRef.current && glSizeRef.current.width) || 340;
+    let height = Math.max(container.clientHeight, (glSizeRef.current && glSizeRef.current.height) || 0) || 420;
+    glSizeRef.current = { width, height };
     const R = 1;
 
     // How close in you can zoom. Smaller = the globe fills more of the screen, which spreads
@@ -386,10 +430,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const state = {
       distance: 3.0, targetDistance: 3.0,
       rotX: 0.3, rotY: 0.6, targetRotX: 0.3, targetRotY: 0.6, velX: 0, velY: 0,
-      dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0,
+      dragging: false, raf: null,
       lastMoveAt: 0, // performance.now() of the last drag movement, for velocity and the still-release test
       dataDirty: true, // set when marker colors/labels change, so an idle frame still redraws once
     };
+    if (glViewRef.current) {
+      const v = glViewRef.current;
+      state.rotX = state.targetRotX = v.rotX;
+      state.rotY = state.targetRotY = v.rotY;
+      state.distance = state.targetDistance = v.distance;
+    }
     camera.position.set(0, 0, state.distance);
     markDirtyRef.current = () => { state.dataDirty = true; };
 
@@ -406,7 +456,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // thousands of markers, a translucent overlay and close to a million coastline vertices up
     // close. Phones' tile-based GPUs resolve 4x MSAA cheaply, so 2x with MSAA keeps edges smooth
     // for well under half the fill cost. A 2x cap is the usual advice for three.js on phones.
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    let pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     // Opaque, drawing its own background in the page's colour. A transparent canvas is blended
     // onto the page by the browser on every frame, and anything translucent drawn over empty
     // background -- the glow round the globe, the stars -- left the canvas itself translucent
@@ -424,7 +474,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // And lowered from there, a step at a time, on a device that cannot keep up -- raised again
     // once it can. See lib/quality.js; applied from the frame loop below.
     let currentPixelRatio = pixelRatio;
-    const quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
+    let quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
     function applyPixelRatio(ratio) {
       currentPixelRatio = ratio;
       renderer.setPixelRatio(ratio);
@@ -433,6 +483,71 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     container.appendChild(renderer.domElement);
     setGlobeError(false);
+
+    // The canvas follows its container: a phone turned on its side, a window resized, the address
+    // bar sliding away. It used to keep the size it was created at and let the browser stretch it
+    // to fit, which drew the globe as an oval and put every label and tap off by the stretch.
+    function resizeTo(w, h) {
+      if (!(w > 0) || !(h > 0) || (w === width && h === height)) return;
+      width = w;
+      height = h;
+      glSizeRef.current = { width, height };
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+      state.dataDirty = true;
+    }
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => resizeTo(container.clientWidth, container.clientHeight))
+      : null;
+    if (resizeObserver) resizeObserver.observe(container);
+    // And the screen's own density: a window dragged onto another monitor, or the page zoomed.
+    // The quality governor starts again from the new ceiling, since what it learned was about
+    // the old one.
+    let densityQuery = null;
+    function onDensityChange() {
+      if (cancelled) return;
+      pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
+      applyPixelRatio(pixelRatio);
+      watchDensity();
+    }
+    function watchDensity() {
+      if (typeof window.matchMedia !== 'function') return;
+      densityQuery = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+      if (typeof densityQuery.addEventListener === 'function') densityQuery.addEventListener('change', onDensityChange, { once: true });
+    }
+    watchDensity();
+
+    // The GPU context can be taken away -- iOS does it to a page sent to the background -- and
+    // given back. three.js asks for it back, and rebuilds its own state when it returns; but this
+    // globe only draws when something changes, so it has to be told to draw again, or the canvas
+    // stays blank until someone happens to touch it. If the context does not come back at all,
+    // the whole scene is built again on a new one.
+    const CONTEXT_RESTORE_WAIT_MS = 3000;
+    let contextLost = false;
+    let contextTimer = null;
+    function waitForContext() {
+      clearTimeout(contextTimer);
+      // A hidden page is not given its context back until it is shown again: wait for that.
+      if (document.hidden) return;
+      contextTimer = setTimeout(() => {
+        if (contextLost && !cancelled) setGlEpoch((n) => n + 1);
+      }, CONTEXT_RESTORE_WAIT_MS);
+    }
+    function onContextLost() {
+      if (cancelled) return;
+      contextLost = true;
+      waitForContext();
+    }
+    function onContextRestored() {
+      if (cancelled) return;
+      contextLost = false;
+      clearTimeout(contextTimer);
+      state.dataDirty = true;
+    }
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', onContextRestored);
 
     // The on-screen performance display: off unless the page was opened with ?perf=1 (and
     // remembered after that; ?perf=0 forgets it). See lib/framestats.js for what it measures.
@@ -443,6 +558,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const perf = readPerfFlag(window.location.search, perfStore)
       ? { stats: createFrameStats(), drawn: 0, shownDrawn: 0, paintMs: null, hud: document.createElement('div'), timer: null }
       : null;
+    const showPerf = () => {
+      const drawnSince = perf.drawn - perf.shownDrawn;
+      perf.shownDrawn = perf.drawn;
+      const info = renderer.info.render;
+      perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
+        idle: !drawnSince,
+        calls: info.calls, triangles: info.triangles, lines: info.lines,
+        pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
+        width: renderer.domElement.width, height: renderer.domElement.height,
+        paintMs: perf.paintMs,
+      }).join('\n');
+    };
     if (perf) {
       perf.hud.setAttribute('data-perf-hud', '');
       Object.assign(perf.hud.style, {
@@ -451,18 +578,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         font: '10.5px/1.45 "JetBrains Mono", ui-monospace, monospace', whiteSpace: 'pre',
       });
       container.appendChild(perf.hud);
-      const showPerf = () => {
-        const drawnSince = perf.drawn - perf.shownDrawn;
-        perf.shownDrawn = perf.drawn;
-        const info = renderer.info.render;
-        perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
-          idle: !drawnSince,
-          calls: info.calls, triangles: info.triangles, lines: info.lines,
-          pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
-          width: renderer.domElement.width, height: renderer.domElement.height,
-          paintMs: perf.paintMs,
-        }).join('\n');
-      };
       showPerf();
       perf.timer = setInterval(showPerf, 500);
     }
@@ -503,9 +618,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     };
     // And shaded by night where the sun has set, at the moment on screen: see lib/terminator.js.
     const sunUniforms = { uSunDir: { value: new THREE.Vector3(0, 0, 1) } };
+    // And with the overlay painted on top of all that, last, so it is neither muted, lit nor
+    // darkened by night: see drawOverlay in lib/overlaygpu.js. The order of these patches is the
+    // order their code runs in.
     oceanMat.onBeforeCompile = (shader) => {
       muteBasemap(shader, muteUniforms);
       shadeNight(shader, sunUniforms);
+      drawOverlay(shader, overlayUniforms);
     };
     let mapTexture = null;
 
@@ -519,6 +638,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       oceanMat.map = tex;
       oceanMat.color.setHex(0xffffff);
       oceanMat.needsUpdate = true;
+    }
+
+    // Anisotropic filtering for the base map: up to 8 samples, not the GPU's maximum. Most report
+    // 16, and the second eight samples a texel are bought only where the sphere turns away at the
+    // steepest angles -- the last sliver before the horizon, foreshortened past reading anyway --
+    // at the cost of texture bandwidth on every frame, which is what a phone has least of.
+    function baseMapAnisotropy() {
+      return Math.min(8, renderer.capabilities.getMaxAnisotropy());
     }
 
     function drawWorldMap(LANDMASSES) {
@@ -595,7 +722,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // A flat texture wrapped on a sphere gets viewed at steep angles near the edges of what's
       // visible, which is exactly the case anisotropic filtering is for — without it, those
       // regions look noticeably blurrier/blockier than the center, which reads as "pixelated".
-      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.anisotropy = baseMapAnisotropy();
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
@@ -643,7 +770,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     function applySatellite(tex) {
       if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.anisotropy = baseMapAnisotropy();
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       // A compressed texture brings its own mipmaps, and the GPU cannot generate them for one.
@@ -747,12 +874,23 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // of. Fetched lazily the first time the camera comes near enough to show it, so the globe's
     // first paint never waits on 743KB that a user who only ever looks at the whole Earth
     // would not have needed.
+    //
+    // Drawn as ribbons a fixed width on screen rather than as hairlines, in tiles so that only
+    // the ones in view are drawn, and in two levels of detail: every point, or every fourth
+    // wherever that cannot be told apart (see coastlineTiles and coastlineLevel in
+    // lib/coastline.js).
     const COASTLINE_SHELL = R * 1.0006;
-    const coastlineMat = new THREE.LineBasicMaterial({
-      color: 0x8fe9d4, transparent: true, opacity: 0, depthWrite: false,
-    });
-    let coastlineMesh = null;
+    // CSS pixels: LineSegments2 measures its width against the canvas's CSS size.
+    const COASTLINE_WIDTH_PX = 1.25;
+    const COASTLINE_COARSE_STRIDE = 4;
+    // ~400k segments, two levels and four hundred meshes are built this many milliseconds at a
+    // time, between frames, so the pinch that brought the camera close never stalls on them.
+    const COASTLINE_SLICE_MS = 5;
+    // { material, fine: [{ mesh, center, reach }], coarse: [...], coarseError }
+    let coastline = null;
+    let coastLevel = null; // which of the two was last drawn, or null
     let coastlineRequested = false;
+    let coastlineTimer = null;
 
     // The coastline file, fetched at most once however many layers want it.
     //
@@ -783,9 +921,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     // Live wave-height overlay: the ocean painted by how big the sea is right now.
     //
-    // Built as an equirectangular canvas and wrapped on a sphere just above the surface, rather
-    // than blended into the ocean material, so it can be toggled without rebuilding anything
-    // and so land stays untouched.
+    // Drawn by the globe's own material, after its lighting, from textures of numbers (see
+    // drawOverlay in lib/overlaygpu.js). It used to be a second sphere laid just above the
+    // surface; it is toggled by a uniform now, and land is still untouched.
     //
     // Three separate concerns, and they want three different resolutions:
     //
@@ -799,9 +937,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     //     every zoom. Baking the mask into the chart's alpha instead — the obvious way, and the
     //     first way this was written — makes the edge exactly as soft as a texel is wide, which
     //     at the closest zoom is a couple of hundred device pixels of blur.
-    const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
-    let waveMesh = null;
-    let overlayMat = null;
+    // Whether the overlay has a field to draw: set once the first grid and the land mask arrive.
+    let overlayReady = false;
     let waveMaskTexture = null;
     let waveRequested = false;
     // The two live readings, decoded and kept, so switching layers is a uniform change rather
@@ -853,6 +990,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       uMix: { value: 0 },
       uLiveV: { value: new THREE.Vector2(1, 0) },
       uWeekV: { value: new THREE.Vector2(1, 0) },
+    };
+    // The overlay's own, in the globe's material (see drawOverlay).
+    const overlayUniforms = {
+      ...fieldUniforms,
+      uOverlayOn: { value: 0 },
+      uLive: { value: null },
+      uWeek: { value: null },
+      uLut: { value: null },
+      uLutMax: { value: 1 },
+      uLandMask: { value: null },
+      uHasMask: { value: 0 },
+      // 0.62 was costing about a third of every ramp's separation. The overlay is blended over
+      // the base map, so a translucent one is a blend toward the sea under it -- and the darker
+      // half of a ramp, which is where most of the world's sea state actually sits, gets pulled
+      // hardest. Raising it to 0.85 lifted the worst adjacent pair from 11.8 to 16.2 on the
+      // swell layer and 6.0 to 8.3 on the wind, for nothing but a number. Still short of opaque
+      // so the globe's own shading reads through and it still looks like a sphere rather than a
+      // flat map.
+      uOpacity: { value: 0.85 },
     };
 
     // The arrows over the colour: which way each patch of swell is travelling.
@@ -953,10 +1109,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // DecompressionStream (Safari before 16.4), or the file missing -- since the mask is the
     // same either way and a slower one is better than none.
     function loadLandMask() {
-      const base = ((import.meta.env && import.meta.env.BASE_URL) || '/').replace(/\/$/, '');
-      return fetchLandMask(base + '/' + LAND_MASK.file)
-        .catch(() => null)
-        .then((prebuilt) => prebuilt || loadCoastlineTopology().then(drawLandMask));
+      if (!sharedLandMask) {
+        const base = ((import.meta.env && import.meta.env.BASE_URL) || '/').replace(/\/$/, '');
+        sharedLandMask = fetchLandMask(base + '/' + LAND_MASK.file)
+          .catch(() => null)
+          .then((prebuilt) => prebuilt || loadCoastlineTopology().then(drawLandMask))
+          .catch(() => null)
+          .then((land) => {
+            if (!land) sharedLandMask = null; // not worth keeping a failure
+            return land;
+          });
+      }
+      return sharedLandMask;
     }
 
     // The fallback: the coastline's land polygons filled into a canvas.
@@ -1053,7 +1217,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // direction to show at the moment on screen is drawn at zero size, so one prefix serves
     // every field.
     function seaLattice(land) {
-      return fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
+      const cached = land ? sharedLattices.get(land) : sharedLatticeNoMask;
+      if (cached) return cached;
+      const lattice = fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
+      if (land) sharedLattices.set(land, lattice); else sharedLatticeNoMask = lattice;
+      return lattice;
     }
 
     // Arrows hold a roughly constant size on screen, so they stay legible zoomed out and do not
@@ -1134,40 +1302,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             dirs: directions,
             step: swellStep,
           };
-          // Numbers in, colours out, per screen pixel: see lib/overlaygpu.js for the shader.
-          // The layer's own textures and colour table are filled in by applyLiveLayer below.
-          overlayMat = new THREE.ShaderMaterial({
-            uniforms: {
-              ...fieldUniforms,
-              uLive: { value: null },
-              uWeek: { value: null },
-              uLut: { value: null },
-              uLutMax: { value: 1 },
-              uLandMask: { value: waveMaskTexture },
-              uHasMask: { value: waveMaskTexture ? 1 : 0 },
-              // 0.62 was costing about a third of every ramp's separation. The overlay is
-              // composited over the ocean sphere, so a translucent one is a blend toward that
-              // mid-blue -- and the darker half of a ramp, which is where most of the world's
-              // sea state actually sits, gets pulled hardest. Raising it to 0.85 lifted the
-              // worst adjacent pair from 11.8 to 16.2 on the swell layer and 6.0 to 8.3 on the
-              // wind, for nothing but a number. Still short of opaque so the globe's own shading
-              // reads through and it still looks like a sphere rather than a flat map.
-              uOpacity: { value: 0.85 },
-            },
-            vertexShader: OVERLAY_VERTEX,
-            fragmentShader: OVERLAY_FRAGMENT,
-            transparent: true,
-            depthWrite: false,
-          });
-          waveMesh = new THREE.Mesh(
-            // Must match the ocean sphere's tessellation, not the old 128x96. A coarser
-            // overlay sags further at each quad's centre than its own 3e-4 offset clears
-            // (0.999865 against the ocean's vertices at 1.0), so the globe pokes through it in
-            // a regular diamond stipple that reads as a rendering artifact — because it is one.
-            new THREE.SphereGeometry(WAVE_SHELL, 256, 192),
-            overlayMat,
-          );
-          globeGroup.add(waveMesh);
+          // Numbers in, colours out, per screen pixel, in the globe's own material: see
+          // drawOverlay in lib/overlaygpu.js. The layer's own textures and colour table are
+          // filled in by applyLiveLayer below.
+          overlayUniforms.uLandMask.value = waveMaskTexture;
+          overlayUniforms.uHasMask.value = waveMaskTexture ? 1 : 0;
+          overlayReady = true;
 
           const lattice = seaLattice(land);
           if (lattice.length) {
@@ -1208,14 +1348,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function applyLiveLayer(name) {
       const set = liveLayers[name];
       const draw = LAYER_DRAW[name] && drawFor(name);
-      if (!set || !draw || !overlayMat) return false;
+      if (!set || !draw || !overlayReady) return false;
       const step = set.step || GRID_LAT_STEP;
       if (!set.texture) {
         const buildStart = perf ? performance.now() : 0;
         buildLiveTextures(set, step);
         if (perf) perf.paintMs = performance.now() - buildStart;
       }
-      const u = overlayMat.uniforms;
+      const u = overlayUniforms;
       u.uLive.value = set.texture;
       u.uLut.value = lutFor(name);
       u.uLutMax.value = draw.max;
@@ -1238,7 +1378,54 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // regular grid and stacked as the layers of one texture array, its directions likewise. A
     // frame of the animation is then two layers blended by a uniform -- no repaint, no upload,
     // no garbage -- and the arrows turn through the same blend.
+    //
+    // The resampling is done a step at a time between the globe's own frames, the way the
+    // coastline is built: at 2.5 degrees the whole week is about a tenth of a second of solid work
+    // on a desktop core, which on a phone would be a stall of a third of a second or more just as
+    // play is pressed. Until it is done the live field stays on screen and the playhead waits.
+    const WEEK_SLICE_MS = 5;
+    let weekTimer = null;
+    function* resampleWeek(next) {
+      const step = next.latStep;
+      const layout = layoutFor(step);
+      // Gaps are filled exactly as the live field's are, and only when the coastline mask is
+      // there to stop the fill at the shore -- decided once, so a mask arriving part way through
+      // cannot leave half the week filled and half not.
+      const fillGaps = !!waveMaskTexture;
+      yield;
+      const count = next.list.length;
+      const texels = layout.width * layout.height;
+      const values = new Uint16Array(texels * 2 * count);
+      // A week built before the Worker fetched directions has none, and draws no arrows.
+      const dirs = next.list.some((f) => f.dirs) ? new Uint16Array(texels * 4 * count) : null;
+      // One scratch field and one scratch set of vectors, refilled for each step.
+      const field = { premul: new Float32Array(texels), cover: new Float32Array(texels) };
+      const vectors = new Float32Array(texels * 4);
+      for (let k = 0; k < count; k++) {
+        const frame = next.list[k];
+        regularizeField(fillGaps ? fillGridGaps(frame.heights, 2, step) : frame.heights, layout, field);
+        packHalfRG(field.premul, field.cover, values.subarray(k * texels * 2, (k + 1) * texels * 2));
+        yield;
+        if (dirs) {
+          regularizeDirections(frame.dirs, layout, vectors);
+          packHalf(vectors, dirs.subarray(k * texels * 4, (k + 1) * texels * 4));
+          yield;
+        }
+      }
+      return {
+        layer: next.layer || 'swell',
+        list: next.list,
+        step,
+        count,
+        v: layoutV(layout),
+        texture: fieldArrayTexture(values, layout, count, THREE.RGFormat),
+        dirTexture: dirs ? fieldArrayTexture(dirs, layout, count, THREE.RGBAFormat) : null,
+      };
+    }
     function setWeek(next) {
+      // A week still being resampled is dropped with the one on screen.
+      clearTimeout(weekTimer);
+      weekTimer = null;
       if (week) {
         week.texture.dispose();
         if (week.dirTexture) week.dirTexture.dispose();
@@ -1246,38 +1433,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
       shownKey = null;
       if (next && Array.isArray(next.list) && next.list.length && Number.isFinite(next.latStep)) {
-        const buildStart = perf ? performance.now() : 0;
-        const step = next.latStep;
-        const layout = layoutFor(step);
-        const count = next.list.length;
-        const texels = layout.width * layout.height;
-        const values = new Uint16Array(texels * 2 * count);
-        // A week built before the Worker fetched directions has none, and draws no arrows.
-        const dirs = next.list.some((f) => f.dirs) ? new Uint16Array(texels * 4 * count) : null;
-        // One scratch field and one scratch set of vectors, refilled for each step.
-        const field = { premul: new Float32Array(texels), cover: new Float32Array(texels) };
-        const vectors = new Float32Array(texels * 4);
-        for (let k = 0; k < count; k++) {
-          const frame = next.list[k];
-          // Gaps filled exactly as the live field's are, and only when the coastline mask is
-          // there to stop the fill at the shore.
-          regularizeField(waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights, layout, field);
-          packHalfRG(field.premul, field.cover, values.subarray(k * texels * 2, (k + 1) * texels * 2));
-          if (dirs) {
-            regularizeDirections(frame.dirs, layout, vectors);
-            packHalf(vectors, dirs.subarray(k * texels * 4, (k + 1) * texels * 4));
+        const job = resampleWeek(next);
+        let work = 0;
+        const slice = () => {
+          weekTimer = null;
+          if (cancelled) return;
+          const start = performance.now();
+          let step;
+          do step = job.next(); while (!step.done && performance.now() - start < WEEK_SLICE_MS);
+          work += performance.now() - start;
+          if (!step.done) {
+            weekTimer = setTimeout(slice, 0);
+            return;
           }
-        }
-        week = {
-          layer: next.layer || 'swell',
-          list: next.list,
-          step,
-          count,
-          v: layoutV(layout),
-          texture: fieldArrayTexture(values, layout, count, THREE.RGFormat),
-          dirTexture: dirs ? fieldArrayTexture(dirs, layout, count, THREE.RGBAFormat) : null,
+          week = step.value;
+          // The work, not the wait between slices.
+          if (perf) perf.paintMs = work;
+          state.dataDirty = true;
         };
-        if (perf) perf.paintMs = performance.now() - buildStart;
+        slice();
       }
       state.dataDirty = true;
     }
@@ -1293,7 +1467,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let shownKey = null;
     let lastFrameIdx = 0;
     function updateOverlayTime(dt) {
-      if (!overlayMat || !wavesOnRef.current) return false;
+      if (!overlayReady || !wavesOnRef.current) return false;
       const tl = timelineRef.current;
       let advancing = false;
       if (week && tl.playing) {
@@ -1310,7 +1484,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         applyLiveLayer(layerRef.current);
       } else {
         shownKey = key;
-        const u = overlayMat.uniforms;
+        const u = overlayUniforms;
         u.uWeek.value = week.texture;
         u.uLut.value = lutFor(week.layer);
         u.uLutMax.value = drawFor(week.layer).max;
@@ -1584,27 +1758,100 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       particles = null;
     }
 
+    // The coastline's tiles (see coastlineTilesInSteps) made into meshes, a step at a time like
+    // the tiles themselves; null if there is no coastline to draw.
+    function* buildCoastline(topo, { LineSegments2, LineSegmentsGeometry, LineMaterial }) {
+      const tiles = yield* coastlineTilesInSteps(topo, COASTLINE_SHELL, latLonToVector3, { coarseStride: COASTLINE_COARSE_STRIDE });
+      if (!tiles.fine.length) return null;
+      const material = new LineMaterial({
+        color: 0x8fe9d4,
+        linewidth: COASTLINE_WIDTH_PX,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const built = { material, fine: [], coarse: [], coarseError: tiles.coarseError };
+      for (const level of ['fine', 'coarse']) {
+        for (const tile of tiles[level]) {
+          const geo = new LineSegmentsGeometry();
+          geo.setPositions(tile.positions);
+          const mesh = new LineSegments2(geo, material);
+          // Drawn after the globe and writing no depth, so it never fights the surface it sits
+          // on -- but still depth-*tested*, which is what hides the far side of the world.
+          mesh.renderOrder = 1;
+          mesh.visible = false;
+          built[level].push({ mesh, center: new THREE.Vector3().fromArray(tile.center), reach: tile.reach });
+          yield;
+        }
+      }
+      return built;
+    }
+
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
       coastlineRequested = true;
-      loadCoastlineTopology()
-        .then((topo) => {
+      // The ribbon classes are only wanted once the camera is this close: loaded on demand, like
+      // the base map's transcoder.
+      Promise.all([
+        loadCoastlineTopology(),
+        import('three/examples/jsm/lines/LineSegments2.js'),
+        import('three/examples/jsm/lines/LineSegmentsGeometry.js'),
+        import('three/examples/jsm/lines/LineMaterial.js'),
+      ])
+        .then(([topo, ...classes]) => {
           if (cancelled || !topo) return;
-          const positions = arcsToLineVertices(topo, COASTLINE_SHELL, latLonToVector3);
-          if (!positions.length) return;
-          const geo = new THREE.BufferGeometry();
-          geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          coastlineMesh = new THREE.LineSegments(geo, coastlineMat);
-          // Drawn after the globe and writing no depth, so it never fights the surface it sits
-          // on -- but still depth-*tested*, which is what hides the far side of the world.
-          coastlineMesh.renderOrder = 1;
-          globeGroup.add(coastlineMesh);
-          state.dataDirty = true;
+          const job = buildCoastline(topo, Object.assign({}, ...classes));
+          const slice = () => {
+            coastlineTimer = null;
+            if (cancelled) return;
+            let step;
+            try {
+              const until = performance.now() + COASTLINE_SLICE_MS;
+              do step = job.next(); while (!step.done && performance.now() < until);
+            } catch {
+              return; // as below
+            }
+            if (!step.done) {
+              coastlineTimer = setTimeout(slice, 0);
+              return;
+            }
+            if (!step.value) return;
+            coastline = step.value;
+            for (const t of [...coastline.fine, ...coastline.coarse]) globeGroup.add(t.mesh);
+            state.dataDirty = true;
+          };
+          slice();
         })
         // The fetch already swallows its own failures; this catches anything that goes wrong
         // building the geometry. The globe is fully usable without the lines, so there is
         // nothing to report and nothing to retry.
         .catch(() => {});
+    }
+
+    // How many CSS pixels an angle at the globe's centre spans on screen right under the camera,
+    // where the globe is magnified most: what coastlineLevel weighs the coarse level against.
+    function coastPxPerRadian() {
+      return (R * height) / (2 * (state.distance - R) * Math.tan((camera.fov * Math.PI) / 360));
+    }
+
+    // Which coastline tiles to draw this frame: the level wanted, and of that only the tiles on
+    // the camera's side of the globe -- three already skips the ones outside the view.
+    const coastView = new THREE.Quaternion();
+    const coastEuler = new THREE.Euler();
+    const coastToCamera = new THREE.Vector3();
+    function showCoastline(level) {
+      coastLevel = level;
+      // The camera's direction in the globe's own frame, and how far round from it the coastline
+      // can be seen: to the horizon, and a little past it, since the lines sit just above the
+      // surface.
+      coastView.setFromEuler(coastEuler.set(state.rotX, state.rotY, 0)).invert();
+      coastToCamera.set(0, 0, 1).applyQuaternion(coastView);
+      const sight = Math.acos(R / state.distance) + Math.acos(R / COASTLINE_SHELL);
+      for (const name of ['fine', 'coarse']) {
+        for (const t of coastline[name]) {
+          t.mesh.visible = name === level && t.center.dot(coastToCamera) > Math.cos(Math.min(Math.PI, sight + t.reach));
+        }
+      }
     }
 
     // The lights, at the strength they were tuned for.
@@ -1660,7 +1907,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function updateMute(dtMs) {
       muteUniforms.uMuteMask.value = waveMaskTexture;
       muteUniforms.uMuteHasMask.value = waveMaskTexture ? 1 : 0;
-      const wanted = wavesOnRef.current && waveMesh ? 1 : 0;
+      const wanted = wavesOnRef.current && overlayReady ? 1 : 0;
       const u = muteUniforms.uMute;
       if (u.value === wanted) return;
       const step = dtMs / BASEMAP_MUTE_MS;
@@ -1733,19 +1980,52 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       allSpots.push({ id, lat: s.lat, lon: s.lon });
     });
 
-    // One label element per possible marker, made once and reused. Clusters re-form on every
-    // zoom step, and creating and destroying four hundred DOM nodes for that would be the
-    // expensive part of the whole feature.
-    const labelPool = allSpots.map(() => {
+    // A small pool of label elements, lent to markers while their labels are on screen.
+    //
+    // It used to be one element per spot, made up front -- 3,518 hidden divs at the full catalog,
+    // every one of them given new text whenever its reading changed -- for a screen that shows at
+    // most MAX_LABELS names at a time. Now there are enough for those and for the ones still
+    // fading out, each lent to a marker when its label appears and handed back when it has gone.
+    // Clusters re-form on every zoom step, and the pool means that never creates or destroys a
+    // DOM node either.
+    const LABEL_POOL_SIZE = 30;
+    const labelPool = Array.from({ length: LABEL_POOL_SIZE }, () => {
       const el = document.createElement('div');
       el.className = 'tl-label';
       // Anchored at the container's origin; updateLabels() moves it purely via transform.
       el.style.left = '0';
       el.style.top = '0';
       el.style.display = 'none';
+      el.owner = null;
       container.appendChild(el);
       return el;
     });
+    const freeLabels = labelPool.slice();
+    // Hand an element back: hidden, unowned, ready for the next marker.
+    function returnLabel(el) {
+      stopLabelFade(el);
+      el.style.display = 'none';
+      if (el.owner) { el.owner.label = null; el.owner = null; }
+      if (!freeLabels.includes(el)) freeLabels.push(el);
+    }
+    // Lend one to a marker, dressed for it. When every element is busy -- more labels fading out
+    // than the pool holds, in a fast spin -- one that is fading out is taken back for it; if none
+    // is, the label waits for the next frame.
+    function lendLabel(m) {
+      if (!freeLabels.length) {
+        const fading = labelPool.find((e) => e.owner && !e.owner.labelShown);
+        if (!fading) return null;
+        returnLabel(fading);
+      }
+      const el = freeLabels.pop();
+      el.owner = m;
+      m.label = el;
+      el.className = m.count > 1 ? 'tl-label tl-count' : 'tl-label';
+      el.textContent = m.labelText;
+      el.title = m.labelTitle;
+      el.setAttribute('aria-label', m.labelTitle);
+      return el;
+    }
 
     // One quad, two units across, instanced once per marker. Allocated for every spot and then
     // drawn with `instanceCount` set to however many markers the current zoom produces.
@@ -1840,17 +2120,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function rebuildMarkers(cellDeg) {
       clusterCellDeg = cellDeg;
       const clusters = clusterPoints(allSpots, cellDeg);
-      markers = clusters.map((c, i) => ({
+      markers = clusters.map((c) => ({
         id: c.ids[0], ids: c.ids, count: c.count, lat: c.lat, lon: c.lon,
         basePos: latLonToVector3(c.lat, c.lon, MARKER_SHELL),
         worldPos: new THREE.Vector3(), // scratch, reused every frame instead of .clone()
-        label: labelPool[i], labelText: '', labelTitle: '', labelShown: false,
+        // Its label element, lent while the label is on screen (see lendLabel).
+        label: null, labelText: '', labelTitle: '', labelShown: false,
       }));
-      // A cluster's label is a count chip centred on the dot, not a name floating above it.
-      for (let i = 0; i < markers.length; i++) {
-        const wanted = markers[i].count > 1 ? 'tl-label tl-count' : 'tl-label';
-        if (markers[i].label.className !== wanted) markers[i].label.className = wanted;
-      }
       for (let i = 0; i < markers.length; i++) {
         const p = markers[i].basePos;
         markerCenters.setXYZ(i, p.x, p.y, p.z);
@@ -1868,10 +2144,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // for a spot that is no longer there. Measured while fixing the overlap: 22 labels
       // visible against a cap of 14, the extra eight all stale. Clearing the pool on rebuild
       // makes the next frame's placement authoritative.
-      for (let i = 0; i < labelPool.length; i++) {
-        stopLabelFade(labelPool[i]);
-        if (labelPool[i].style.display !== 'none') labelPool[i].style.display = 'none';
-      }
+      for (let i = 0; i < labelPool.length; i++) returnLabel(labelPool[i]);
       refreshMarkerData();
       state.dataDirty = true;
     }
@@ -1885,10 +2158,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
 
     // Tapping a marker (as opposed to dragging to rotate) jumps straight to that spot's page.
-    // "A tap" is a mousedown/up or touchstart/end pair with barely any movement between them
-    // and not too much time elapsed — the same drag gesture that rotates the globe also passes
-    // through mousedown/mouseup, so a distance+time threshold is what actually distinguishes
-    // "flicked past this marker while rotating" from "meant to tap it".
+    // "A tap" is a press and release with barely any movement between them and not too much time
+    // elapsed -- the same drag gesture that rotates the globe also goes down and up, so a
+    // distance+time threshold is what actually distinguishes "flicked past this marker while
+    // rotating" from "meant to tap it". See lib/gestures.js.
     // A ceiling as well as a collision test. Even perfectly tiled, forty names is not a map you
     // can read -- it is a wall of text with a globe behind it.
     const MAX_LABELS = 14;
@@ -2035,9 +2308,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       state.distance = state.targetDistance = pose.distance;
       if (k >= 1) flight = null;
       return true;
-    }
-    function isTap(downX, downY, downTime, upX, upY) {
-      return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
     }
 
     // Drag-to-rotate sensitivity that scales with how zoomed in you are, so the globe actually
@@ -2193,7 +2463,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       stopLabelFade(el);
       el.style.display = 'block';
       if (reducedMotion || typeof el.animate !== 'function' || from === to) {
-        if (to === 0) el.style.display = 'none';
+        if (to === 0) returnLabel(el);
         return;
       }
       // From wherever a fade it interrupts had got to, for the rest of the time, so a label that
@@ -2206,9 +2476,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       el.fade = anim;
       anim.onfinish = () => {
         if (el.fade !== anim) return;
-        if (to === 0) el.style.display = 'none';
         el.fade = null;
         anim.cancel(); // its last frame is the element's own style now
+        if (to === 0) returnLabel(el); // gone: back to the pool
       };
     }
     function fadeLabelIn(el) { fadeLabel(el, 1, LABEL_FADE_IN_MS); }
@@ -2244,7 +2514,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         // and doing that for hundreds of labels every frame is exactly the stutter this file has
         // spent so long removing. A hidden element measures 0, so a label that has never been
         // shown is given a size estimated from its text until it has been drawn once.
-        if (m.label.style.display === 'block' && m.labelText === m.measuredFor) {
+        if (m.label && m.label.style.display === 'block' && m.labelText === m.measuredFor) {
           if (!m.labelW) { m.labelW = m.label.offsetWidth; m.labelH = m.label.offsetHeight; }
         } else if (m.labelText !== m.measuredFor) {
           m.measuredFor = m.labelText; m.labelW = 0; m.labelH = 0;
@@ -2270,15 +2540,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const m = markers[i];
         const show = m.labelWanted && labelShow.has(i);
         if (!show) {
-          if (m.labelShown) { fadeLabelOut(m.label); m.labelShown = false; }
+          if (m.labelShown) { m.labelShown = false; if (m.label) fadeLabelOut(m.label); }
           // On its way out: it goes on following its dot until it has gone.
-          if (m.label.fade && m.labelWanted) {
+          if (m.label && m.label.fade && m.labelWanted) {
             const anchor = m.count > 1 ? 'translate(-50%, -50%)' : 'translate(-50%, -130%)';
             m.label.style.transform = `${anchor} translate(${m.screenX}px, ${m.screenY}px)`;
           }
           continue;
         }
         if (!m.labelShown) {
+          if (!m.label && !lendLabel(m)) continue; // the pool is busy: next frame
           fadeLabelIn(m.label); m.labelShown = true;
           // Placed this frame from an estimated size; it is measured on the next one (above).
           // That next frame has to happen even if nothing else moves, or a label wider than
@@ -2292,28 +2563,61 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
     }
 
-    function onMouseDown(e) {
+    // One stream of pointers for mouse, pen and touch alike: see lib/gestures.js for what counts
+    // as a drag, a pinch and a tap. Pointer capture keeps a drag going when it leaves the canvas,
+    // which the mouse used to get from listeners on the whole window.
+    const gesture = createGesture();
+    const canvas = renderer.domElement;
+    canvas.style.touchAction = 'none';
+    function onPointerDown(e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
       noteInput();
       flight = null; // a hand on the globe takes it back
-      state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
-      state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
-      state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
-      state.lastMoveAt = performance.now();
+      try { canvas.setPointerCapture(e.pointerId); } catch { /* a pointer that cannot be captured still drags */ }
+      const act = gestureDown(gesture, e.pointerId, e.clientX, e.clientY, performance.now());
+      if (act.type === 'grab') {
+        state.dragging = true;
+        state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
+        state.lastMoveAt = performance.now();
+      } else if (act.type === 'pinch-start') {
+        // A second finger: the drag is over, and so is whatever speed it had built up -- left
+        // in, the globe set off on its own the moment the pinch ended.
+        state.dragging = false;
+        state.velX = 0; state.velY = 0;
+      }
     }
-    function onMouseMove(e) {
-      if (!state.dragging) return;
-      noteInput();
-      const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
-      state.lastX = e.clientX; state.lastY = e.clientY;
-      applyDrag(dx, dy);
+    function onPointerMove(e) {
+      const act = gestureMove(gesture, e.pointerId, e.clientX, e.clientY);
+      if (act.type === 'drag') {
+        noteInput();
+        applyDrag(act.dx, act.dy);
+      } else if (act.type === 'pinch') {
+        noteInput();
+        // Scaled by how much the spread between the fingers changed rather than by pixels, so
+        // pinching feels the same at every zoom, as the wheel does. Fingers parting zoom in.
+        state.targetDistance = clampDistance(state.targetDistance * act.ratio);
+      }
     }
-    function onMouseUp(e) {
-      if (!state.dragging) return;
+    function onPointerUp(e) {
+      const act = gestureUp(gesture, e.pointerId, e.clientX, e.clientY, performance.now());
+      if (act.type !== 'release') {
+        if (gesture.mode === 'hold') state.dragging = false;
+        return;
+      }
       state.dragging = false;
       settleOnRelease();
-      if (isTap(state.downX, state.downY, state.downTime, e.clientX, e.clientY)) {
+      if (act.tap) {
         state.velX = 0; state.velY = 0; // a tap is not a flick
-        pickSpotAt(e.clientX, e.clientY);
+        pickSpotAt(act.tap.x, act.tap.y);
+      }
+    }
+    // The system took the pointer away -- an incoming call, a notification pulled down, a system
+    // gesture. Not a release and certainly not a tap: without this, `dragging` stayed true and the
+    // globe kept treating the next unrelated touch as the end of the old drag.
+    function onPointerCancel(e) {
+      if (gestureCancel(gesture, e.pointerId).type === 'cancel') {
+        state.dragging = false;
+        state.velX = 0; state.velY = 0;
       }
     }
     function onWheel(e) {
@@ -2322,58 +2626,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       flight = null;
       state.targetDistance = clampDistance(state.targetDistance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
     }
-    function touchStart(e) {
-      noteInput();
-      flight = null;
-      if (e.touches.length === 1) {
-        state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
-        state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
-        state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
-        state.lastMoveAt = performance.now();
-      } else if (e.touches.length === 2) { state.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
-    }
-    function touchMove(e) {
-      e.preventDefault();
-      noteInput();
-      if (e.touches.length === 1 && state.dragging) {
-        const dx = e.touches[0].clientX - state.lastX, dy = e.touches[0].clientY - state.lastY;
-        state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
-        applyDrag(dx, dy);
-      } else if (e.touches.length === 2 && state.pinchDist != null) {
-        const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        // Same percent-of-distance reasoning as the wheel handler: scale by how much the ratio
-        // between fingers changed, not the raw pixel delta, so pinching feels consistent at any
-        // zoom level. Fingers spreading apart (d grows past the last reading) zooms in, matching
-        // this gesture's meaning everywhere else on a touch device.
-        state.targetDistance = clampDistance(state.targetDistance * (state.pinchDist / d));
-        state.pinchDist = d;
-      }
-    }
-    function touchEnd(e) {
-      state.dragging = false; state.pinchDist = null;
-      settleOnRelease();
-      const t = e.changedTouches && e.changedTouches[0];
-      if (t && isTap(state.downX, state.downY, state.downTime, t.clientX, t.clientY)) {
-        state.velX = 0; state.velY = 0; // a tap is not a flick
-        pickSpotAt(t.clientX, t.clientY);
-      }
-    }
-    // The system took the touch away -- an incoming call, a notification pulled down, a
-    // system gesture. Not a release and certainly not a tap: without this, `dragging` stayed
-    // true and the globe kept treating the next unrelated touch as the end of the old drag.
-    function touchCancel() {
-      state.dragging = false; state.pinchDist = null;
-      state.velX = 0; state.velY = 0;
-    }
 
-    renderer.domElement.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
-    renderer.domElement.addEventListener('touchstart', touchStart, { passive: true });
-    renderer.domElement.addEventListener('touchmove', touchMove, { passive: false });
-    renderer.domElement.addEventListener('touchend', touchEnd);
-    renderer.domElement.addEventListener('touchcancel', touchCancel);
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerCancel);
+    // Capture can end without a pointerup -- the element hidden, the window losing focus. A
+    // pointer already released is no longer tracked, so this is a no-op after an ordinary up.
+    canvas.addEventListener('lostpointercapture', onPointerCancel);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
 
     // Marker colors and label text come from live forecast data, which changes on the order of
     // minutes — not per frame. The old loop recomputed and rewrote all of it every single frame
@@ -2423,9 +2684,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const title = m.count > 1
           ? m.count + ' spots' + (bestRating ? ' · best ' + bestRating : ' · no readings yet')
           : text;
-        if (title !== m.labelTitle) { m.label.title = title; m.label.setAttribute('aria-label', title); m.labelTitle = title; }
+        if (title !== m.labelTitle) {
+          m.labelTitle = title;
+          if (m.label) { m.label.title = title; m.label.setAttribute('aria-label', title); }
+        }
         // New text can change a label's size, and so where labels fit: worth a redraw.
-        if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; textChanged = true; }
+        if (text !== m.labelText) { m.labelText = text; if (m.label) m.label.textContent = text; textChanged = true; }
       }
       if (colorsChanged) markerColors.needsUpdate = true;
       // What the legend reports. "124 of 403" is the difference between a colour scale that
@@ -2437,10 +2701,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (colorsChanged || textChanged) state.dataDirty = true; // something to show: draw once
     }
     updateClusters(); // builds the first set of markers, and colours them
-    const dataTimer = setInterval(() => {
-      refreshMarkerData();
-      if (sunLive && Date.now() - sunShownAt > SUN_REDRAW_MS) state.dataDirty = true;
-    }, 1000);
+    function startDataTimer() {
+      return setInterval(() => {
+        refreshMarkerData();
+        if (sunLive && Date.now() - sunShownAt > SUN_REDRAW_MS) state.dataDirty = true;
+      }, 1000);
+    }
+    let dataTimer = startDataTimer();
 
     // Smoothing. Input writes to the *target* rotation/distance; each frame eases the rendered
     // values toward it. That's what makes this feel smooth rather than stepwise: a wheel notch
@@ -2482,8 +2749,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dRotX = state.targetRotX - state.rotX;
       const dRotY = state.targetRotY - state.rotY;
       const dDist = state.targetDistance - state.distance;
-      const moving = flying || overlayMoving || particlesMoving || arrowsGliding || coasting || state.dragging
+      const cameraMoving = flying || coasting || state.dragging
         || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
+      const moving = cameraMoving || overlayMoving || particlesMoving || arrowsGliding;
+      // The globe has just come to rest on the coarse coastline it drew while moving, close
+      // enough for the difference to show: one more frame, to put the full one back.
+      if (!cameraMoving && coastLevel === 'coarse' && coastlineLevel(coastline.coarseError, coastPxPerRadian(), false) === 'fine') {
+        state.dataDirty = true;
+      }
 
       // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
       // identical image. A globe sitting still cost exactly as much as one being dragged before
@@ -2518,7 +2791,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       updateLabels();
       ensureCoastline();
       ensureWaveOverlay();
-      if (waveMesh) waveMesh.visible = wavesOnRef.current;
+      overlayUniforms.uOverlayOn.value = overlayReady && wavesOnRef.current ? 1 : 0;
       stepParticles(dt, particlesMoving);
       updateArrows(dt);
       // The stars give way as the camera comes down to the surface (see lib/atmosphere.js).
@@ -2527,10 +2800,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       stars.visible = starsShown > 0;
       updateMute(dt);
       updateSun();
-      if (coastlineMesh) {
+      if (coastline) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
-        coastlineMat.opacity = o;
-        coastlineMesh.visible = o > 0;
+        coastline.material.opacity = o;
+        showCoastline(o > 0 ? coastlineLevel(coastline.coarseError, coastPxPerRadian(), cameraMoving) : null);
       }
       renderer.render(scene, camera);
       if (perf) {
@@ -2544,6 +2817,36 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       state.raf = requestAnimationFrame(animate);
     }
     animate();
+
+    // A hidden page draws nothing -- the browser stops the frame loop -- but the timers went on:
+    // the marker refresh every second, the performance display twice a second. They stop with
+    // it now, and everything picks up again when the page is shown, starting with a fresh frame.
+    function onVisibility() {
+      if (cancelled) return;
+      if (document.hidden) {
+        clearInterval(dataTimer);
+        dataTimer = null;
+        if (perf && perf.timer) { clearInterval(perf.timer); perf.timer = null; }
+        cancelAnimationFrame(state.raf);
+        state.raf = null;
+        clearTimeout(contextTimer);
+        return;
+      }
+      if (!dataTimer) dataTimer = startDataTimer();
+      if (perf && !perf.timer) { showPerf(); perf.timer = setInterval(showPerf, 500); }
+      // Whatever happened while it was hidden is not one long frame.
+      lastTick = null;
+      lastDrawnAt = null;
+      state.dataDirty = true;
+      if (state.raf == null) state.raf = requestAnimationFrame(animate);
+      if (contextLost) waitForContext();
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+
+    // A globe rebuilt on a new GPU context (see waitForContext) starts from nothing, but what the
+    // controls say is shown is still React's: the week, and the wind layer if that is selected.
+    if (weekForGpuRef.current) setWeek(weekForGpuRef.current);
+    if (wavesOnRef.current && layerRef.current === 'wind') ensureWindLayer();
 
     // The drawn map is built only now, with the sphere already on screen.
     //
@@ -2566,19 +2869,26 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     return () => {
       cancelled = true;
+      glViewRef.current = { rotX: state.rotX, rotY: state.rotY, distance: state.distance };
       markDirtyRef.current = null;
       cancelAnimationFrame(state.raf);
       clearInterval(dataTimer);
+      clearTimeout(contextTimer);
+      clearTimeout(coastlineTimer);
+      clearTimeout(weekTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (resizeObserver) resizeObserver.disconnect();
+      if (densityQuery && typeof densityQuery.removeEventListener === 'function') densityQuery.removeEventListener('change', onDensityChange);
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
       if (reportTimer) clearTimeout(reportTimer);
       if (perf) { clearInterval(perf.timer); if (perf.hud.parentNode) perf.hud.parentNode.removeChild(perf.hud); }
-      renderer.domElement.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      renderer.domElement.removeEventListener('wheel', onWheel);
-      renderer.domElement.removeEventListener('touchstart', touchStart);
-      renderer.domElement.removeEventListener('touchmove', touchMove);
-      renderer.domElement.removeEventListener('touchend', touchEnd);
-      renderer.domElement.removeEventListener('touchcancel', touchCancel);
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerCancel);
+      canvas.removeEventListener('lostpointercapture', onPointerCancel);
+      canvas.removeEventListener('wheel', onWheel);
       // The pool, not `markers`: markers holds only the clusters the current zoom produced, so
       // tearing down from it orphans every label belonging to a set that has since re-formed.
       // (Measured: 751 label nodes alive after two mounts, against 403 spots.)
@@ -2590,11 +2900,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (satelliteTexture) satelliteTexture.dispose();
       releaseBasemapLoader();
       markerGeo.dispose(); markerMat.dispose();
-      // ~10MB of line vertices: the one buffer here big enough that leaking it across a few
-      // open/close cycles of the globe would actually be felt on a phone.
-      if (coastlineMesh) coastlineMesh.geometry.dispose();
-      coastlineMat.dispose();
-      if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
+      // ~12MB of line vertices across the two levels: the one set of buffers here big enough
+      // that leaking it across a few open/close cycles of the globe would be felt on a phone.
+      if (coastline) {
+        for (const t of [...coastline.fine, ...coastline.coarse]) t.mesh.geometry.dispose();
+        coastline.material.dispose();
+      }
       for (const set of Object.values(liveLayers)) {
         if (set.texture) set.texture.dispose();
         if (set.dirTexture) set.dirTexture.dispose();
@@ -2611,6 +2922,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       arrowMat.dispose();
       if (waveMaskTexture) waveMaskTexture.dispose();
       renderer.dispose();
+      // And the context itself, now, rather than whenever the collector gets round to it. Every
+      // globe opened used to leave one behind -- measured 2, 3, 4 on successive opens -- and
+      // browsers start taking contexts away from the page past a limit of about sixteen, the
+      // oldest first, which in a long session could be the one on screen.
+      try { renderer.forceContextLoss(); } catch { /* already gone */ }
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };
     } catch {
@@ -2620,9 +2936,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return undefined;
     }
     // Mount-once: this component is only ever rendered while the globe view is active, so
-    // mounting/unmounting it already does what watching a "view" prop used to do.
+    // mounting/unmounting it already does what watching a "view" prop used to do. The one
+    // exception is glEpoch, bumped to rebuild the scene when the GPU context is gone for good.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [glEpoch]);
 
   return (
     // A column, so the canvas takes whatever height is left rather than a fixed 420px box that
@@ -2709,9 +3026,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                     {playing ? '❚❚' : '▶'}
                   </button>
                   <input
-                    type="range" min={0} max={frames.list.length - 1} step={1} value={frameIdx}
+                    type="range" min={0} max={frames.list.length - 1} step="any" value={scrub ?? frameIdx}
                     aria-label="Forecast hour"
-                    onChange={(e) => { setPlaying(false); seek(Number(e.target.value)); }}
+                    onChange={(e) => { setPlaying(false); moveScrub(Number(e.target.value)); }}
+                    onPointerUp={endScrub}
+                    onTouchEnd={endScrub}
+                    onKeyUp={endScrub}
+                    onBlur={endScrub}
                     style={{ flex: 1, minWidth: 0, accentColor: COLORS.tealBright, minHeight: 44 }}
                   />
                   <button

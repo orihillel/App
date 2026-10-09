@@ -88,7 +88,7 @@ export function gridCells(step = GRID_LAT_STEP) {
 // one into a no-op.
 //
 // The counts are distinct across every step here, so there is nothing to disambiguate.
-export const KNOWN_LAT_STEPS = [2, 5, 10, 15, 20];
+export const KNOWN_LAT_STEPS = [2, 2.5, 5, 10, 15, 20];
 
 // How coarse a grid payload is: what it says first, what its own size implies second, the
 // shared constant last.
@@ -348,18 +348,24 @@ export function fillGridGaps(heights, rounds = 2, step = GRID_LAT_STEP) {
         if (current[index] != null) continue;
         let total = 0;
         let n = 0;
-        const take = (v) => { if (v != null && Number.isFinite(v)) { total += v; n++; } };
-        // East and west, wrapping: a row is a circle, not a line.
-        take(current[offsets[ri] + ((i - 1 + row.count) % row.count)]);
-        take(current[offsets[ri] + ((i + 1) % row.count)]);
-        // North and south. Rows hold different numbers of cells, so the neighbour is whichever
-        // cell of the next row this longitude falls in rather than the one at the same index.
+        // East and west, wrapping: a row is a circle, not a line. Then north and south. Rows
+        // hold different numbers of cells, so that neighbour is whichever cell of the next row
+        // this longitude falls in rather than the one at the same index. (Written out rather
+        // than through a helper and a list of rows: this runs for every empty cell of every
+        // frame of the week, and allocating those was more than half its time.)
         const lon = -180 + (i + 0.5) * row.step;
-        for (const rj of [ri - 1, ri + 1]) {
-          if (rj < 0 || rj >= rows.length) continue;
-          const other = rows[rj];
-          const wrapped = ((lon + 180) % 360 + 360) % 360;
-          take(current[offsets[rj] + Math.min(other.count - 1, Math.floor(wrapped / other.step))]);
+        const wrapped = ((lon + 180) % 360 + 360) % 360;
+        for (let k = 0; k < 4; k++) {
+          let v;
+          if (k === 0) v = current[offsets[ri] + ((i - 1 + row.count) % row.count)];
+          else if (k === 1) v = current[offsets[ri] + ((i + 1) % row.count)];
+          else {
+            const rj = k === 2 ? ri - 1 : ri + 1;
+            if (rj < 0 || rj >= rows.length) continue;
+            const other = rows[rj];
+            v = current[offsets[rj] + Math.min(other.count - 1, Math.floor(wrapped / other.step))];
+          }
+          if (v != null && Number.isFinite(v)) { total += v; n++; }
         }
         if (n > 0) { next[index] = total / n; filled++; }
       }

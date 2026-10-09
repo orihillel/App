@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   omKey, runAt, stepAt, candidateKeys, looksLikeOm, areaMean, areaMeanBearing, regrid,
   buildGridFromOm, OM_MIN_BYTES, MAX_RUNS_BACK,
-  candidateKeysFor, parseFrameHour, fetchFrameFromOm,
+  candidateKeysFor, parseFrameHour, fetchFrameFromOm, fetchWindFrameFromOm,
   RangeBackend, areaMeanWind, regridWind, buildWindGridFromOm,
   newRunProbe, runDirOf,
   WIND_MODEL, WIND_STEP_HOURS, OM_TAIL_WINDOW, OM_READ_WINDOW,
@@ -488,6 +488,76 @@ describe('buildWindGridFromOm', () => {
     // It settled on the second candidate, which is the walk-back doing its job.
     expect(out.source).toContain('/2026/09/22/0600Z/');
     expect(out.source).toContain('ncep_gfs013');
+  });
+});
+
+describe('a frame of the wind week', () => {
+  const plane = (val) => ({ getDimensions: () => [4, 8], read: async () => new Float32Array(32).fill(val) });
+  const notYet = () => Object.assign(new Error('range -> 404'), { status: 404 });
+  const down = () => Object.assign(new Error('range -> 503'), { status: 503 });
+
+  it("reads the wind model's file for the frame's own hour, newest run first", async () => {
+    const asked = [];
+    const out = await fetchWindFrameFromOm('2026-09-25T06:00', 20, {
+      now: T(2026, 9, 22, 13),
+      openOm: async (url) => { asked.push(url); throw notYet(); },
+    });
+    expect(out).toBeNull();
+    expect(asked[0]).toBe('https://openmeteo.s3.amazonaws.com/data_spatial/ncep_gfs013/2026/09/22/1200Z/2026-09-25T0600.om');
+    expect(asked).toHaveLength(MAX_RUNS_BACK);
+    for (const url of asked) expect(url.endsWith('2026-09-25T0600.om')).toBe(true);
+  });
+
+  it('turns u and v into the speeds and bearings the week stores, and lets go of the file', async () => {
+    let closed = 0;
+    const out = await fetchWindFrameFromOm('2026-09-25T06:00', 20, {
+      now: T(2026, 9, 22, 13),
+      openOm: async () => ({
+        fields: { wind_u_component_10m: plane(3), wind_v_component_10m: plane(4) },
+        backend: { close: async () => { closed++; }, requests: 3 },
+      }),
+    });
+    expect(out.speeds).toHaveLength(gridCellCount(20));
+    // 3 and 4 m/s is 5 m/s is 18 km/h, from the south-west.
+    for (const s of out.speeds) expect(s).toBeCloseTo(18, 5);
+    for (const d of out.directions) expect(d).toBeCloseTo(216.87, 1);
+    expect(out.source).toContain('/ncep_gfs013/2026/09/22/1200Z/');
+    expect(closed).toBe(1);
+  });
+
+  it('writes off a run that has not got this far, and only one that answered 404', async () => {
+    const probe = newRunProbe();
+    await fetchWindFrameFromOm('2026-09-25T06:00', 20, {
+      now: T(2026, 9, 22, 13),
+      probe,
+      openOm: async (url) => { throw url.includes('/1200Z/') ? notYet() : down(); },
+    });
+    expect([...probe.exhausted]).toEqual(['data_spatial/ncep_gfs013/2026/09/22/1200Z']);
+    // The next hour does not ask that run again.
+    const asked = [];
+    await fetchWindFrameFromOm('2026-09-25T12:00', 20, {
+      now: T(2026, 9, 22, 13),
+      probe,
+      openOm: async (url) => { asked.push(url); throw down(); },
+    });
+    expect(asked).toHaveLength(MAX_RUNS_BACK - 1);
+    expect(asked.some((u) => u.includes('/1200Z/'))).toBe(false);
+  });
+
+  it('moves on from a file with no wind in it, and still lets go of it', async () => {
+    let closed = 0;
+    const out = await fetchWindFrameFromOm('2026-09-25T06:00', 20, {
+      now: T(2026, 9, 22, 13),
+      openOm: async () => ({ fields: { wave_height: {} }, backend: { close: async () => { closed++; }, requests: 0 } }),
+    });
+    expect(out).toBeNull();
+    expect(closed).toBe(MAX_RUNS_BACK);
+  });
+
+  it('gives back nothing for an hour it cannot read', async () => {
+    let opened = 0;
+    expect(await fetchWindFrameFromOm('not an hour', 20, { openOm: async () => { opened++; } })).toBeNull();
+    expect(opened).toBe(0);
   });
 });
 
