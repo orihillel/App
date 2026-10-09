@@ -29,7 +29,11 @@ import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
   drawOverlay, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
 } from '../lib/overlaygpu.js';
-import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
+import {
+  createFrameStats, recordFrame, recordGpu, summarizeFrames, perfLines, readPerfFlag,
+  createActivityStats, frameActivity, ACTIVITIES,
+} from '../lib/framestats.js';
+import { createGpuTimer, restartGpuTimer, gpuTimerAvailable, beginGpuFrame, endGpuFrame, pollGpuFrames } from '../lib/gputimer.js';
 import { createQualityGovernor, governorTick } from '../lib/quality.js';
 import {
   velocityComponents, regularizeVelocity, degreesPerSecondPerKph, particlePxPerKph, viewCapRadius, particleCount, stateTexel,
@@ -544,19 +548,27 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (cancelled) return;
       contextLost = false;
       clearTimeout(contextTimer);
+      // The GPU timer's extension has to be asked for again on the new context.
+      if (perf) restartGpuTimer(perf.gpu);
       state.dataDirty = true;
     }
     renderer.domElement.addEventListener('webglcontextlost', onContextLost);
     renderer.domElement.addEventListener('webglcontextrestored', onContextRestored);
 
     // The on-screen performance display: off unless the page was opened with ?perf=1 (and
-    // remembered after that; ?perf=0 forgets it). See lib/framestats.js for what it measures.
+    // remembered after that; ?perf=0 forgets it). See lib/framestats.js for what it measures,
+    // and lib/gputimer.js for the GPU's share where the browser can tell.
     // Written straight to the DOM twice a second rather than through React state, because a
     // display that re-rendered this component to report frame times would be measuring itself.
     let perfStore = null;
     try { perfStore = window.localStorage; } catch { /* blocked storage: the URL alone decides */ }
     const perf = readPerfFlag(window.location.search, perfStore)
-      ? { stats: createFrameStats(), drawn: 0, shownDrawn: 0, paintMs: null, hud: document.createElement('div'), timer: null }
+      ? {
+        stats: createFrameStats(),
+        activities: createActivityStats(),
+        gpu: createGpuTimer(renderer.getContext()),
+        drawn: 0, shownDrawn: 0, paintMs: null, hud: document.createElement('div'), timer: null,
+      }
       : null;
     const showPerf = () => {
       const drawnSince = perf.drawn - perf.shownDrawn;
@@ -568,7 +580,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
         width: renderer.domElement.width, height: renderer.domElement.height,
         paintMs: perf.paintMs,
+        gpu: gpuTimerAvailable(perf.gpu),
+        activities: Object.fromEntries(ACTIVITIES.map((name) => [name, summarizeFrames(perf.activities[name])])),
       }).join('\n');
+    };
+    // A frame's GPU time, when the GPU answers some frames later: into the recent window, and
+    // into the window of whatever the globe was doing when the frame was drawn.
+    const recordGpuFrame = (ms, activity) => {
+      recordGpu(perf.stats, ms);
+      if (perf.activities[activity]) recordGpu(perf.activities[activity], ms);
     };
     if (perf) {
       perf.hud.setAttribute('data-perf-hud', '');
@@ -2731,6 +2751,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dt = Math.min(playDt, MAX_FRAME_MS);
       const tickMs = lastTick == null ? 0 : now - lastTick;
       lastTick = now;
+      if (perf) pollGpuFrames(perf.gpu, recordGpuFrame);
       const overlayMoving = updateOverlayTime(playDt);
       const particlesMoving = particlesRunning();
       const arrowsGliding = arrowsMoving();
@@ -2771,6 +2792,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
       state.dataDirty = false;
       const workStart = perf ? performance.now() : 0;
+      const activity = perf
+        ? frameActivity({ handOn: gesture.pointers.size > 0, flying, cameraMoving, playing: timelineRef.current.playing })
+        : null;
 
       const ease = easeAlpha(EASE, dt);
       state.rotX += dRotX * ease;
@@ -2792,6 +2816,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       ensureCoastline();
       ensureWaveOverlay();
       overlayUniforms.uOverlayOn.value = overlayReady && wavesOnRef.current ? 1 : 0;
+      // The GPU's share of the frame, from its first GPU work -- the particles' own pass -- to
+      // the end of the render.
+      if (perf) beginGpuFrame(perf.gpu);
       stepParticles(dt, particlesMoving);
       updateArrows(dt);
       // The stars give way as the camera comes down to the surface (see lib/atmosphere.js).
@@ -2807,7 +2834,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
       renderer.render(scene, camera);
       if (perf) {
-        if (lastDrawnAt != null) recordFrame(perf.stats, now - lastDrawnAt, performance.now() - workStart);
+        endGpuFrame(perf.gpu, activity);
+        const jsMs = performance.now() - workStart;
+        if (lastDrawnAt != null) {
+          recordFrame(perf.stats, now - lastDrawnAt, jsMs);
+          recordFrame(perf.activities[activity], now - lastDrawnAt, jsMs);
+        }
         perf.drawn++;
       }
       lastDrawnAt = now;
