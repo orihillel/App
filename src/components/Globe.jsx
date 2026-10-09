@@ -16,6 +16,7 @@ import { BASEMAP, BASEMAP_MUTE_MS, muteBasemap } from '../lib/basemap.js';
 import { ATMOSPHERE_RADIUS, ATMOSPHERE_VERTEX, ATMOSPHERE_FRAGMENT, starFade } from '../lib/atmosphere.js';
 import { planFlight } from '../lib/flight.js';
 import { sunDirection, frameTimeMs, shadeNight } from '../lib/terminator.js';
+import { createGesture, gestureDown, gestureMove, gestureUp, gestureCancel } from '../lib/gestures.js';
 import { fillLandRings, polygonsToPixelRings, topologyToPolygons, fetchLandMask, LAND_MASK } from '../lib/landmask.js';
 import { waveColor, waveScaleGradient, waveScaleTicks, waveLegendCaption, WAVE_SCALE_MAX } from '../lib/wavescale.js';
 import { windColor, windScaleGradient, windScaleTicks, windLegendCaption, WIND_SCALE_MAX } from '../lib/windscale.js';
@@ -311,9 +312,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   }, [timelineReady, frames, seek]);
 
   // The week goes to the GPU once, when it arrives, and is dropped when it goes (a layer switch
-  // drops it). Which moment of it is drawn is decided per frame by the render loop.
+  // drops it). Which moment of it is drawn is decided per frame by the render loop. Kept in a ref
+  // as well, so a globe rebuilt on a new GPU context (see the WebGL effect) can hand it over again.
+  const weekForGpuRef = useRef(null);
   useEffect(() => {
-    if (setWeekRef.current) setWeekRef.current(framesState === 'ready' ? frames : null);
+    weekForGpuRef.current = framesState === 'ready' ? frames : null;
+    if (setWeekRef.current) setWeekRef.current(weekForGpuRef.current);
   }, [frames, framesState]);
 
   // What the last tap on the ocean read. Held as state rather than drawn into the scene so it
@@ -321,6 +325,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
   // colours are not.
   const [reading, setReading] = useState(null);
   const [globeError, setGlobeError] = useState(false);
+  // Bumped to throw the whole WebGL scene away and build it again, on a new context. Only ever
+  // needed when the browser takes the GPU context and does not give it back (see the effect).
+  const [glEpoch, setGlEpoch] = useState(0);
+  // The size the canvas was last drawn at. The container takes its height from the canvas in it,
+  // so a rebuild -- which removes the old canvas before making the new one -- would otherwise
+  // measure a container collapsed to its minimum and build a smaller globe.
+  const glSizeRef = useRef(null);
+  // And where the camera was, so a rebuilt globe comes back looking at the same place.
+  const glViewRef = useRef(null);
   // How many spots currently have a live reading, so the legend can say what its colour scale
   // actually covers instead of implying it covers everything.
   const [liveCount, setLiveCount] = useState(null);
@@ -332,8 +345,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // throws, we've had no way to see that failure before now — it would just leave a blank
     // or broken canvas with nothing telling us why. This at least surfaces it.
     try {
-    const width = container.clientWidth || 340;
-    const height = container.clientHeight || 420;
+    // The size it is drawn at, in CSS pixels. Not fixed: see resizeTo below.
+    let width = container.clientWidth || (glSizeRef.current && glSizeRef.current.width) || 340;
+    let height = Math.max(container.clientHeight, (glSizeRef.current && glSizeRef.current.height) || 0) || 420;
+    glSizeRef.current = { width, height };
     const R = 1;
 
     // How close in you can zoom. Smaller = the globe fills more of the screen, which spreads
@@ -386,10 +401,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const state = {
       distance: 3.0, targetDistance: 3.0,
       rotX: 0.3, rotY: 0.6, targetRotX: 0.3, targetRotY: 0.6, velX: 0, velY: 0,
-      dragging: false, lastX: 0, lastY: 0, pinchDist: null, raf: null, downX: 0, downY: 0, downTime: 0,
+      dragging: false, raf: null,
       lastMoveAt: 0, // performance.now() of the last drag movement, for velocity and the still-release test
       dataDirty: true, // set when marker colors/labels change, so an idle frame still redraws once
     };
+    if (glViewRef.current) {
+      const v = glViewRef.current;
+      state.rotX = state.targetRotX = v.rotX;
+      state.rotY = state.targetRotY = v.rotY;
+      state.distance = state.targetDistance = v.distance;
+    }
     camera.position.set(0, 0, state.distance);
     markDirtyRef.current = () => { state.dataDirty = true; };
 
@@ -406,7 +427,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // thousands of markers, a translucent overlay and close to a million coastline vertices up
     // close. Phones' tile-based GPUs resolve 4x MSAA cheaply, so 2x with MSAA keeps edges smooth
     // for well under half the fill cost. A 2x cap is the usual advice for three.js on phones.
-    const pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+    let pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
     // Opaque, drawing its own background in the page's colour. A transparent canvas is blended
     // onto the page by the browser on every frame, and anything translucent drawn over empty
     // background -- the glow round the globe, the stars -- left the canvas itself translucent
@@ -424,7 +445,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // And lowered from there, a step at a time, on a device that cannot keep up -- raised again
     // once it can. See lib/quality.js; applied from the frame loop below.
     let currentPixelRatio = pixelRatio;
-    const quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
+    let quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
     function applyPixelRatio(ratio) {
       currentPixelRatio = ratio;
       renderer.setPixelRatio(ratio);
@@ -433,6 +454,71 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     container.appendChild(renderer.domElement);
     setGlobeError(false);
+
+    // The canvas follows its container: a phone turned on its side, a window resized, the address
+    // bar sliding away. It used to keep the size it was created at and let the browser stretch it
+    // to fit, which drew the globe as an oval and put every label and tap off by the stretch.
+    function resizeTo(w, h) {
+      if (!(w > 0) || !(h > 0) || (w === width && h === height)) return;
+      width = w;
+      height = h;
+      glSizeRef.current = { width, height };
+      camera.aspect = width / height;
+      camera.updateProjectionMatrix();
+      renderer.setSize(width, height);
+      state.dataDirty = true;
+    }
+    const resizeObserver = typeof ResizeObserver === 'function'
+      ? new ResizeObserver(() => resizeTo(container.clientWidth, container.clientHeight))
+      : null;
+    if (resizeObserver) resizeObserver.observe(container);
+    // And the screen's own density: a window dragged onto another monitor, or the page zoomed.
+    // The quality governor starts again from the new ceiling, since what it learned was about
+    // the old one.
+    let densityQuery = null;
+    function onDensityChange() {
+      if (cancelled) return;
+      pixelRatio = Math.min(window.devicePixelRatio || 1, 2);
+      quality = createQualityGovernor({ max: pixelRatio, min: Math.min(1, pixelRatio) });
+      applyPixelRatio(pixelRatio);
+      watchDensity();
+    }
+    function watchDensity() {
+      if (typeof window.matchMedia !== 'function') return;
+      densityQuery = window.matchMedia('(resolution: ' + (window.devicePixelRatio || 1) + 'dppx)');
+      if (typeof densityQuery.addEventListener === 'function') densityQuery.addEventListener('change', onDensityChange, { once: true });
+    }
+    watchDensity();
+
+    // The GPU context can be taken away -- iOS does it to a page sent to the background -- and
+    // given back. three.js asks for it back, and rebuilds its own state when it returns; but this
+    // globe only draws when something changes, so it has to be told to draw again, or the canvas
+    // stays blank until someone happens to touch it. If the context does not come back at all,
+    // the whole scene is built again on a new one.
+    const CONTEXT_RESTORE_WAIT_MS = 3000;
+    let contextLost = false;
+    let contextTimer = null;
+    function waitForContext() {
+      clearTimeout(contextTimer);
+      // A hidden page is not given its context back until it is shown again: wait for that.
+      if (document.hidden) return;
+      contextTimer = setTimeout(() => {
+        if (contextLost && !cancelled) setGlEpoch((n) => n + 1);
+      }, CONTEXT_RESTORE_WAIT_MS);
+    }
+    function onContextLost() {
+      if (cancelled) return;
+      contextLost = true;
+      waitForContext();
+    }
+    function onContextRestored() {
+      if (cancelled) return;
+      contextLost = false;
+      clearTimeout(contextTimer);
+      state.dataDirty = true;
+    }
+    renderer.domElement.addEventListener('webglcontextlost', onContextLost);
+    renderer.domElement.addEventListener('webglcontextrestored', onContextRestored);
 
     // The on-screen performance display: off unless the page was opened with ?perf=1 (and
     // remembered after that; ?perf=0 forgets it). See lib/framestats.js for what it measures.
@@ -443,6 +529,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     const perf = readPerfFlag(window.location.search, perfStore)
       ? { stats: createFrameStats(), drawn: 0, shownDrawn: 0, paintMs: null, hud: document.createElement('div'), timer: null }
       : null;
+    const showPerf = () => {
+      const drawnSince = perf.drawn - perf.shownDrawn;
+      perf.shownDrawn = perf.drawn;
+      const info = renderer.info.render;
+      perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
+        idle: !drawnSince,
+        calls: info.calls, triangles: info.triangles, lines: info.lines,
+        pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
+        width: renderer.domElement.width, height: renderer.domElement.height,
+        paintMs: perf.paintMs,
+      }).join('\n');
+    };
     if (perf) {
       perf.hud.setAttribute('data-perf-hud', '');
       Object.assign(perf.hud.style, {
@@ -451,18 +549,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         font: '10.5px/1.45 "JetBrains Mono", ui-monospace, monospace', whiteSpace: 'pre',
       });
       container.appendChild(perf.hud);
-      const showPerf = () => {
-        const drawnSince = perf.drawn - perf.shownDrawn;
-        perf.shownDrawn = perf.drawn;
-        const info = renderer.info.render;
-        perf.hud.textContent = perfLines(drawnSince ? summarizeFrames(perf.stats) : null, {
-          idle: !drawnSince,
-          calls: info.calls, triangles: info.triangles, lines: info.lines,
-          pixelRatio: currentPixelRatio, pixelRatioMax: pixelRatio,
-          width: renderer.domElement.width, height: renderer.domElement.height,
-          paintMs: perf.paintMs,
-        }).join('\n');
-      };
       showPerf();
       perf.timer = setInterval(showPerf, 500);
     }
@@ -1885,10 +1971,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
 
     // Tapping a marker (as opposed to dragging to rotate) jumps straight to that spot's page.
-    // "A tap" is a mousedown/up or touchstart/end pair with barely any movement between them
-    // and not too much time elapsed — the same drag gesture that rotates the globe also passes
-    // through mousedown/mouseup, so a distance+time threshold is what actually distinguishes
-    // "flicked past this marker while rotating" from "meant to tap it".
+    // "A tap" is a press and release with barely any movement between them and not too much time
+    // elapsed -- the same drag gesture that rotates the globe also goes down and up, so a
+    // distance+time threshold is what actually distinguishes "flicked past this marker while
+    // rotating" from "meant to tap it". See lib/gestures.js.
     // A ceiling as well as a collision test. Even perfectly tiled, forty names is not a map you
     // can read -- it is a wall of text with a globe behind it.
     const MAX_LABELS = 14;
@@ -2035,9 +2121,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       state.distance = state.targetDistance = pose.distance;
       if (k >= 1) flight = null;
       return true;
-    }
-    function isTap(downX, downY, downTime, upX, upY) {
-      return Math.hypot(upX - downX, upY - downY) < 6 && Date.now() - downTime < 500;
     }
 
     // Drag-to-rotate sensitivity that scales with how zoomed in you are, so the globe actually
@@ -2292,28 +2375,61 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
     }
 
-    function onMouseDown(e) {
+    // One stream of pointers for mouse, pen and touch alike: see lib/gestures.js for what counts
+    // as a drag, a pinch and a tap. Pointer capture keeps a drag going when it leaves the canvas,
+    // which the mouse used to get from listeners on the whole window.
+    const gesture = createGesture();
+    const canvas = renderer.domElement;
+    canvas.style.touchAction = 'none';
+    function onPointerDown(e) {
+      if (e.pointerType === 'mouse' && e.button !== 0) return;
       noteInput();
       flight = null; // a hand on the globe takes it back
-      state.dragging = true; state.lastX = e.clientX; state.lastY = e.clientY;
-      state.downX = e.clientX; state.downY = e.clientY; state.downTime = Date.now();
-      state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
-      state.lastMoveAt = performance.now();
+      try { canvas.setPointerCapture(e.pointerId); } catch { /* a pointer that cannot be captured still drags */ }
+      const act = gestureDown(gesture, e.pointerId, e.clientX, e.clientY, performance.now());
+      if (act.type === 'grab') {
+        state.dragging = true;
+        state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
+        state.lastMoveAt = performance.now();
+      } else if (act.type === 'pinch-start') {
+        // A second finger: the drag is over, and so is whatever speed it had built up -- left
+        // in, the globe set off on its own the moment the pinch ended.
+        state.dragging = false;
+        state.velX = 0; state.velY = 0;
+      }
     }
-    function onMouseMove(e) {
-      if (!state.dragging) return;
-      noteInput();
-      const dx = e.clientX - state.lastX, dy = e.clientY - state.lastY;
-      state.lastX = e.clientX; state.lastY = e.clientY;
-      applyDrag(dx, dy);
+    function onPointerMove(e) {
+      const act = gestureMove(gesture, e.pointerId, e.clientX, e.clientY);
+      if (act.type === 'drag') {
+        noteInput();
+        applyDrag(act.dx, act.dy);
+      } else if (act.type === 'pinch') {
+        noteInput();
+        // Scaled by how much the spread between the fingers changed rather than by pixels, so
+        // pinching feels the same at every zoom, as the wheel does. Fingers parting zoom in.
+        state.targetDistance = clampDistance(state.targetDistance * act.ratio);
+      }
     }
-    function onMouseUp(e) {
-      if (!state.dragging) return;
+    function onPointerUp(e) {
+      const act = gestureUp(gesture, e.pointerId, e.clientX, e.clientY, performance.now());
+      if (act.type !== 'release') {
+        if (gesture.mode === 'hold') state.dragging = false;
+        return;
+      }
       state.dragging = false;
       settleOnRelease();
-      if (isTap(state.downX, state.downY, state.downTime, e.clientX, e.clientY)) {
+      if (act.tap) {
         state.velX = 0; state.velY = 0; // a tap is not a flick
-        pickSpotAt(e.clientX, e.clientY);
+        pickSpotAt(act.tap.x, act.tap.y);
+      }
+    }
+    // The system took the pointer away -- an incoming call, a notification pulled down, a system
+    // gesture. Not a release and certainly not a tap: without this, `dragging` stayed true and the
+    // globe kept treating the next unrelated touch as the end of the old drag.
+    function onPointerCancel(e) {
+      if (gestureCancel(gesture, e.pointerId).type === 'cancel') {
+        state.dragging = false;
+        state.velX = 0; state.velY = 0;
       }
     }
     function onWheel(e) {
@@ -2322,58 +2438,15 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       flight = null;
       state.targetDistance = clampDistance(state.targetDistance * Math.exp(e.deltaY * WHEEL_ZOOM_SPEED));
     }
-    function touchStart(e) {
-      noteInput();
-      flight = null;
-      if (e.touches.length === 1) {
-        state.dragging = true; state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
-        state.downX = e.touches[0].clientX; state.downY = e.touches[0].clientY; state.downTime = Date.now();
-        state.velX = 0; state.velY = 0; // grabbing it stops any coast in progress
-        state.lastMoveAt = performance.now();
-      } else if (e.touches.length === 2) { state.pinchDist = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY); }
-    }
-    function touchMove(e) {
-      e.preventDefault();
-      noteInput();
-      if (e.touches.length === 1 && state.dragging) {
-        const dx = e.touches[0].clientX - state.lastX, dy = e.touches[0].clientY - state.lastY;
-        state.lastX = e.touches[0].clientX; state.lastY = e.touches[0].clientY;
-        applyDrag(dx, dy);
-      } else if (e.touches.length === 2 && state.pinchDist != null) {
-        const d = Math.hypot(e.touches[0].clientX - e.touches[1].clientX, e.touches[0].clientY - e.touches[1].clientY);
-        // Same percent-of-distance reasoning as the wheel handler: scale by how much the ratio
-        // between fingers changed, not the raw pixel delta, so pinching feels consistent at any
-        // zoom level. Fingers spreading apart (d grows past the last reading) zooms in, matching
-        // this gesture's meaning everywhere else on a touch device.
-        state.targetDistance = clampDistance(state.targetDistance * (state.pinchDist / d));
-        state.pinchDist = d;
-      }
-    }
-    function touchEnd(e) {
-      state.dragging = false; state.pinchDist = null;
-      settleOnRelease();
-      const t = e.changedTouches && e.changedTouches[0];
-      if (t && isTap(state.downX, state.downY, state.downTime, t.clientX, t.clientY)) {
-        state.velX = 0; state.velY = 0; // a tap is not a flick
-        pickSpotAt(t.clientX, t.clientY);
-      }
-    }
-    // The system took the touch away -- an incoming call, a notification pulled down, a
-    // system gesture. Not a release and certainly not a tap: without this, `dragging` stayed
-    // true and the globe kept treating the next unrelated touch as the end of the old drag.
-    function touchCancel() {
-      state.dragging = false; state.pinchDist = null;
-      state.velX = 0; state.velY = 0;
-    }
 
-    renderer.domElement.addEventListener('mousedown', onMouseDown);
-    window.addEventListener('mousemove', onMouseMove);
-    window.addEventListener('mouseup', onMouseUp);
-    renderer.domElement.addEventListener('wheel', onWheel, { passive: false });
-    renderer.domElement.addEventListener('touchstart', touchStart, { passive: true });
-    renderer.domElement.addEventListener('touchmove', touchMove, { passive: false });
-    renderer.domElement.addEventListener('touchend', touchEnd);
-    renderer.domElement.addEventListener('touchcancel', touchCancel);
+    canvas.addEventListener('pointerdown', onPointerDown);
+    canvas.addEventListener('pointermove', onPointerMove);
+    canvas.addEventListener('pointerup', onPointerUp);
+    canvas.addEventListener('pointercancel', onPointerCancel);
+    // Capture can end without a pointerup -- the element hidden, the window losing focus. A
+    // pointer already released is no longer tracked, so this is a no-op after an ordinary up.
+    canvas.addEventListener('lostpointercapture', onPointerCancel);
+    canvas.addEventListener('wheel', onWheel, { passive: false });
 
     // Marker colors and label text come from live forecast data, which changes on the order of
     // minutes — not per frame. The old loop recomputed and rewrote all of it every single frame
@@ -2437,10 +2510,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (colorsChanged || textChanged) state.dataDirty = true; // something to show: draw once
     }
     updateClusters(); // builds the first set of markers, and colours them
-    const dataTimer = setInterval(() => {
-      refreshMarkerData();
-      if (sunLive && Date.now() - sunShownAt > SUN_REDRAW_MS) state.dataDirty = true;
-    }, 1000);
+    function startDataTimer() {
+      return setInterval(() => {
+        refreshMarkerData();
+        if (sunLive && Date.now() - sunShownAt > SUN_REDRAW_MS) state.dataDirty = true;
+      }, 1000);
+    }
+    let dataTimer = startDataTimer();
 
     // Smoothing. Input writes to the *target* rotation/distance; each frame eases the rendered
     // values toward it. That's what makes this feel smooth rather than stepwise: a wheel notch
@@ -2545,6 +2621,36 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     }
     animate();
 
+    // A hidden page draws nothing -- the browser stops the frame loop -- but the timers went on:
+    // the marker refresh every second, the performance display twice a second. They stop with
+    // it now, and everything picks up again when the page is shown, starting with a fresh frame.
+    function onVisibility() {
+      if (cancelled) return;
+      if (document.hidden) {
+        clearInterval(dataTimer);
+        dataTimer = null;
+        if (perf && perf.timer) { clearInterval(perf.timer); perf.timer = null; }
+        cancelAnimationFrame(state.raf);
+        state.raf = null;
+        clearTimeout(contextTimer);
+        return;
+      }
+      if (!dataTimer) dataTimer = startDataTimer();
+      if (perf && !perf.timer) { showPerf(); perf.timer = setInterval(showPerf, 500); }
+      // Whatever happened while it was hidden is not one long frame.
+      lastTick = null;
+      lastDrawnAt = null;
+      state.dataDirty = true;
+      if (state.raf == null) state.raf = requestAnimationFrame(animate);
+      if (contextLost) waitForContext();
+    }
+    document.addEventListener('visibilitychange', onVisibility);
+
+    // A globe rebuilt on a new GPU context (see waitForContext) starts from nothing, but what the
+    // controls say is shown is still React's: the week, and the wind layer if that is selected.
+    if (weekForGpuRef.current) setWeek(weekForGpuRef.current);
+    if (wavesOnRef.current && layerRef.current === 'wind') ensureWindLayer();
+
     // The drawn map is built only now, with the sphere already on screen.
     //
     // Two nested rAFs rather than one: the first schedules a frame, the second runs after that
@@ -2566,19 +2672,24 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     return () => {
       cancelled = true;
+      glViewRef.current = { rotX: state.rotX, rotY: state.rotY, distance: state.distance };
       markDirtyRef.current = null;
       cancelAnimationFrame(state.raf);
       clearInterval(dataTimer);
+      clearTimeout(contextTimer);
+      document.removeEventListener('visibilitychange', onVisibility);
+      if (resizeObserver) resizeObserver.disconnect();
+      if (densityQuery && typeof densityQuery.removeEventListener === 'function') densityQuery.removeEventListener('change', onDensityChange);
+      renderer.domElement.removeEventListener('webglcontextlost', onContextLost);
+      renderer.domElement.removeEventListener('webglcontextrestored', onContextRestored);
       if (reportTimer) clearTimeout(reportTimer);
       if (perf) { clearInterval(perf.timer); if (perf.hud.parentNode) perf.hud.parentNode.removeChild(perf.hud); }
-      renderer.domElement.removeEventListener('mousedown', onMouseDown);
-      window.removeEventListener('mousemove', onMouseMove);
-      window.removeEventListener('mouseup', onMouseUp);
-      renderer.domElement.removeEventListener('wheel', onWheel);
-      renderer.domElement.removeEventListener('touchstart', touchStart);
-      renderer.domElement.removeEventListener('touchmove', touchMove);
-      renderer.domElement.removeEventListener('touchend', touchEnd);
-      renderer.domElement.removeEventListener('touchcancel', touchCancel);
+      canvas.removeEventListener('pointerdown', onPointerDown);
+      canvas.removeEventListener('pointermove', onPointerMove);
+      canvas.removeEventListener('pointerup', onPointerUp);
+      canvas.removeEventListener('pointercancel', onPointerCancel);
+      canvas.removeEventListener('lostpointercapture', onPointerCancel);
+      canvas.removeEventListener('wheel', onWheel);
       // The pool, not `markers`: markers holds only the clusters the current zoom produced, so
       // tearing down from it orphans every label belonging to a set that has since re-formed.
       // (Measured: 751 label nodes alive after two mounts, against 403 spots.)
@@ -2611,6 +2722,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       arrowMat.dispose();
       if (waveMaskTexture) waveMaskTexture.dispose();
       renderer.dispose();
+      // And the context itself, now, rather than whenever the collector gets round to it. Every
+      // globe opened used to leave one behind -- measured 2, 3, 4 on successive opens -- and
+      // browsers start taking contexts away from the page past a limit of about sixteen, the
+      // oldest first, which in a long session could be the one on screen.
+      try { renderer.forceContextLoss(); } catch { /* already gone */ }
       if (renderer.domElement.parentNode) renderer.domElement.parentNode.removeChild(renderer.domElement);
     };
     } catch {
@@ -2620,9 +2736,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       return undefined;
     }
     // Mount-once: this component is only ever rendered while the globe view is active, so
-    // mounting/unmounting it already does what watching a "view" prop used to do.
+    // mounting/unmounting it already does what watching a "view" prop used to do. The one
+    // exception is glEpoch, bumped to rebuild the scene when the GPU context is gone for good.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [glEpoch]);
 
   return (
     // A column, so the canvas takes whatever height is left rather than a fixed 420px box that
