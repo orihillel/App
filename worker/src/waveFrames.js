@@ -20,7 +20,7 @@
 import {
   gridCells, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64,
 } from '../../src/lib/wavegrid.js';
-import { fetchFrameFromOm, WAVE_MODEL, newRunProbe } from './omGrid.js';
+import { fetchFrameFromOm, fetchWindFrameFromOm, WAVE_MODEL, WIND_MODEL, newRunProbe } from './omGrid.js';
 
 export const FRAMES_KEY = 'waveframes:v2';
 export const FRAME_COUNT = 28;        // 7 days
@@ -91,14 +91,13 @@ export const FRAME_GAP_MS = 120;
 // A sibling module would have been a second copy of exactly that, and the next fix to the
 // pacing would have landed in one of them.
 //
-// The wind week runs a coarser grid than the swell week, and the arithmetic decides it rather
-// than taste, the same way FRAME_LAT_STEP was decided. A 28-frame week costs cells x 28: at
-// the swell week's 15 degrees that is 186 x 28 = 5,208, and two of those is 10,416 against a
-// daily allowance of about 10,000 -- the second week would not fit beside the first. At 20
-// degrees the grid is 105 cells and the wind week costs 2,940, which does. The overlay is
-// interpolated to a 720x360 texture before it is drawn, so the cost is detail in the field
-// rather than blocks on the screen.
-export const WIND_FRAME_LAT_STEP = 20;
+// The wind week's step. It was 20 degrees -- 105 cells, 1,100km and more apart -- while its
+// frames were point queries billed a unit a cell, because that was what fitted beside the swell
+// week in a day's allowance; at that spacing a front is two cells and the flow has no shape to
+// animate. Read from the published files instead (see fetchWindFrameFromOm in src/omGrid.js),
+// a frame costs the same whatever the grid, and the step is the swell week's: the same
+// payload, and the two layers' weeks equally detailed.
+export const WIND_FRAME_LAT_STEP = 5;
 
 // The swell week's own step. It was 15 degrees when a frame cost one API unit per cell and a
 // 28-frame week had to fit a day's allowance; a frame is one file download now, so this is a
@@ -113,10 +112,9 @@ export const WAVE_SOURCE = {
   encodeValues: encodeHeights,
   latStep: WAVE_FRAME_LAT_STEP,
   // Sampled from Open-Meteo's published 0.25-degree files rather than queried point by point.
-  // See src/omGrid.js. The wind source below has no such file yet: the wave model's archive
-  // carries wave variables only, and the atmospheric files that do carry wind are twenty times
-  // the size and need more range requests per frame than a Worker invocation is allowed.
+  // See src/omGrid.js.
   omModel: WAVE_MODEL,
+  fetchOm: fetchFrameFromOm,
   doneKey: 'waveframes:v2',
   partialKey: 'waveframes:partial:v2',
   failKey: 'waveframes:fail:v2',
@@ -125,18 +123,34 @@ export const WAVE_SOURCE = {
   wantedKey: null,
 };
 
+// Frames a pass for the wind week. Three frames are about ten requests -- three each, and the
+// odd 404 while the newest run is found -- beside the swell week's dozen-odd (see
+// OM_FRAMES_PER_PASS), which keeps the two together near half of the fifty a tick is allowed;
+// and about a second and a half of decoding. A week then assembles in ten ticks.
+export const WIND_OM_FRAMES_PER_PASS = 3;
+
 export const WIND_SOURCE = {
   id: 'wind',
   url: FORECAST_URL,
   vars: ['wind_speed_10m', 'wind_direction_10m'],
   encodeValues: encodeSpeeds,
   latStep: WIND_FRAME_LAT_STEP,
-  doneKey: 'windframes:v1',
-  partialKey: 'windframes:partial:v1',
-  failKey: 'windframes:fail:v1',
+  // The GFS files the live wind grid is already read from, two fields at a time over range
+  // requests. A frame is three requests and half a second of decoding -- five times a swell
+  // frame -- so this week takes fewer frames a pass (see WIND_OM_FRAMES_PER_PASS).
+  omModel: WIND_MODEL,
+  fetchOm: fetchWindFrameFromOm,
+  framesPerPass: WIND_OM_FRAMES_PER_PASS,
+  // v2: the frames moved from the 20-degree point grid to the 5-degree file one. A stored
+  // frame of the wrong size is never reused anyway (see frameFits), but a new key is the
+  // plain statement that this is a different week.
+  doneKey: 'windframes:v2',
+  partialKey: 'windframes:partial:v2',
+  failKey: 'windframes:fail:v2',
   // Unlike the swell week, this one is only assembled once somebody has actually asked for the
-  // wind layer, and stops being rebuilt when nobody has asked for two days. 2,940 units a day
-  // is affordable for a week people watch and pure waste for one they do not.
+  // wind layer, and stops being rebuilt when nobody has asked for two days: 28 files of 4.7MB
+  // and a quarter of a minute of decoding a day is affordable for a week people watch and pure
+  // waste for one they do not.
   wantedKey: 'windframes:wanted:v1',
 };
 
@@ -295,7 +309,7 @@ export async function advanceFrames(env, opts = {}) {
   const source = opts.source || WAVE_SOURCE;
   const cells = gridCells(source.latStep);
   const times = frameTimes(now, opts.frameCount || FRAME_COUNT);
-  const perPass = opts.framesPerPass
+  const perPass = opts.framesPerPass || source.framesPerPass
     || (source.omModel ? OM_FRAMES_PER_PASS : framesPerPass(cells.length, opts.unitsPerPass));
   // One per pass, so a run found missing for one frame is not re-asked for every later one.
   const probe = newRunProbe();
@@ -360,7 +374,7 @@ export async function advanceFrames(env, opts = {}) {
         // Injectable so the pacing and the shared probe can be tested without a WebAssembly
         // reader and a megabyte of real file bytes. The default is the only thing production
         // ever uses.
-        const fetchOm = opts.fetchFrameOm || fetchFrameFromOm;
+        const fetchOm = opts.fetchFrameOm || source.fetchOm || fetchFrameFromOm;
         frame = await fetchOm(t, source.latStep, { ...opts, model: source.omModel, now, probe });
       } catch (err) {
         lastError = String(err && err.message || err).slice(0, 200);
@@ -370,7 +384,8 @@ export async function advanceFrames(env, opts = {}) {
       if (!frame) break;
       have.set(t, {
         t,
-        data: bytesToBase64(source.encodeValues(frame.heights)),
+        // Heights for the swell, speeds for the wind.
+        data: bytesToBase64(source.encodeValues(frame.heights ?? frame.speeds)),
         dirs: bytesToBase64(encodeDirections(frame.directions)),
       });
       fetched++;

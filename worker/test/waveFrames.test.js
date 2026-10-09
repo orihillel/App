@@ -4,17 +4,17 @@ import {
   FRAME_COUNT, FRAME_STEP_H, MAX_TIMESTEPS_PER_FRAME, FRAMES_MIN_COVERAGE,
   FRAMES_REFRESH_MS, UNITS_PER_PASS, UNITS_PER_MINUTE, FRAMES_KEY, FRAMES_PARTIAL_KEY,
   WAVE_SOURCE, WIND_SOURCE, WIND_FRAME_LAT_STEP, markFramesWanted, framesAreWanted, WANTED_TTL_MS,
-  frameFits, base64LengthFor, OM_FRAMES_PER_PASS,
+  frameFits, base64LengthFor, OM_FRAMES_PER_PASS, WIND_OM_FRAMES_PER_PASS,
 } from '../src/waveFrames.js';
 
-// The swell week is sampled from a published global file now (see src/omGrid.js), so the
-// source that still walks cells in batches is the wind one. These tests are about that
-// batching -- the pacing, the partial, the timestep-overrun guard -- so they run against a
-// wave source with the file path switched off rather than being rewritten for wind.
+// Both weeks are sampled from published global files now (see src/omGrid.js), so no source
+// walks cells in batches any more. These tests are about that batching -- the pacing, the
+// partial, the timestep-overrun guard -- which is still the path for a source without a file,
+// so they run against a wave source with the file path switched off.
 const POINT_WAVE = { ...WAVE_SOURCE, omModel: null, latStep: FRAME_LAT_STEP };
 const WAVE_CELLS = gridCells(WAVE_SOURCE.latStep);
 import { createFakeKv } from './fakeKv.js';
-import { gridCells, FRAME_LAT_STEP } from '../../src/lib/wavegrid.js';
+import { gridCells, FRAME_LAT_STEP, decodeSpeeds, base64ToBytes } from '../../src/lib/wavegrid.js';
 
 const CELLS = gridCells(FRAME_LAT_STEP);
 
@@ -249,69 +249,88 @@ describe('loadFrames only ever reads', () => {
 });
 
 // The wind week rides the same builder as the swell week. These assert the parts that differ --
-// endpoint, variables, encoding, keys, grid -- and, more importantly, that the parts that do not
-// differ are genuinely shared rather than a second copy that will drift.
+// the file, the encoding, the keys, the grid, the pass size -- and, more importantly, that the
+// parts that do not differ are genuinely shared rather than a second copy that will drift.
 describe('the wind week', () => {
   const NOW_W = Date.parse('2026-09-05T12:00:00Z');
   const envW = () => ({ SUBSCRIPTIONS: createFakeKv() });
   const FAST = { sleep: async () => {}, gapMs: 0 };
-
-  it('costs less than the swell week, which is why it fits beside it', () => {
-    // 186 x 28 = 5,208 for the swell week; two of those is 10,416 against ~10,000 a day. The
-    // wind week's coarser grid is what makes a second week affordable at all.
-    const swell = gridCells(FRAME_LAT_STEP).length;
-    const wind = gridCells(WIND_FRAME_LAT_STEP).length;
-    expect(wind).toBeLessThan(swell);
-    expect(swell * FRAME_COUNT + wind * FRAME_COUNT).toBeLessThan(10000);
+  const windCells = gridCells(WIND_FRAME_LAT_STEP).length;
+  const windFrame = () => ({
+    speeds: new Array(windCells).fill(25),
+    directions: new Array(windCells).fill(270),
+    source: 'x',
   });
 
-  it('asks the forecast endpoint for wind, one hour at a time', async () => {
-    let seen = '';
-    const fetchImpl = async (url) => {
-      seen = url;
-      return { ok: true, status: 200, json: async () => [{ hourly: { time: ['2026-09-05T12:00'], wind_speed_10m: [30], wind_direction_10m: [270] } }] };
-    };
-    await fetchFrame([{ lat: 0, lon: 0 }], '2026-09-05T12:00', { fetchImpl, source: WIND_SOURCE });
-    expect(seen).toContain('api.open-meteo.com/v1/forecast');
-    expect(seen).toContain('hourly=wind_speed_10m,wind_direction_10m');
-    expect(seen).toContain('start_hour=');
-    expect(seen).toContain('end_hour=');
+  it('is read from the wind model\'s files, on the swell week\'s grid', () => {
+    // At 20 degrees, point by point, the week was 105 cells: a front two cells wide.
+    expect(WIND_SOURCE.omModel).toBe('ncep_gfs013');
+    expect(WIND_FRAME_LAT_STEP).toBe(WAVE_SOURCE.latStep);
+    expect(windCells).toBe(gridCells(WAVE_SOURCE.latStep).length);
   });
 
-  it('keeps the timestep guard, which is the expensive mistake to repeat', async () => {
-    // A frame that answers with the whole series instead of the hour it asked for would spend
-    // 105 x 168 units without erroring.
-    const fetchImpl = async () => ({
-      ok: true,
-      status: 200,
-      json: async () => [{ hourly: { time: ['a', 'b', 'c'], wind_speed_10m: [1, 2, 3], wind_direction_10m: [1, 2, 3] } }],
+  it('asks for its own frames, a few at a time', async () => {
+    // A wind frame is three requests and five times a swell frame's decoding, so a pass takes
+    // fewer of them -- and each with the same run probe, which is what keeps the 404s to one
+    // a run rather than one a frame.
+    const env = envW();
+    const hours = [];
+    const probes = new Set();
+    const out = await advanceFrames(env, {
+      now: NOW_W, source: WIND_SOURCE, ...FAST,
+      fetchFrameOm: async (t, step, o) => { hours.push(t); probes.add(o.probe); expect(step).toBe(WIND_FRAME_LAT_STEP); return windFrame(); },
     });
-    const r = await fetchFrame([{ lat: 0, lon: 0 }], '2026-09-05T12:00', { fetchImpl, source: WIND_SOURCE });
-    expect(r.overrun).toBe(3);
-    expect(r.ok).toBe(false);
+    expect(WIND_OM_FRAMES_PER_PASS).toBeLessThan(OM_FRAMES_PER_PASS);
+    expect(hours).toHaveLength(WIND_OM_FRAMES_PER_PASS);
+    expect(out.fetchedThisPass).toBe(WIND_OM_FRAMES_PER_PASS);
+    expect(probes.size).toBe(1);
+  });
+
+  it('stores speeds as speeds, not as wave heights', async () => {
+    const env = envW();
+    const out = await advanceFrames(env, { now: NOW_W, source: WIND_SOURCE, ...FAST, fetchFrameOm: async () => windFrame() });
+    const speeds = decodeSpeeds(base64ToBytes(out.frames[0].data));
+    expect(speeds).toHaveLength(windCells);
+    expect(speeds[0]).toBeCloseTo(25, 0);
   });
 
   it('stores the wind week under its own keys, never the swell week\'s', async () => {
     const env = envW();
-    const fetchImpl = async (url) => {
-      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
-      return { ok: true, status: 200, json: async () => Array.from({ length: n }, () => ({ hourly: { time: ['x'], wind_speed_10m: [25], wind_direction_10m: [270] } })) };
-    };
-    await advanceFrames(env, { now: NOW_W, fetchImpl, source: WIND_SOURCE, ...FAST });
+    await advanceFrames(env, { now: NOW_W, source: WIND_SOURCE, ...FAST, fetchFrameOm: async () => windFrame() });
     const keys = [...env.SUBSCRIPTIONS._store.keys()];
     expect(keys.some((k) => k.startsWith('windframes:'))).toBe(true);
     expect(keys.some((k) => k.startsWith('waveframes:'))).toBe(false);
   });
 
-  it('records the grid it was sampled on, so the app cannot decode it as the swell week', async () => {
+  it('records the grid it was sampled on, so the app cannot decode it as anything else', async () => {
     const env = envW();
-    const fetchImpl = async (url) => {
-      const n = url.split('latitude=')[1].split('&')[0].split(',').length;
-      return { ok: true, status: 200, json: async () => Array.from({ length: n }, () => ({ hourly: { time: ['x'], wind_speed_10m: [25], wind_direction_10m: [270] } })) };
-    };
-    const out = await advanceFrames(env, { now: NOW_W, fetchImpl, source: WIND_SOURCE, ...FAST });
+    const out = await advanceFrames(env, { now: NOW_W, source: WIND_SOURCE, ...FAST, fetchFrameOm: async () => windFrame() });
     expect(out.latStep).toBe(WIND_FRAME_LAT_STEP);
-    expect(out.cells).toBe(gridCells(WIND_FRAME_LAT_STEP).length);
+    expect(out.cells).toBe(windCells);
+  });
+
+  it('assembles a week in ten passes', async () => {
+    const env = envW();
+    let passes = 0;
+    let out;
+    do {
+      passes++;
+      out = await advanceFrames(env, { now: NOW_W, source: WIND_SOURCE, ...FAST, fetchFrameOm: async () => windFrame() });
+    } while (!out.complete && passes < 20);
+    expect(out.complete).toBe(true);
+    expect(passes).toBe(Math.ceil(FRAME_COUNT / WIND_OM_FRAMES_PER_PASS));
+    expect(passes).toBe(10);
+    expect(framesAreUsable(out, WIND_SOURCE)).toBe(true);
+  });
+
+  it('never reuses a 20-degree frame from before the move to files', async () => {
+    const env = envW();
+    const coarse = gridCells(20).length;
+    const old = { t: frameTimes(NOW_W)[0], data: 'A'.repeat(base64LengthFor(coarse)), dirs: 'A'.repeat(base64LengthFor(coarse)) };
+    await env.SUBSCRIPTIONS.put(WIND_SOURCE.partialKey, JSON.stringify({ frames: [old] }));
+    const hours = [];
+    await advanceFrames(env, { now: NOW_W, source: WIND_SOURCE, ...FAST, fetchFrameOm: async (t) => { hours.push(t); return windFrame(); } });
+    expect(hours[0]).toBe(frameTimes(NOW_W)[0]);
   });
 
   it('is only worth building once somebody has opened it', async () => {

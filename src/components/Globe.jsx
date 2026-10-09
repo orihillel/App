@@ -237,10 +237,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
   // Pick a layer, fetching it first if this is the first time it has been asked for.
   //
-  // The week's animation belongs to the swell alone -- a wind week is another 5,000 units a day
-  // against an allowance the swell week already half spends -- so leaving it playing under the
-  // wind would animate swell frames with a wind legend over them. It stops and rewinds instead,
-  // and the control disappears rather than sitting there doing nothing.
+  // Each layer has its own week, so leaving one playing across a switch would animate swell
+  // frames with a wind legend over them. It stops and rewinds instead, and the other layer's
+  // week is fetched when its play control is pressed.
   const selectLayer = useCallback((next) => {
     setLayer(next);
     // A reading is of one layer at one moment. Carrying it across a switch would leave a wave
