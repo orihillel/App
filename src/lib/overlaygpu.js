@@ -151,19 +151,50 @@ export function regularizeDirections(degrees, layout, out) {
 // 32-bit ones are not on iPhones -- and the fields must be filtered on the GPU or they show
 // their grid. Half precision carries a wave height to well under a centimetre and a bearing to
 // a tenth of a degree.
-const HALF_ONE = DataUtils.toHalfFloat(1);
-function toHalf(v) {
-  return v === 0 ? 0 : v === 1 ? HALF_ONE : DataUtils.toHalfFloat(v);
+//
+// Converted from each float's own bits, read in place: DataUtils.toHalfFloat's tables (van der
+// Zijp's), without its trip through a scratch array for every number. The week packs four
+// million of these at 2.5 degrees, and this takes well under half the time. The answers are
+// toHalfFloat's, except that zero is always +0; a float too big for a half goes through
+// toHalfFloat itself, which clamps.
+const HALF_BASE = new Uint16Array(512);
+const HALF_SHIFT = new Uint8Array(512);
+for (let i = 0; i < 256; i++) {
+  const e = i - 127;
+  let base = 0x7c00; // too big, infinity or NaN
+  let shift = e < 128 ? 24 : 13;
+  if (e < -27) { base = 0; shift = 24; } // too small: zero
+  else if (e < -14) { base = 0x0400 >> (-e - 14); shift = -e - 1; } // subnormal
+  else if (e <= 15) { base = (e + 15) << 10; shift = 13; }
+  HALF_BASE[i] = base;
+  HALF_BASE[i | 0x100] = base | 0x8000;
+  HALF_SHIFT[i] = shift;
+  HALF_SHIFT[i | 0x100] = shift;
+}
+const HALF_MAX_EXPONENT = 127 + 15;
+function halfFromBits(f, value) {
+  if ((f & 0x7fffffff) === 0) return 0;
+  const e = (f >>> 23) & 0x1ff;
+  if ((e & 0xff) > HALF_MAX_EXPONENT) return DataUtils.toHalfFloat(value);
+  return HALF_BASE[e] + ((f & 0x007fffff) >>> HALF_SHIFT[e]);
+}
+// A Float32Array and its bits, sharing one buffer; anything else is copied into one first.
+function withBits(src) {
+  const floats = src instanceof Float32Array ? src : Float32Array.from(src);
+  return { floats, bits: new Uint32Array(floats.buffer, floats.byteOffset, floats.length) };
 }
 export function packHalf(src, out = new Uint16Array(src.length)) {
-  for (let i = 0; i < src.length; i++) out[i] = toHalf(src[i]);
+  const { floats, bits } = withBits(src);
+  for (let i = 0; i < floats.length; i++) out[i] = halfFromBits(bits[i], floats[i]);
   return out;
 }
 // Value and coverage, interleaved two to a texel.
 export function packHalfRG(premul, cover, out = new Uint16Array(premul.length * 2)) {
-  for (let i = 0, o = 0; i < premul.length; i++, o += 2) {
-    out[o] = toHalf(premul[i]);
-    out[o + 1] = toHalf(cover[i]);
+  const p = withBits(premul);
+  const c = withBits(cover);
+  for (let i = 0, o = 0; i < p.floats.length; i++, o += 2) {
+    out[o] = halfFromBits(p.bits[i], p.floats[i]);
+    out[o + 1] = halfFromBits(c.bits[i], c.floats[i]);
   }
   return out;
 }

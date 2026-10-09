@@ -544,9 +544,9 @@ export function regridWind(uField, vField, step = GRID_LAT_STEP) {
 // asked again for the next.
 //
 // Measured against the live bucket, in Node rather than the Worker runtime: three requests and
-// 4.7MB a frame, and about half a second of CPU once the reader is warm, most of it decoding u
-// and v. A swell frame is about a tenth of a second, which is why the wind week takes fewer
-// frames a pass (see waveFrames.js).
+// 4.7MB a frame, and a fifth to half a second of CPU once the reader is warm, most of it
+// decoding u and v. A swell frame is about a tenth of a second, which is why the wind week
+// takes fewer frames a pass (see waveFrames.js).
 export async function fetchWindFrameFromOm(isoHour, step, opts = {}) {
   const validMs = parseFrameHour(isoHour);
   if (validMs == null) return null;

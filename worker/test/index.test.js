@@ -6,6 +6,7 @@ import { putSubscription, getSubscription } from '../src/store.js';
 import { GRID_KEY } from '../src/waveGrid.js';
 import { WIND_KEY } from '../src/windGrid.js';
 import { gridCellCount, encodeHeights, encodeSpeeds, encodeDirections, bytesToBase64 } from '../../src/lib/wavegrid.js';
+import { FRAMES_KEY, WAVE_FRAME_LAT_STEP, frameTimes } from '../src/waveFrames.js';
 
 vi.mock('../src/push.js', () => ({
   sendPushNotification: vi.fn(),
@@ -293,6 +294,63 @@ describe('HTTP routes', () => {
       const res = await get(env, '/windgrid');
       expect(res.headers.get('Cache-Control')).toBe('public, max-age=' + MAP_MAX_AGE_S);
       expect((await get(env, '/windgrid', { 'If-None-Match': res.headers.get('ETag') })).status).toBe(304);
+    });
+
+    // A finished week is written once and never changed after, so its ETag is taken from the
+    // build rather than from half a megabyte of frames on every request.
+    const week = (generatedAt, fill = 2) => {
+      const n = gridCellCount(WAVE_FRAME_LAT_STEP);
+      const data = bytesToBase64(encodeHeights(new Array(n).fill(fill)));
+      const dirs = bytesToBase64(encodeDirections(new Array(n).fill(225)));
+      return JSON.stringify({
+        generatedAt, cells: n, latStep: WAVE_FRAME_LAT_STEP, stepHours: 6, coverage: 1,
+        frames: frameTimes(generatedAt).map((t) => ({ t, data, dirs })),
+      });
+    };
+
+    it('caches the week under an ETag, and answers a browser that has it with a 304', async () => {
+      const env = makeEnv();
+      await env.SUBSCRIPTIONS.put(FRAMES_KEY, week(Date.now()));
+      const res = await get(env, '/wavegrid/frames');
+      expect(res.status).toBe(200);
+      expect((await res.clone().json()).frames).toHaveLength(28);
+      expect(res.headers.get('Cache-Control')).toBe('public, max-age=' + MAP_MAX_AGE_S);
+      const etag = res.headers.get('ETag');
+      expect(etag).toMatch(/^"[0-9a-f]{8}"$/);
+      const again = await get(env, '/wavegrid/frames', { 'If-None-Match': etag });
+      expect(again.status).toBe(304);
+      expect(await again.text()).toBe('');
+    });
+
+    it('gives the next build of the week a new ETag', async () => {
+      const env = makeEnv();
+      const at = Date.now();
+      await env.SUBSCRIPTIONS.put(FRAMES_KEY, week(at));
+      const etag = (await get(env, '/wavegrid/frames')).headers.get('ETag');
+      await env.SUBSCRIPTIONS.put(FRAMES_KEY, week(at + 1000, 3));
+      const res = await get(env, '/wavegrid/frames', { 'If-None-Match': etag });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('ETag')).not.toBe(etag);
+    });
+
+    it('gives a week that has gone stale a new ETag, so the browser hears that it has', async () => {
+      const env = makeEnv();
+      const old = Date.now() - 25 * 3600e3;
+      await env.SUBSCRIPTIONS.put(FRAMES_KEY, week(old));
+      const res = await get(env, '/wavegrid/frames');
+      expect((await res.clone().json()).stale).toBe(true);
+      expect(res.headers.get('Cache-Control')).toBe('public, max-age=' + STALE_MAP_MAX_AGE_S);
+      // The same build while it was fresh had a different one.
+      const fresh = makeEnv();
+      await fresh.SUBSCRIPTIONS.put(FRAMES_KEY, week(old));
+      vi.useFakeTimers({ now: old + 1000, toFake: ['Date'] });
+      try {
+        const then = await get(fresh, '/wavegrid/frames');
+        expect((await then.clone().json()).stale).toBe(false);
+        expect(then.headers.get('ETag')).not.toBe(res.headers.get('ETag'));
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('never caches "nothing to serve yet"', async () => {

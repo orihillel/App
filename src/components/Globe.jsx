@@ -1378,7 +1378,54 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // regular grid and stacked as the layers of one texture array, its directions likewise. A
     // frame of the animation is then two layers blended by a uniform -- no repaint, no upload,
     // no garbage -- and the arrows turn through the same blend.
+    //
+    // The resampling is done a step at a time between the globe's own frames, the way the
+    // coastline is built: at 2.5 degrees the whole week is about a tenth of a second of solid work
+    // on a desktop core, which on a phone would be a stall of a third of a second or more just as
+    // play is pressed. Until it is done the live field stays on screen and the playhead waits.
+    const WEEK_SLICE_MS = 5;
+    let weekTimer = null;
+    function* resampleWeek(next) {
+      const step = next.latStep;
+      const layout = layoutFor(step);
+      // Gaps are filled exactly as the live field's are, and only when the coastline mask is
+      // there to stop the fill at the shore -- decided once, so a mask arriving part way through
+      // cannot leave half the week filled and half not.
+      const fillGaps = !!waveMaskTexture;
+      yield;
+      const count = next.list.length;
+      const texels = layout.width * layout.height;
+      const values = new Uint16Array(texels * 2 * count);
+      // A week built before the Worker fetched directions has none, and draws no arrows.
+      const dirs = next.list.some((f) => f.dirs) ? new Uint16Array(texels * 4 * count) : null;
+      // One scratch field and one scratch set of vectors, refilled for each step.
+      const field = { premul: new Float32Array(texels), cover: new Float32Array(texels) };
+      const vectors = new Float32Array(texels * 4);
+      for (let k = 0; k < count; k++) {
+        const frame = next.list[k];
+        regularizeField(fillGaps ? fillGridGaps(frame.heights, 2, step) : frame.heights, layout, field);
+        packHalfRG(field.premul, field.cover, values.subarray(k * texels * 2, (k + 1) * texels * 2));
+        yield;
+        if (dirs) {
+          regularizeDirections(frame.dirs, layout, vectors);
+          packHalf(vectors, dirs.subarray(k * texels * 4, (k + 1) * texels * 4));
+          yield;
+        }
+      }
+      return {
+        layer: next.layer || 'swell',
+        list: next.list,
+        step,
+        count,
+        v: layoutV(layout),
+        texture: fieldArrayTexture(values, layout, count, THREE.RGFormat),
+        dirTexture: dirs ? fieldArrayTexture(dirs, layout, count, THREE.RGBAFormat) : null,
+      };
+    }
     function setWeek(next) {
+      // A week still being resampled is dropped with the one on screen.
+      clearTimeout(weekTimer);
+      weekTimer = null;
       if (week) {
         week.texture.dispose();
         if (week.dirTexture) week.dirTexture.dispose();
@@ -1386,38 +1433,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       }
       shownKey = null;
       if (next && Array.isArray(next.list) && next.list.length && Number.isFinite(next.latStep)) {
-        const buildStart = perf ? performance.now() : 0;
-        const step = next.latStep;
-        const layout = layoutFor(step);
-        const count = next.list.length;
-        const texels = layout.width * layout.height;
-        const values = new Uint16Array(texels * 2 * count);
-        // A week built before the Worker fetched directions has none, and draws no arrows.
-        const dirs = next.list.some((f) => f.dirs) ? new Uint16Array(texels * 4 * count) : null;
-        // One scratch field and one scratch set of vectors, refilled for each step.
-        const field = { premul: new Float32Array(texels), cover: new Float32Array(texels) };
-        const vectors = new Float32Array(texels * 4);
-        for (let k = 0; k < count; k++) {
-          const frame = next.list[k];
-          // Gaps filled exactly as the live field's are, and only when the coastline mask is
-          // there to stop the fill at the shore.
-          regularizeField(waveMaskTexture ? fillGridGaps(frame.heights, 2, step) : frame.heights, layout, field);
-          packHalfRG(field.premul, field.cover, values.subarray(k * texels * 2, (k + 1) * texels * 2));
-          if (dirs) {
-            regularizeDirections(frame.dirs, layout, vectors);
-            packHalf(vectors, dirs.subarray(k * texels * 4, (k + 1) * texels * 4));
+        const job = resampleWeek(next);
+        let work = 0;
+        const slice = () => {
+          weekTimer = null;
+          if (cancelled) return;
+          const start = performance.now();
+          let step;
+          do step = job.next(); while (!step.done && performance.now() - start < WEEK_SLICE_MS);
+          work += performance.now() - start;
+          if (!step.done) {
+            weekTimer = setTimeout(slice, 0);
+            return;
           }
-        }
-        week = {
-          layer: next.layer || 'swell',
-          list: next.list,
-          step,
-          count,
-          v: layoutV(layout),
-          texture: fieldArrayTexture(values, layout, count, THREE.RGFormat),
-          dirTexture: dirs ? fieldArrayTexture(dirs, layout, count, THREE.RGBAFormat) : null,
+          week = step.value;
+          // The work, not the wait between slices.
+          if (perf) perf.paintMs = work;
+          state.dataDirty = true;
         };
-        if (perf) perf.paintMs = performance.now() - buildStart;
+        slice();
       }
       state.dataDirty = true;
     }
@@ -2841,6 +2875,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       clearInterval(dataTimer);
       clearTimeout(contextTimer);
       clearTimeout(coastlineTimer);
+      clearTimeout(weekTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       if (resizeObserver) resizeObserver.disconnect();
       if (densityQuery && typeof densityQuery.removeEventListener === 'function') densityQuery.removeEventListener('change', onDensityChange);

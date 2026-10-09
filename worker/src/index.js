@@ -60,10 +60,11 @@ function etagMatches(header, etag) {
   return header.split(',').some((t) => t.trim().replace(/^W\//, '') === etag);
 }
 // `body` is what is sent; the ETag is taken over everything in it but `build`, the progress of
-// the next build, which changes by the minute while the map being served does not.
-function cacheableJson(request, body, env) {
+// the next build, which changes by the minute while the map being served does not. A caller
+// that can name the content more cheaply than by its bytes passes that name as `version`.
+function cacheableJson(request, body, env, version = null) {
   const { build, ...content } = body; // eslint-disable-line no-unused-vars
-  const etag = '"' + fingerprint(JSON.stringify(content)) + '"';
+  const etag = '"' + fingerprint(version ?? JSON.stringify(content)) + '"';
   const headers = {
     'Cache-Control': 'public, max-age=' + (body.stale ? STALE_MAP_MAX_AGE_S : MAP_MAX_AGE_S),
     ETag: etag,
@@ -328,6 +329,11 @@ async function handleWaveFrames(request, env, source = undefined) {
     if (source && source.wantedKey) await markFramesWanted(env, source);
     const { frames, build } = await loadFrames(env, { source });
     if (!frames) return uncacheableJson({ frames: null, build }, env);
+    // The ETag from the build rather than from the bytes. A finished week is written once, at
+    // the moment it was finished, and never changed after; hashing it instead meant reading
+    // all of it -- half a megabyte at 2.5 degrees, 3ms of the request -- every time it was
+    // asked for.
+    const version = ['week', source ? source.id : 'wave', frames.generatedAt, frames.latStep, frames.stale ? 'stale' : 'fresh'].join(':');
     return cacheableJson(request, {
       generatedAt: frames.generatedAt,
       cells: frames.cells,
@@ -340,7 +346,7 @@ async function handleWaveFrames(request, env, source = undefined) {
       stale: !!frames.stale,
       coverage: frames.coverage ?? null,
       build,
-    }, env);
+    }, env, version);
   } catch (e) {
     return uncacheableJson({ frames: null, build: { lastError: String((e && e.message) || e) } }, env);
   }
@@ -577,8 +583,8 @@ export default {
     // over a week that is already complete and fresh costs nothing.
     ctx.waitUntil(advanceFrames(env).catch(() => {}));
     // The wind week, on the same pacing, but only once somebody has opened it: its frames are
-    // read from the GFS files at three requests and half a second of decoding each, which is
-    // worth spending on a week people watch and not on one nobody has pressed play on.
+    // read from the GFS files at three requests and up to half a second of decoding each, which
+    // is worth spending on a week people watch and not on one nobody has pressed play on.
     ctx.waitUntil(
       framesAreWanted(env, WIND_SOURCE)
         .then((wanted) => (wanted ? advanceFrames(env, { source: WIND_SOURCE }) : null))
