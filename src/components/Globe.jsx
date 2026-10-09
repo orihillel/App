@@ -27,7 +27,7 @@ import { placeLabels, labelRank } from '../lib/labelplacement.js';
 import { frameLabel, frameBuildLabel, weekFrameAt, advanceTimeline, stepFrame, nextSpeed, speedLabel, isTimelineKey } from '../lib/waveframes.js';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
-  OVERLAY_VERTEX, OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
+  drawOverlay, ARROW_VERTEX, ARROW_FRAGMENT, ARROW_DRIFT_SECONDS,
 } from '../lib/overlaygpu.js';
 import { createFrameStats, recordFrame, summarizeFrames, perfLines, readPerfFlag } from '../lib/framestats.js';
 import { createQualityGovernor, governorTick } from '../lib/quality.js';
@@ -199,6 +199,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     setFrameIdx(Math.round(p));
     if (markDirtyRef.current) markDirtyRef.current();
   }, []);
+  // Where the slider is while a finger is on it, between forecast steps; null otherwise. The
+  // slider used to move a whole six-hour step at a time, so dragging it flicked from one picture
+  // to the next. Now the map blends between the steps either side of the thumb as it moves,
+  // exactly as it does while the week plays, and settles on the nearest step when let go, so
+  // the time under the slider is the time on the map.
+  const [scrub, setScrub] = useState(null);
+  const scrubRef = useRef(null);
+  const moveScrub = useCallback((at) => {
+    scrubRef.current = at;
+    setScrub(at);
+    seek(at);
+  }, [seek]);
+  const endScrub = useCallback(() => {
+    const at = scrubRef.current;
+    if (at == null) return;
+    scrubRef.current = null;
+    setScrub(null);
+    seek(Math.round(at));
+  }, [seek]);
   // Play, speed and repeat are React state, for the buttons; the loop reads them from the ref.
   useEffect(() => {
     const tl = timelineRef.current;
@@ -600,9 +619,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     };
     // And shaded by night where the sun has set, at the moment on screen: see lib/terminator.js.
     const sunUniforms = { uSunDir: { value: new THREE.Vector3(0, 0, 1) } };
+    // And with the overlay painted on top of all that, last, so it is neither muted, lit nor
+    // darkened by night: see drawOverlay in lib/overlaygpu.js. The order of these patches is the
+    // order their code runs in.
     oceanMat.onBeforeCompile = (shader) => {
       muteBasemap(shader, muteUniforms);
       shadeNight(shader, sunUniforms);
+      drawOverlay(shader, overlayUniforms);
     };
     let mapTexture = null;
 
@@ -616,6 +639,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       oceanMat.map = tex;
       oceanMat.color.setHex(0xffffff);
       oceanMat.needsUpdate = true;
+    }
+
+    // Anisotropic filtering for the base map: up to 8 samples, not the GPU's maximum. Most report
+    // 16, and the second eight samples a texel are bought only where the sphere turns away at the
+    // steepest angles -- the last sliver before the horizon, foreshortened past reading anyway --
+    // at the cost of texture bandwidth on every frame, which is what a phone has least of.
+    function baseMapAnisotropy() {
+      return Math.min(8, renderer.capabilities.getMaxAnisotropy());
     }
 
     function drawWorldMap(LANDMASSES) {
@@ -692,7 +723,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // A flat texture wrapped on a sphere gets viewed at steep angles near the edges of what's
       // visible, which is exactly the case anisotropic filtering is for — without it, those
       // regions look noticeably blurrier/blockier than the center, which reads as "pixelated".
-      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.anisotropy = baseMapAnisotropy();
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       tex.generateMipmaps = true;
@@ -740,7 +771,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     function applySatellite(tex) {
       if ('colorSpace' in tex && THREE.SRGBColorSpace) tex.colorSpace = THREE.SRGBColorSpace;
-      tex.anisotropy = renderer.capabilities.getMaxAnisotropy();
+      tex.anisotropy = baseMapAnisotropy();
       tex.minFilter = THREE.LinearMipmapLinearFilter;
       tex.magFilter = THREE.LinearFilter;
       // A compressed texture brings its own mipmaps, and the GPU cannot generate them for one.
@@ -880,9 +911,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
 
     // Live wave-height overlay: the ocean painted by how big the sea is right now.
     //
-    // Built as an equirectangular canvas and wrapped on a sphere just above the surface, rather
-    // than blended into the ocean material, so it can be toggled without rebuilding anything
-    // and so land stays untouched.
+    // Drawn by the globe's own material, after its lighting, from textures of numbers (see
+    // drawOverlay in lib/overlaygpu.js). It used to be a second sphere laid just above the
+    // surface; it is toggled by a uniform now, and land is still untouched.
     //
     // Three separate concerns, and they want three different resolutions:
     //
@@ -896,9 +927,8 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     //     every zoom. Baking the mask into the chart's alpha instead — the obvious way, and the
     //     first way this was written — makes the edge exactly as soft as a texel is wide, which
     //     at the closest zoom is a couple of hundred device pixels of blur.
-    const WAVE_SHELL = R * 1.0003; // under the coastline's 1.0006, so lines still draw on top
-    let waveMesh = null;
-    let overlayMat = null;
+    // Whether the overlay has a field to draw: set once the first grid and the land mask arrive.
+    let overlayReady = false;
     let waveMaskTexture = null;
     let waveRequested = false;
     // The two live readings, decoded and kept, so switching layers is a uniform change rather
@@ -950,6 +980,25 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       uMix: { value: 0 },
       uLiveV: { value: new THREE.Vector2(1, 0) },
       uWeekV: { value: new THREE.Vector2(1, 0) },
+    };
+    // The overlay's own, in the globe's material (see drawOverlay).
+    const overlayUniforms = {
+      ...fieldUniforms,
+      uOverlayOn: { value: 0 },
+      uLive: { value: null },
+      uWeek: { value: null },
+      uLut: { value: null },
+      uLutMax: { value: 1 },
+      uLandMask: { value: null },
+      uHasMask: { value: 0 },
+      // 0.62 was costing about a third of every ramp's separation. The overlay is blended over
+      // the base map, so a translucent one is a blend toward the sea under it -- and the darker
+      // half of a ramp, which is where most of the world's sea state actually sits, gets pulled
+      // hardest. Raising it to 0.85 lifted the worst adjacent pair from 11.8 to 16.2 on the
+      // swell layer and 6.0 to 8.3 on the wind, for nothing but a number. Still short of opaque
+      // so the globe's own shading reads through and it still looks like a sphere rather than a
+      // flat map.
+      uOpacity: { value: 0.85 },
     };
 
     // The arrows over the colour: which way each patch of swell is travelling.
@@ -1243,40 +1292,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
             dirs: directions,
             step: swellStep,
           };
-          // Numbers in, colours out, per screen pixel: see lib/overlaygpu.js for the shader.
-          // The layer's own textures and colour table are filled in by applyLiveLayer below.
-          overlayMat = new THREE.ShaderMaterial({
-            uniforms: {
-              ...fieldUniforms,
-              uLive: { value: null },
-              uWeek: { value: null },
-              uLut: { value: null },
-              uLutMax: { value: 1 },
-              uLandMask: { value: waveMaskTexture },
-              uHasMask: { value: waveMaskTexture ? 1 : 0 },
-              // 0.62 was costing about a third of every ramp's separation. The overlay is
-              // composited over the ocean sphere, so a translucent one is a blend toward that
-              // mid-blue -- and the darker half of a ramp, which is where most of the world's
-              // sea state actually sits, gets pulled hardest. Raising it to 0.85 lifted the
-              // worst adjacent pair from 11.8 to 16.2 on the swell layer and 6.0 to 8.3 on the
-              // wind, for nothing but a number. Still short of opaque so the globe's own shading
-              // reads through and it still looks like a sphere rather than a flat map.
-              uOpacity: { value: 0.85 },
-            },
-            vertexShader: OVERLAY_VERTEX,
-            fragmentShader: OVERLAY_FRAGMENT,
-            transparent: true,
-            depthWrite: false,
-          });
-          waveMesh = new THREE.Mesh(
-            // Must match the ocean sphere's tessellation, not the old 128x96. A coarser
-            // overlay sags further at each quad's centre than its own 3e-4 offset clears
-            // (0.999865 against the ocean's vertices at 1.0), so the globe pokes through it in
-            // a regular diamond stipple that reads as a rendering artifact — because it is one.
-            new THREE.SphereGeometry(WAVE_SHELL, 256, 192),
-            overlayMat,
-          );
-          globeGroup.add(waveMesh);
+          // Numbers in, colours out, per screen pixel, in the globe's own material: see
+          // drawOverlay in lib/overlaygpu.js. The layer's own textures and colour table are
+          // filled in by applyLiveLayer below.
+          overlayUniforms.uLandMask.value = waveMaskTexture;
+          overlayUniforms.uHasMask.value = waveMaskTexture ? 1 : 0;
+          overlayReady = true;
 
           const lattice = seaLattice(land);
           if (lattice.length) {
@@ -1317,14 +1338,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function applyLiveLayer(name) {
       const set = liveLayers[name];
       const draw = LAYER_DRAW[name] && drawFor(name);
-      if (!set || !draw || !overlayMat) return false;
+      if (!set || !draw || !overlayReady) return false;
       const step = set.step || GRID_LAT_STEP;
       if (!set.texture) {
         const buildStart = perf ? performance.now() : 0;
         buildLiveTextures(set, step);
         if (perf) perf.paintMs = performance.now() - buildStart;
       }
-      const u = overlayMat.uniforms;
+      const u = overlayUniforms;
       u.uLive.value = set.texture;
       u.uLut.value = lutFor(name);
       u.uLutMax.value = draw.max;
@@ -1402,7 +1423,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     let shownKey = null;
     let lastFrameIdx = 0;
     function updateOverlayTime(dt) {
-      if (!overlayMat || !wavesOnRef.current) return false;
+      if (!overlayReady || !wavesOnRef.current) return false;
       const tl = timelineRef.current;
       let advancing = false;
       if (week && tl.playing) {
@@ -1419,7 +1440,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         applyLiveLayer(layerRef.current);
       } else {
         shownKey = key;
-        const u = overlayMat.uniforms;
+        const u = overlayUniforms;
         u.uWeek.value = week.texture;
         u.uLut.value = lutFor(week.layer);
         u.uLutMax.value = drawFor(week.layer).max;
@@ -1769,7 +1790,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function updateMute(dtMs) {
       muteUniforms.uMuteMask.value = waveMaskTexture;
       muteUniforms.uMuteHasMask.value = waveMaskTexture ? 1 : 0;
-      const wanted = wavesOnRef.current && waveMesh ? 1 : 0;
+      const wanted = wavesOnRef.current && overlayReady ? 1 : 0;
       const u = muteUniforms.uMute;
       if (u.value === wanted) return;
       const step = dtMs / BASEMAP_MUTE_MS;
@@ -1842,19 +1863,52 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       allSpots.push({ id, lat: s.lat, lon: s.lon });
     });
 
-    // One label element per possible marker, made once and reused. Clusters re-form on every
-    // zoom step, and creating and destroying four hundred DOM nodes for that would be the
-    // expensive part of the whole feature.
-    const labelPool = allSpots.map(() => {
+    // A small pool of label elements, lent to markers while their labels are on screen.
+    //
+    // It used to be one element per spot, made up front -- 3,518 hidden divs at the full catalog,
+    // every one of them given new text whenever its reading changed -- for a screen that shows at
+    // most MAX_LABELS names at a time. Now there are enough for those and for the ones still
+    // fading out, each lent to a marker when its label appears and handed back when it has gone.
+    // Clusters re-form on every zoom step, and the pool means that never creates or destroys a
+    // DOM node either.
+    const LABEL_POOL_SIZE = 30;
+    const labelPool = Array.from({ length: LABEL_POOL_SIZE }, () => {
       const el = document.createElement('div');
       el.className = 'tl-label';
       // Anchored at the container's origin; updateLabels() moves it purely via transform.
       el.style.left = '0';
       el.style.top = '0';
       el.style.display = 'none';
+      el.owner = null;
       container.appendChild(el);
       return el;
     });
+    const freeLabels = labelPool.slice();
+    // Hand an element back: hidden, unowned, ready for the next marker.
+    function returnLabel(el) {
+      stopLabelFade(el);
+      el.style.display = 'none';
+      if (el.owner) { el.owner.label = null; el.owner = null; }
+      if (!freeLabels.includes(el)) freeLabels.push(el);
+    }
+    // Lend one to a marker, dressed for it. When every element is busy -- more labels fading out
+    // than the pool holds, in a fast spin -- one that is fading out is taken back for it; if none
+    // is, the label waits for the next frame.
+    function lendLabel(m) {
+      if (!freeLabels.length) {
+        const fading = labelPool.find((e) => e.owner && !e.owner.labelShown);
+        if (!fading) return null;
+        returnLabel(fading);
+      }
+      const el = freeLabels.pop();
+      el.owner = m;
+      m.label = el;
+      el.className = m.count > 1 ? 'tl-label tl-count' : 'tl-label';
+      el.textContent = m.labelText;
+      el.title = m.labelTitle;
+      el.setAttribute('aria-label', m.labelTitle);
+      return el;
+    }
 
     // One quad, two units across, instanced once per marker. Allocated for every spot and then
     // drawn with `instanceCount` set to however many markers the current zoom produces.
@@ -1949,17 +2003,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     function rebuildMarkers(cellDeg) {
       clusterCellDeg = cellDeg;
       const clusters = clusterPoints(allSpots, cellDeg);
-      markers = clusters.map((c, i) => ({
+      markers = clusters.map((c) => ({
         id: c.ids[0], ids: c.ids, count: c.count, lat: c.lat, lon: c.lon,
         basePos: latLonToVector3(c.lat, c.lon, MARKER_SHELL),
         worldPos: new THREE.Vector3(), // scratch, reused every frame instead of .clone()
-        label: labelPool[i], labelText: '', labelTitle: '', labelShown: false,
+        // Its label element, lent while the label is on screen (see lendLabel).
+        label: null, labelText: '', labelTitle: '', labelShown: false,
       }));
-      // A cluster's label is a count chip centred on the dot, not a name floating above it.
-      for (let i = 0; i < markers.length; i++) {
-        const wanted = markers[i].count > 1 ? 'tl-label tl-count' : 'tl-label';
-        if (markers[i].label.className !== wanted) markers[i].label.className = wanted;
-      }
       for (let i = 0; i < markers.length; i++) {
         const p = markers[i].basePos;
         markerCenters.setXYZ(i, p.x, p.y, p.z);
@@ -1977,10 +2027,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // for a spot that is no longer there. Measured while fixing the overlap: 22 labels
       // visible against a cap of 14, the extra eight all stale. Clearing the pool on rebuild
       // makes the next frame's placement authoritative.
-      for (let i = 0; i < labelPool.length; i++) {
-        stopLabelFade(labelPool[i]);
-        if (labelPool[i].style.display !== 'none') labelPool[i].style.display = 'none';
-      }
+      for (let i = 0; i < labelPool.length; i++) returnLabel(labelPool[i]);
       refreshMarkerData();
       state.dataDirty = true;
     }
@@ -2299,7 +2346,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       stopLabelFade(el);
       el.style.display = 'block';
       if (reducedMotion || typeof el.animate !== 'function' || from === to) {
-        if (to === 0) el.style.display = 'none';
+        if (to === 0) returnLabel(el);
         return;
       }
       // From wherever a fade it interrupts had got to, for the rest of the time, so a label that
@@ -2312,9 +2359,9 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       el.fade = anim;
       anim.onfinish = () => {
         if (el.fade !== anim) return;
-        if (to === 0) el.style.display = 'none';
         el.fade = null;
         anim.cancel(); // its last frame is the element's own style now
+        if (to === 0) returnLabel(el); // gone: back to the pool
       };
     }
     function fadeLabelIn(el) { fadeLabel(el, 1, LABEL_FADE_IN_MS); }
@@ -2350,7 +2397,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         // and doing that for hundreds of labels every frame is exactly the stutter this file has
         // spent so long removing. A hidden element measures 0, so a label that has never been
         // shown is given a size estimated from its text until it has been drawn once.
-        if (m.label.style.display === 'block' && m.labelText === m.measuredFor) {
+        if (m.label && m.label.style.display === 'block' && m.labelText === m.measuredFor) {
           if (!m.labelW) { m.labelW = m.label.offsetWidth; m.labelH = m.label.offsetHeight; }
         } else if (m.labelText !== m.measuredFor) {
           m.measuredFor = m.labelText; m.labelW = 0; m.labelH = 0;
@@ -2376,15 +2423,16 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const m = markers[i];
         const show = m.labelWanted && labelShow.has(i);
         if (!show) {
-          if (m.labelShown) { fadeLabelOut(m.label); m.labelShown = false; }
+          if (m.labelShown) { m.labelShown = false; if (m.label) fadeLabelOut(m.label); }
           // On its way out: it goes on following its dot until it has gone.
-          if (m.label.fade && m.labelWanted) {
+          if (m.label && m.label.fade && m.labelWanted) {
             const anchor = m.count > 1 ? 'translate(-50%, -50%)' : 'translate(-50%, -130%)';
             m.label.style.transform = `${anchor} translate(${m.screenX}px, ${m.screenY}px)`;
           }
           continue;
         }
         if (!m.labelShown) {
+          if (!m.label && !lendLabel(m)) continue; // the pool is busy: next frame
           fadeLabelIn(m.label); m.labelShown = true;
           // Placed this frame from an estimated size; it is measured on the next one (above).
           // That next frame has to happen even if nothing else moves, or a label wider than
@@ -2519,9 +2567,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
         const title = m.count > 1
           ? m.count + ' spots' + (bestRating ? ' · best ' + bestRating : ' · no readings yet')
           : text;
-        if (title !== m.labelTitle) { m.label.title = title; m.label.setAttribute('aria-label', title); m.labelTitle = title; }
+        if (title !== m.labelTitle) {
+          m.labelTitle = title;
+          if (m.label) { m.label.title = title; m.label.setAttribute('aria-label', title); }
+        }
         // New text can change a label's size, and so where labels fit: worth a redraw.
-        if (text !== m.labelText) { m.label.textContent = text; m.labelText = text; textChanged = true; }
+        if (text !== m.labelText) { m.labelText = text; if (m.label) m.label.textContent = text; textChanged = true; }
       }
       if (colorsChanged) markerColors.needsUpdate = true;
       // What the legend reports. "124 of 403" is the difference between a colour scale that
@@ -2617,7 +2668,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       updateLabels();
       ensureCoastline();
       ensureWaveOverlay();
-      if (waveMesh) waveMesh.visible = wavesOnRef.current;
+      overlayUniforms.uOverlayOn.value = overlayReady && wavesOnRef.current ? 1 : 0;
       stepParticles(dt, particlesMoving);
       updateArrows(dt);
       // The stars give way as the camera comes down to the surface (see lib/atmosphere.js).
@@ -2728,7 +2779,6 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       // open/close cycles of the globe would actually be felt on a phone.
       if (coastlineMesh) coastlineMesh.geometry.dispose();
       coastlineMat.dispose();
-      if (waveMesh) { waveMesh.geometry.dispose(); waveMesh.material.dispose(); }
       for (const set of Object.values(liveLayers)) {
         if (set.texture) set.texture.dispose();
         if (set.dirTexture) set.dirTexture.dispose();
@@ -2849,9 +2899,13 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
                     {playing ? '❚❚' : '▶'}
                   </button>
                   <input
-                    type="range" min={0} max={frames.list.length - 1} step={1} value={frameIdx}
+                    type="range" min={0} max={frames.list.length - 1} step="any" value={scrub ?? frameIdx}
                     aria-label="Forecast hour"
-                    onChange={(e) => { setPlaying(false); seek(Number(e.target.value)); }}
+                    onChange={(e) => { setPlaying(false); moveScrub(Number(e.target.value)); }}
+                    onPointerUp={endScrub}
+                    onTouchEnd={endScrub}
+                    onKeyUp={endScrub}
+                    onBlur={endScrub}
                     style={{ flex: 1, minWidth: 0, accentColor: COLORS.tealBright, minHeight: 44 }}
                   />
                   <button

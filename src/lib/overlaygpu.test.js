@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
+import * as THREE from 'three';
 import { DataUtils } from 'three';
 import {
   fieldLayout, layoutV, regularizeField, regularizeDirections, packHalf, packHalfRG, buildLut, LUT_SIZE, weekSlot,
-  OVERLAY_FRAGMENT, ARROW_VERTEX, ARROW_FRAGMENT, arrowDrift, ARROW_DRIFT_TRAVEL, ARROW_DRIFT_SECONDS,
+  OVERLAY_BLEND, OVERLAY_PARS, drawOverlay, bsplineWeights, bsplineSample,
+  ARROW_VERTEX, ARROW_FRAGMENT, arrowDrift, ARROW_DRIFT_TRAVEL, ARROW_DRIFT_SECONDS,
   overlayLimbFade, OVERLAY_LIMB_FADE,
 } from './overlaygpu.js';
 import { makeGridSampler, gridCellCount, gridCells, gridRows, MIN_DIRECTION_AGREEMENT } from './wavegrid.js';
@@ -266,13 +268,186 @@ describe('weekSlot', () => {
   });
 });
 
-describe('OVERLAY_FRAGMENT', () => {
-  it('does not convert colour spaces or tone-map, so the legend bytes reach the screen as they are', () => {
-    expect(OVERLAY_FRAGMENT).not.toMatch(/colorspace_fragment|tonemapping_fragment/);
+describe('drawOverlay', () => {
+  const phong = () => ({ ...THREE.ShaderLib.phong, uniforms: THREE.UniformsUtils.clone(THREE.ShaderLib.phong.uniforms) });
+
+  it('paints the overlay on the finished light, just before it is written', () => {
+    const shader = phong();
+    const uniforms = { uOverlayOn: { value: 0 }, uLive: { value: null } };
+    expect(drawOverlay(shader, uniforms)).toBe(true);
+    expect(shader.uniforms.uOverlayOn).toBe(uniforms.uOverlayOn); // shared: a layer switch is a write
+    const frag = shader.fragmentShader;
+    const at = frag.indexOf('if ( uOverlayOn > 0.5 )');
+    expect(at).toBeGreaterThan(frag.indexOf('vec3 outgoingLight ='));
+    expect(at).toBeLessThan(frag.indexOf('#include <opaque_fragment>'));
+    expect(shader.vertexShader).toContain('vOverlayUv = uv;');
+  });
+
+  it('blends in sRGB on the ramp bytes as they are, so the globe and the legend agree', () => {
+    // The finished light goes to sRGB, is mixed with the ramp, and comes back to linear only so
+    // the output conversion can take it to the same bytes again. No tone mapping in between.
+    expect(OVERLAY_BLEND).toContain('sRGBTransferOETF( vec4( outgoingLight, 1.0 ) )');
+    expect(OVERLAY_BLEND).toContain('sRGBTransferEOTF( vec4( mix( under, rgb, alpha * uOpacity ), 1.0 ) )');
+    expect(OVERLAY_BLEND).not.toMatch(/tonemapping|colorspace_fragment/);
   });
 
   it('thins toward the horizon as overlayLimbFade does', () => {
-    expect(OVERLAY_FRAGMENT).toContain('smoothstep( 0.0, ' + OVERLAY_LIMB_FADE + ', facing )');
+    expect(OVERLAY_BLEND).toContain('smoothstep( 0.0, ' + OVERLAY_LIMB_FADE + ', facing )');
+  });
+
+  it('samples both fields through the B-spline', () => {
+    expect(OVERLAY_BLEND).toContain('fieldLive(');
+    expect(OVERLAY_BLEND).toContain('fieldWeek( at, uLayer0 )');
+    expect(OVERLAY_PARS).toContain('p0 = ( i - 0.5 + w1 / g0 ) / size;');
+  });
+
+  it('leaves a shader it does not recognise alone', () => {
+    const shader = { vertexShader: 'void main() {}', fragmentShader: 'void main() {}', uniforms: {} };
+    expect(drawOverlay(shader, { uOverlayOn: { value: 1 } })).toBe(false);
+    expect(shader.fragmentShader).toBe('void main() {}');
+  });
+});
+
+describe('bsplineSample', () => {
+  // A texture as a plain grid, read the way the GPU reads one: bilinear, wrapping across, clamped
+  // top and bottom.
+  function grid(width, height, fn) {
+    const data = new Float64Array(width * height);
+    for (let y = 0; y < height; y++) for (let x = 0; x < width; x++) data[y * width + x] = fn(x, y);
+    return data;
+  }
+  function bilinear(data, width, height) {
+    return (u, v) => {
+      const fx = u * width - 0.5;
+      const fy = v * height - 0.5;
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      let out = 0;
+      for (const [y, wy] of [[y0, 1 - (fy - y0)], [y0 + 1, fy - y0]]) {
+        const row = Math.max(0, Math.min(height - 1, y));
+        for (const [x, wx] of [[x0, 1 - (fx - x0)], [x0 + 1, fx - x0]]) {
+          out += data[row * width + (((x % width) + width) % width)] * wx * wy;
+        }
+      }
+      return [out];
+    };
+  }
+  // The B-spline the slow way: sixteen texels, each weighted directly.
+  function direct(data, width, height, u, v) {
+    const fx = u * width - 0.5;
+    const fy = v * height - 0.5;
+    const ix = Math.floor(fx);
+    const iy = Math.floor(fy);
+    const wx = bsplineWeights(fx - ix);
+    const wy = bsplineWeights(fy - iy);
+    let out = 0;
+    for (let j = 0; j < 4; j++) {
+      const row = Math.max(0, Math.min(height - 1, iy - 1 + j));
+      for (let i = 0; i < 4; i++) {
+        const col = (((ix - 1 + i) % width) + width) % width;
+        out += data[row * width + col] * wx[i] * wy[j];
+      }
+    }
+    return out;
+  }
+  const W = 64;
+  const H = 32;
+  let seed = 1;
+  const rnd = () => { seed = (seed * 16807) % 2147483647; return seed / 2147483647; };
+  const noisy = grid(W, H, () => rnd() * 5);
+
+  it('has weights that always sum to one and are never negative', () => {
+    for (let f = 0; f <= 1; f += 0.05) {
+      const w = bsplineWeights(f);
+      expect(w[0] + w[1] + w[2] + w[3]).toBeCloseTo(1, 12);
+      for (const x of w) expect(x).toBeGreaterThanOrEqual(0);
+    }
+  });
+
+  it('is the sixteen-texel B-spline, from four bilinear fetches', () => {
+    const read = bilinear(noisy, W, H);
+    for (let k = 0; k < 400; k++) {
+      // Away from the top and bottom rows, where clamping makes the two differ by design.
+      const u = rnd();
+      const v = (3 + rnd() * (H - 6)) / H;
+      expect(bsplineSample(read, W, H, u, v)[0]).toBeCloseTo(direct(noisy, W, H, u, v), 9);
+    }
+  });
+
+  it('keeps a flat field flat and a slope a slope', () => {
+    const flat = bsplineSample(bilinear(grid(W, H, () => 2.5), W, H), W, H, 0.37, 0.61)[0];
+    expect(flat).toBeCloseTo(2.5, 12);
+    const slope = grid(W, H, (x) => 0.1 * x);
+    const read = bilinear(slope, W, H);
+    for (const x of [10.2, 20.5, 33.9]) {
+      expect(bsplineSample(read, W, H, (x + 0.5) / W, 0.5)[0]).toBeCloseTo(0.1 * x, 9);
+    }
+  });
+
+  it('never goes outside the texels around it: no ripple below zero beside a storm', () => {
+    const spike = grid(W, H, (x, y) => (x === 20 && y === 16 ? 9 : 0));
+    const read = bilinear(spike, W, H);
+    for (let k = 0; k < 400; k++) {
+      const value = bsplineSample(read, W, H, rnd(), rnd())[0];
+      expect(value).toBeGreaterThanOrEqual(-1e-12);
+      expect(value).toBeLessThanOrEqual(9);
+    }
+  });
+
+  it('is smooth across texel boundaries, where bilinear has a corner', () => {
+    // The slope either side of a texel centre, on a field with a kink there.
+    const kink = grid(W, H, (x) => Math.abs(x - 30));
+    const slopeAt = (sample, x) => {
+      const h = 1e-4;
+      return (sample((x + h + 0.5) / W) - sample((x - h + 0.5) / W)) / (2 * h);
+    };
+    const bil = bilinear(kink, W, H);
+    const bsp = (u) => bsplineSample(bil, W, H, u, 0.5)[0];
+    const lin = (u) => bil(u, 0.5)[0];
+    // Bilinear turns the corner at once; the B-spline eases through it.
+    expect(Math.abs(slopeAt(lin, 30.01) - slopeAt(lin, 29.99))).toBeGreaterThan(1.9);
+    expect(Math.abs(slopeAt(bsp, 30.01) - slopeAt(bsp, 29.99))).toBeLessThan(0.05);
+  });
+
+  it('draws the live swell within a few centimetres of what tap-to-read reports, almost everywhere', () => {
+    // The price of smoothness: the spline does not pass exactly through the texels, so a sharp
+    // feature is drawn a little softer than the number under it. On the stormy test field, live
+    // 2-degree grid, compared with the bilinear read that matches tap-to-read.
+    const layout = fieldLayout(2);
+    const { premul, cover } = regularizeField(stormyField(2), layout);
+    const texels = new Float64Array(layout.width * layout.height * 2);
+    for (let i = 0; i < premul.length; i++) { texels[i * 2] = premul[i]; texels[i * 2 + 1] = cover[i]; }
+    const read = (u, v) => {
+      const fx = u * layout.width - 0.5;
+      const fy = v * layout.height - 0.5;
+      const x0 = Math.floor(fx);
+      const y0 = Math.floor(fy);
+      const out = [0, 0];
+      for (const [y, wy] of [[y0, 1 - (fy - y0)], [y0 + 1, fy - y0]]) {
+        const row = Math.max(0, Math.min(layout.height - 1, y));
+        for (const [x, wx] of [[x0, 1 - (fx - x0)], [x0 + 1, fx - x0]]) {
+          const col = ((x % layout.width) + layout.width) % layout.width;
+          for (let c = 0; c < 2; c++) out[c] += texels[(row * layout.width + col) * 2 + c] * wx * wy;
+        }
+      }
+      return out;
+    };
+    const [a, b] = layoutV(layout);
+    const diffs = [];
+    for (let k = 0; k < 3000; k++) {
+      const lat = -70 + rnd() * 140;
+      const lon = -180 + rnd() * 360;
+      const u = (lon + 180) / 360;
+      const v = ((lat + 90) / 180) * a + b;
+      const lin = read(u, v);
+      const bsp = bsplineSample(read, layout.width, layout.height, u, v);
+      if (!(lin[1] > 0.999) || !(bsp[1] > 0.999)) continue; // well inside the readings
+      diffs.push(Math.abs(bsp[0] / bsp[1] - lin[0] / lin[1]));
+    }
+    diffs.sort((x, y) => x - y);
+    const p95 = diffs[Math.floor(diffs.length * 0.95)];
+    expect(diffs.length).toBeGreaterThan(1000);
+    expect(p95).toBeLessThan(0.05); // metres
   });
 });
 
