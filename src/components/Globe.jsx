@@ -5,7 +5,7 @@ import { COLORS } from '../lib/colors.js';
 import { latLonToVector3, markerScaleForDistance, rotationToFace, shortestAngleTo, vector3ToLatLon } from '../lib/geo3d.js';
 import { scoreToColor, degToCompass } from '../lib/rating.js';
 import { formatReadingValue, formatReadingPlace, readingDescription } from '../lib/oceanreading.js';
-import { arcsToLineVertices, coastlineOpacity } from '../lib/coastline.js';
+import { coastlineTilesInSteps, coastlineLevel, coastlineOpacity } from '../lib/coastline.js';
 import {
   base64ToBytes, decodeHeights, decodeSpeeds, decodeDirections, fillGridGaps, makeGridSampler,
   GRID_LAT_STEP, gridStepOf,
@@ -875,12 +875,23 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // of. Fetched lazily the first time the camera comes near enough to show it, so the globe's
     // first paint never waits on 743KB that a user who only ever looks at the whole Earth
     // would not have needed.
+    //
+    // Drawn as ribbons a fixed width on screen rather than as hairlines, in tiles so that only
+    // the ones in view are drawn, and in two levels of detail: every point, or every fourth
+    // wherever that cannot be told apart (see coastlineTiles and coastlineLevel in
+    // lib/coastline.js).
     const COASTLINE_SHELL = R * 1.0006;
-    const coastlineMat = new THREE.LineBasicMaterial({
-      color: 0x8fe9d4, transparent: true, opacity: 0, depthWrite: false,
-    });
-    let coastlineMesh = null;
+    // CSS pixels: LineSegments2 measures its width against the canvas's CSS size.
+    const COASTLINE_WIDTH_PX = 1.25;
+    const COASTLINE_COARSE_STRIDE = 4;
+    // ~400k segments, two levels and four hundred meshes are built this many milliseconds at a
+    // time, between frames, so the pinch that brought the camera close never stalls on them.
+    const COASTLINE_SLICE_MS = 5;
+    // { material, fine: [{ mesh, center, reach }], coarse: [...], coarseError }
+    let coastline = null;
+    let coastLevel = null; // which of the two was last drawn, or null
     let coastlineRequested = false;
+    let coastlineTimer = null;
 
     // The coastline file, fetched at most once however many layers want it.
     //
@@ -1714,27 +1725,100 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       particles = null;
     }
 
+    // The coastline's tiles (see coastlineTilesInSteps) made into meshes, a step at a time like
+    // the tiles themselves; null if there is no coastline to draw.
+    function* buildCoastline(topo, { LineSegments2, LineSegmentsGeometry, LineMaterial }) {
+      const tiles = yield* coastlineTilesInSteps(topo, COASTLINE_SHELL, latLonToVector3, { coarseStride: COASTLINE_COARSE_STRIDE });
+      if (!tiles.fine.length) return null;
+      const material = new LineMaterial({
+        color: 0x8fe9d4,
+        linewidth: COASTLINE_WIDTH_PX,
+        transparent: true,
+        opacity: 0,
+        depthWrite: false,
+      });
+      const built = { material, fine: [], coarse: [], coarseError: tiles.coarseError };
+      for (const level of ['fine', 'coarse']) {
+        for (const tile of tiles[level]) {
+          const geo = new LineSegmentsGeometry();
+          geo.setPositions(tile.positions);
+          const mesh = new LineSegments2(geo, material);
+          // Drawn after the globe and writing no depth, so it never fights the surface it sits
+          // on -- but still depth-*tested*, which is what hides the far side of the world.
+          mesh.renderOrder = 1;
+          mesh.visible = false;
+          built[level].push({ mesh, center: new THREE.Vector3().fromArray(tile.center), reach: tile.reach });
+          yield;
+        }
+      }
+      return built;
+    }
+
     function ensureCoastline() {
       if (coastlineRequested || state.distance > COASTLINE_FADE_START) return;
       coastlineRequested = true;
-      loadCoastlineTopology()
-        .then((topo) => {
+      // The ribbon classes are only wanted once the camera is this close: loaded on demand, like
+      // the base map's transcoder.
+      Promise.all([
+        loadCoastlineTopology(),
+        import('three/examples/jsm/lines/LineSegments2.js'),
+        import('three/examples/jsm/lines/LineSegmentsGeometry.js'),
+        import('three/examples/jsm/lines/LineMaterial.js'),
+      ])
+        .then(([topo, ...classes]) => {
           if (cancelled || !topo) return;
-          const positions = arcsToLineVertices(topo, COASTLINE_SHELL, latLonToVector3);
-          if (!positions.length) return;
-          const geo = new THREE.BufferGeometry();
-          geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-          coastlineMesh = new THREE.LineSegments(geo, coastlineMat);
-          // Drawn after the globe and writing no depth, so it never fights the surface it sits
-          // on -- but still depth-*tested*, which is what hides the far side of the world.
-          coastlineMesh.renderOrder = 1;
-          globeGroup.add(coastlineMesh);
-          state.dataDirty = true;
+          const job = buildCoastline(topo, Object.assign({}, ...classes));
+          const slice = () => {
+            coastlineTimer = null;
+            if (cancelled) return;
+            let step;
+            try {
+              const until = performance.now() + COASTLINE_SLICE_MS;
+              do step = job.next(); while (!step.done && performance.now() < until);
+            } catch {
+              return; // as below
+            }
+            if (!step.done) {
+              coastlineTimer = setTimeout(slice, 0);
+              return;
+            }
+            if (!step.value) return;
+            coastline = step.value;
+            for (const t of [...coastline.fine, ...coastline.coarse]) globeGroup.add(t.mesh);
+            state.dataDirty = true;
+          };
+          slice();
         })
         // The fetch already swallows its own failures; this catches anything that goes wrong
         // building the geometry. The globe is fully usable without the lines, so there is
         // nothing to report and nothing to retry.
         .catch(() => {});
+    }
+
+    // How many CSS pixels an angle at the globe's centre spans on screen right under the camera,
+    // where the globe is magnified most: what coastlineLevel weighs the coarse level against.
+    function coastPxPerRadian() {
+      return (R * height) / (2 * (state.distance - R) * Math.tan((camera.fov * Math.PI) / 360));
+    }
+
+    // Which coastline tiles to draw this frame: the level wanted, and of that only the tiles on
+    // the camera's side of the globe -- three already skips the ones outside the view.
+    const coastView = new THREE.Quaternion();
+    const coastEuler = new THREE.Euler();
+    const coastToCamera = new THREE.Vector3();
+    function showCoastline(level) {
+      coastLevel = level;
+      // The camera's direction in the globe's own frame, and how far round from it the coastline
+      // can be seen: to the horizon, and a little past it, since the lines sit just above the
+      // surface.
+      coastView.setFromEuler(coastEuler.set(state.rotX, state.rotY, 0)).invert();
+      coastToCamera.set(0, 0, 1).applyQuaternion(coastView);
+      const sight = Math.acos(R / state.distance) + Math.acos(R / COASTLINE_SHELL);
+      for (const name of ['fine', 'coarse']) {
+        for (const t of coastline[name]) {
+          t.mesh.visible = name === level && t.center.dot(coastToCamera) > Math.cos(Math.min(Math.PI, sight + t.reach));
+        }
+      }
     }
 
     // The lights, at the strength they were tuned for.
@@ -2632,8 +2716,14 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       const dRotX = state.targetRotX - state.rotX;
       const dRotY = state.targetRotY - state.rotY;
       const dDist = state.targetDistance - state.distance;
-      const moving = flying || overlayMoving || particlesMoving || arrowsGliding || coasting || state.dragging
+      const cameraMoving = flying || coasting || state.dragging
         || Math.abs(dRotX) > SETTLED || Math.abs(dRotY) > SETTLED || Math.abs(dDist) > SETTLED;
+      const moving = cameraMoving || overlayMoving || particlesMoving || arrowsGliding;
+      // The globe has just come to rest on the coarse coastline it drew while moving, close
+      // enough for the difference to show: one more frame, to put the full one back.
+      if (!cameraMoving && coastLevel === 'coarse' && coastlineLevel(coastline.coarseError, coastPxPerRadian(), false) === 'fine') {
+        state.dataDirty = true;
+      }
 
       // Nothing moved and no data changed: skip the frame entirely rather than re-rendering an
       // identical image. A globe sitting still cost exactly as much as one being dragged before
@@ -2677,10 +2767,10 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       stars.visible = starsShown > 0;
       updateMute(dt);
       updateSun();
-      if (coastlineMesh) {
+      if (coastline) {
         const o = coastlineOpacity(state.distance, COASTLINE_FADE_START, COASTLINE_FADE_END);
-        coastlineMat.opacity = o;
-        coastlineMesh.visible = o > 0;
+        coastline.material.opacity = o;
+        showCoastline(o > 0 ? coastlineLevel(coastline.coarseError, coastPxPerRadian(), cameraMoving) : null);
       }
       renderer.render(scene, camera);
       if (perf) {
@@ -2751,6 +2841,7 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       cancelAnimationFrame(state.raf);
       clearInterval(dataTimer);
       clearTimeout(contextTimer);
+      clearTimeout(coastlineTimer);
       document.removeEventListener('visibilitychange', onVisibility);
       if (resizeObserver) resizeObserver.disconnect();
       if (densityQuery && typeof densityQuery.removeEventListener === 'function') densityQuery.removeEventListener('change', onDensityChange);
@@ -2775,10 +2866,12 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
       if (satelliteTexture) satelliteTexture.dispose();
       releaseBasemapLoader();
       markerGeo.dispose(); markerMat.dispose();
-      // ~10MB of line vertices: the one buffer here big enough that leaking it across a few
-      // open/close cycles of the globe would actually be felt on a phone.
-      if (coastlineMesh) coastlineMesh.geometry.dispose();
-      coastlineMat.dispose();
+      // ~12MB of line vertices across the two levels: the one set of buffers here big enough
+      // that leaking it across a few open/close cycles of the globe would be felt on a phone.
+      if (coastline) {
+        for (const t of [...coastline.fine, ...coastline.coarse]) t.mesh.geometry.dispose();
+        coastline.material.dispose();
+      }
       for (const set of Object.values(liveLayers)) {
         if (set.texture) set.texture.dispose();
         if (set.dirTexture) set.dirTexture.dispose();
