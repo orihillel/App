@@ -129,6 +129,17 @@ function ScaleTicks({ ticks }) {
   );
 }
 
+// Kept for the life of the page, across every time the globe is opened.
+//
+// The land mask is 8MB of coverage decoded from a compressed file, and the points the arrows
+// stand on are six thousand points of a spiral, each tested against it; neither depends on
+// anything but the files, and both were rebuilt every time the globe opened. The GPU textures
+// cannot be kept the same way -- each open has its own WebGL context -- but the arrays they are
+// made from can. A failed load is not kept, so the next open tries again.
+let sharedLandMask = null; // Promise<{ mask, width, height } | null>
+const sharedLattices = new WeakMap(); // land mask -> its sea lattice
+let sharedLatticeNoMask = null;
+
 export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, title = 'All spots', hint, units = 'metric' }) {
   const containerRef = useRef(null);
   // The wave overlay is off by default. It is a second reading of the same globe -- where the
@@ -1039,10 +1050,18 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // DecompressionStream (Safari before 16.4), or the file missing -- since the mask is the
     // same either way and a slower one is better than none.
     function loadLandMask() {
-      const base = ((import.meta.env && import.meta.env.BASE_URL) || '/').replace(/\/$/, '');
-      return fetchLandMask(base + '/' + LAND_MASK.file)
-        .catch(() => null)
-        .then((prebuilt) => prebuilt || loadCoastlineTopology().then(drawLandMask));
+      if (!sharedLandMask) {
+        const base = ((import.meta.env && import.meta.env.BASE_URL) || '/').replace(/\/$/, '');
+        sharedLandMask = fetchLandMask(base + '/' + LAND_MASK.file)
+          .catch(() => null)
+          .then((prebuilt) => prebuilt || loadCoastlineTopology().then(drawLandMask))
+          .catch(() => null)
+          .then((land) => {
+            if (!land) sharedLandMask = null; // not worth keeping a failure
+            return land;
+          });
+      }
+      return sharedLandMask;
     }
 
     // The fallback: the coastline's land polygons filled into a canvas.
@@ -1139,7 +1158,11 @@ export function Globe({ order, dataRef, onClose, onSelectSpot, onVisibleSpots, t
     // direction to show at the moment on screen is drawn at zero size, so one prefix serves
     // every field.
     function seaLattice(land) {
-      return fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
+      const cached = land ? sharedLattices.get(land) : sharedLatticeNoMask;
+      if (cached) return cached;
+      const lattice = fibonacciSphere(ARROW_FIELD).filter((p) => !land || isWater(land.mask, land.width, land.height, p.lat, p.lon));
+      if (land) sharedLattices.set(land, lattice); else sharedLatticeNoMask = lattice;
+      return lattice;
     }
 
     // Arrows hold a roughly constant size on screen, so they stay legible zoomed out and do not

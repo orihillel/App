@@ -19,7 +19,7 @@ vi.mock('../src/googleAuth.js', () => ({ verifyGoogleIdToken: vi.fn() }));
 vi.mock('../src/facebookAuth.js', () => ({ verifyFacebookAccessToken: vi.fn() }));
 
 // Imported after the mocks so index.js picks up the mocked modules.
-const { default: worker, checkSubscription, isConfigured } = await import('../src/index.js');
+const { default: worker, checkSubscription, isConfigured, MAP_MAX_AGE_S, STALE_MAP_MAX_AGE_S } = await import('../src/index.js');
 const { sendPushNotification } = await import('../src/push.js');
 const { verifyGoogleIdToken } = await import('../src/googleAuth.js');
 const { verifyFacebookAccessToken } = await import('../src/facebookAuth.js');
@@ -218,6 +218,91 @@ describe('HTTP routes', () => {
       expect(body.grid).toBeNull();
       expect(body.build).toBeTruthy();
       expect(body.build.lastError).toBeTruthy();
+    });
+  });
+
+  // The maps and the week are cacheable: a few minutes without asking, then a 304 unless they
+  // changed. Diagnostics never are, because the build they describe may finish a minute later.
+  describe('caching the maps and the week', () => {
+    let realFetch;
+    beforeEach(() => {
+      realFetch = globalThis.fetch;
+      globalThis.fetch = vi.fn(async () => { throw new Error('no upstream in tests'); });
+    });
+    afterEach(() => { globalThis.fetch = realFetch; });
+
+    const swell = (extra = {}) => ({
+      generatedAt: Date.now(), cells: gridCellCount(), coverage: 1,
+      data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(2))),
+      dirs: bytesToBase64(encodeDirections(new Array(gridCellCount()).fill(225))),
+      ...extra,
+    });
+    const get = (env, path, headers = {}) => worker.fetch(new Request('https://worker.example' + path, { headers }), env);
+
+    it('lets the browser keep a map for a few minutes, under an ETag', async () => {
+      const env = makeEnv();
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(swell()));
+      const res = await get(env, '/wavegrid');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('public, max-age=' + MAP_MAX_AGE_S);
+      expect(res.headers.get('ETag')).toMatch(/^"[0-9a-f]{8}"$/);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBe('https://example.github.io');
+    });
+
+    it('answers a browser that already has it with a 304 and no body', async () => {
+      const env = makeEnv();
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(swell()));
+      const etag = (await get(env, '/wavegrid')).headers.get('ETag');
+      const again = await get(env, '/wavegrid', { 'If-None-Match': etag });
+      expect(again.status).toBe(304);
+      expect(await again.text()).toBe('');
+      // Still readable cross-origin, or the browser could not use its own cached copy.
+      expect(again.headers.get('Access-Control-Allow-Origin')).toBe('https://example.github.io');
+      // A weak validator, and one of several, match as well.
+      expect((await get(env, '/wavegrid', { 'If-None-Match': '"nope", W/' + etag })).status).toBe(304);
+      expect((await get(env, '/wavegrid', { 'If-None-Match': '"nope"' })).status).toBe(200);
+    });
+
+    it('sends the new map, under a new ETag, once it changes', async () => {
+      const env = makeEnv();
+      const first = swell();
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(first));
+      const etag = (await get(env, '/wavegrid')).headers.get('ETag');
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(swell({ generatedAt: first.generatedAt + 1000, data: bytesToBase64(encodeHeights(new Array(gridCellCount()).fill(3))) })));
+      const res = await get(env, '/wavegrid', { 'If-None-Match': etag });
+      expect(res.status).toBe(200);
+      expect(res.headers.get('ETag')).not.toBe(etag);
+    });
+
+    it('asks again sooner about a stale map', async () => {
+      const env = makeEnv();
+      // Old enough to be stale; the rebuild cannot reach the upstream here, so it is served as is.
+      await env.SUBSCRIPTIONS.put(GRID_KEY, JSON.stringify(swell({ generatedAt: Date.now() - 24 * 3600e3 })));
+      const res = await get(env, '/wavegrid');
+      expect((await res.clone().json()).stale).toBe(true);
+      expect(res.headers.get('Cache-Control')).toBe('public, max-age=' + STALE_MAP_MAX_AGE_S);
+    });
+
+    it('caches the wind map the same way', async () => {
+      const env = makeEnv();
+      await env.SUBSCRIPTIONS.put(WIND_KEY, JSON.stringify({
+        generatedAt: Date.now(), cells: gridCellCount(WIND_LAT_STEP), latStep: WIND_LAT_STEP, coverage: 1,
+        data: bytesToBase64(encodeSpeeds(new Array(gridCellCount(WIND_LAT_STEP)).fill(24))),
+        dirs: bytesToBase64(encodeDirections(new Array(gridCellCount(WIND_LAT_STEP)).fill(270))),
+      }));
+      const res = await get(env, '/windgrid');
+      expect(res.headers.get('Cache-Control')).toBe('public, max-age=' + MAP_MAX_AGE_S);
+      expect((await get(env, '/windgrid', { 'If-None-Match': res.headers.get('ETag') })).status).toBe(304);
+    });
+
+    it('never caches "nothing to serve yet"', async () => {
+      const env = makeEnv();
+      for (const path of ['/wavegrid', '/windgrid', '/wavegrid/frames', '/windgrid/frames']) {
+        const res = await get(env, path);
+        expect(res.status).toBe(200);
+        expect(res.headers.get('Cache-Control')).toBe('no-store');
+        expect(res.headers.get('ETag')).toBeNull();
+      }
     });
   });
 
