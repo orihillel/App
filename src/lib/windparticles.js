@@ -32,8 +32,9 @@ export const MAX_PARTICLES = PARTICLE_STATE_SIZE * PARTICLE_STATE_SIZE;
 // How fast a particle crosses the screen, in CSS pixels a second for each km/h of wind, at the
 // middle of the view. Real wind is far too slow to see at this scale -- a gale crosses a 2-degree
 // cell in a couple of hours -- so the speed is set on the screen instead: a 20km/h breeze moves
-// 30 pixels a second at any zoom, and a 50km/h gale 75.
-export const PARTICLE_PX_PER_KPH = 1.5;
+// 20 pixels a second at any zoom, and a 50km/h gale 50. It was half as fast again at first,
+// which read as hurried.
+export const PARTICLE_PX_PER_KPH = 1;
 // Zoomed out past the default view the globe shrinks on screen, and a streak a fixed number of
 // pixels long would cover more and more of it. Past this distance, the globe's first, the speed
 // -- and so the length of the streaks -- shrinks with the globe instead.
@@ -44,8 +45,9 @@ export function particlePxPerKph(distance) {
   return PARTICLE_PX_PER_KPH * Math.min(1, size(distance) / size(PARTICLE_REF_DISTANCE));
 }
 // How much of its path a streak shows behind its head, in seconds of travel. A streak's length
-// is then its speed: 15 pixels for that breeze, 37 for the gale.
-export const PARTICLE_TRAIL_SECONDS = 0.5;
+// is then its speed times this: 15 pixels for that breeze, 37 for the gale -- the same lengths as
+// when they moved faster, so slowing them did not shrink them.
+export const PARTICLE_TRAIL_SECONDS = 0.75;
 // How long a particle lives, in seconds, chosen at random between these. Long enough to see
 // where it goes; short enough that the field keeps being re-sampled as you move around it.
 export const PARTICLE_LIFE_MIN = 2.5;
