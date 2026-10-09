@@ -289,9 +289,9 @@ export function overlayLimbFade(facing) {
 //
 // It used to be a sphere of its own just above the surface: another 98,000 triangles, and a
 // transparent layer over the whole globe that every covered pixel was shaded twice for. Now the
-// base map's shader (a MeshPhongMaterial, patched through onBeforeCompile like its muting and its
-// night side) paints it in the same pass, after the lighting and the night shading -- the overlay
-// is data, and is never lit or darkened -- on top of the finished base.
+// base map's shader (a MeshPhongMaterial, patched through onBeforeCompile like its muting) paints
+// it in the same pass, after the lighting -- the overlay is data, and is never lit or darkened --
+// on top of the finished base.
 //
 // The blend is done the way the transparent sphere's was: in sRGB, on the colour about to be
 // written, with the lookup table's bytes as they are. The finished light is converted to sRGB,

@@ -24,10 +24,6 @@ export const ATMOSPHERE_POWER = 2.5;
 export const ATMOSPHERE_RGB = [0x24, 0x5c, 0xdf];
 // How strongly it is drawn against the globe's edge.
 export const ATMOSPHERE_OPACITY = 0.6;
-// How much of that it keeps over the night side (see lib/terminator.js). The glow is sunlight
-// scattered in the air, so where the sun has set the rim fades to a trace -- but not to nothing,
-// or the night side's edge would be lost against the dark around it.
-export const ATMOSPHERE_NIGHT = 0.3;
 // The cosine along a line of sight that just grazes the globe, where the rim is brightest. That
 // line passes one globe radius from the centre, so it meets the shell at asin(1 / radius) to the
 // normal there -- from any distance, since the grazing line is always one radius out.
@@ -60,34 +56,16 @@ void main() {
 }
 `;
 
-// How much of the rim is drawn where the air the line of sight passes through has the sun at
-// `sunUp` (the sine of its height there): all of it by day, ATMOSPHERE_NIGHT by night, easing
-// across a band wider than the ground's twilight, because the air stays lit after the ground
-// beneath it has gone dark.
-export function atmosphereDaylight(sunUp) {
-  const t = Math.min(1, Math.max(0, (sunUp + 0.3) / 0.5));
-  return ATMOSPHERE_NIGHT + (1 - ATMOSPHERE_NIGHT) * t * t * (3 - 2 * t);
-}
-
 // The far wall of the shell is what is drawn, so its normal points away from the camera: the
 // cosine below is between that normal and the line of sight running on through it, largest
 // where the line grazes the globe and falling to nothing where it grazes the shell.
-//
-// Where the sun is, `uSunDir`, is in world space -- the shell does not turn with the globe -- and
-// is judged at the point where the line of sight passes closest to the globe's centre: the
-// stretch of air it actually crosses, over the globe's edge beneath it.
 export const ATMOSPHERE_FRAGMENT = /* glsl */ `
-uniform vec3 uSunDir;
 varying vec3 vNormal;
 varying vec3 vWorld;
 void main() {
   vec3 sight = normalize( vWorld - cameraPosition );
   float cosine = dot( normalize( vNormal ), sight );
   float intensity = pow( clamp( cosine / ${glslFloat(ATMOSPHERE_EDGE_COS)}, 0.0, 1.0 ), ${glslFloat(ATMOSPHERE_POWER)} );
-  // atmosphereDaylight in lib/atmosphere.js.
-  vec3 nearest = cameraPosition - sight * dot( cameraPosition, sight );
-  float sunUp = dot( normalize( nearest ), uSunDir );
-  intensity *= mix( ${glslFloat(ATMOSPHERE_NIGHT)}, 1.0, smoothstep( -0.3, 0.2, sunUp ) );
   gl_FragColor = vec4( ${ATMOSPHERE_RGB.map((c) => glslFloat(srgbToLinear(c))).join(', ')}, intensity * ${glslFloat(ATMOSPHERE_OPACITY)} );
   #include <colorspace_fragment>
 }
